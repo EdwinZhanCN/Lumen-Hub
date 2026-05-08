@@ -1,0 +1,7 @@
+# Model output
+out/
+target/
+.DS_Store
+tmp/
+.claude/
+/.idea

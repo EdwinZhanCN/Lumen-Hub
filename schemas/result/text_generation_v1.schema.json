@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TextGenerationV1",
+  "description": "Universal schema for text generation responses across Lumen VLM services.\nReturns generated text with metadata about the generation process.",
+  "type": "object",
+  "properties": {
+    "finish_reason": {
+      "description": "Reason why generation terminated.",
+      "$ref": "#/$defs/FinishReason"
+    },
+    "generated_tokens": {
+      "description": "Number of tokens generated in the response.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "input_tokens": {
+      "description": "Number of tokens in the input prompt.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint",
+      "default": null,
+      "minimum": 0
+    },
+    "metadata": {
+      "description": "Optional metadata about the generation process.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Metadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "model_id": {
+      "description": "Identifier of the model that generated the text.",
+      "type": "string",
+      "minLength": 1
+    },
+    "text": {
+      "description": "Generated text content.",
+      "type": "string",
+      "minLength": 0
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "text",
+    "finish_reason",
+    "generated_tokens",
+    "model_id"
+  ],
+  "$defs": {
+    "FinishReason": {
+      "description": "Reason why generation terminated.",
+      "type": "string",
+      "enum": [
+        "stop",
+        "length",
+        "eos_token",
+        "stop_sequence",
+        "error"
+      ]
+    },
+    "Metadata": {
+      "description": "Optional metadata about the generation process.",
+      "type": "object",
+      "properties": {
+        "generation_time_ms": {
+          "description": "Time taken to generate the response in milliseconds.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "default": null,
+          "minimum": 0.0
+        },
+        "max_tokens": {
+          "description": "Maximum tokens allowed for generation.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 1
+        },
+        "seed": {
+          "description": "Random seed used for generation (if deterministic).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64",
+          "default": null
+        },
+        "streaming_chunks": {
+          "description": "Number of chunks in streaming generation (if applicable).",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "default": null,
+          "minimum": 0
+        },
+        "temperature": {
+          "description": "Sampling temperature used for generation.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "default": null,
+          "minimum": 0.0
+        },
+        "top_p": {
+          "description": "Nucleus sampling parameter used for generation.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "float",
+          "default": null,
+          "maximum": 1.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

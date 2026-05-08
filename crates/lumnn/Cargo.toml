@@ -1,0 +1,36 @@
+[package]
+name = "lumnn"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["ort-download-binaries"]
+ort-download-binaries = ["ort/download-binaries", "ort/copy-dylibs"]
+ort-load-dynamic = ["ort/load-dynamic"]
+ort-pkg-config = ["ort/pkg-config"]
+ort-cuda = ["ort/cuda"]
+ort-tensorrt = ["ort/tensorrt", "ort-cuda"]
+ort-directml = ["ort/directml"]
+ort-coreml = ["ort/coreml"]
+ort-xnnpack = ["ort/xnnpack"]
+ort-openvino = ["ort/openvino"]
+candle-cuda = ["candle-core/cuda"]
+candle-cudnn = ["candle-core/cudnn"]
+candle-metal = ["candle-core/metal"]
+candle-accelerate = ["candle-core/accelerate"]
+candle-mkl = ["candle-core/mkl"]
+
+[dependencies]
+async-trait = "0.1.89"
+candle-core = "0.10.2"
+candle-onnx = "0.10.2"
+half = "2.7.1"
+ndarray = "0.17.2"
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "tracing", "half", "api-24", "tls-native"] }
+thiserror = "2.0.18"
+tokio = { version = "1.51.1", features = ["sync"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+prost = "0.14.3"
+tokio = { version = "1.51.1", features = ["sync", "rt", "rt-multi-thread", "macros"] }

@@ -1,0 +1,93 @@
+name: Release Profiles
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  dist:
+    name: dist-${{ matrix.profile }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: cpu-portable
+            os: ubuntu-24.04
+          - profile: apple-arm64
+            os: macos-15
+          - profile: windows-x64-dml
+            os: windows-2025
+          - profile: linux-x64-openvino
+            os: ubuntu-24.04
+          - profile: windows-x64-openvino
+            os: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test CPU portable profile
+        if: matrix.profile == 'cpu-portable'
+        run: cargo test -p lumen-hub --no-default-features --features profile-cpu-portable
+      - name: Basic Windows DML smoke
+        if: matrix.profile == 'windows-x64-dml'
+        run: cargo test -p lumen-hub --no-default-features --features profile-windows-x64-dml
+      - name: Create OpenVINO packaging fixture
+        if: contains(matrix.profile, 'openvino')
+        shell: pwsh
+        run: |
+          $bundle = Join-Path $env:RUNNER_TEMP "openvino-bundle"
+          New-Item -ItemType Directory -Force (Join-Path $bundle "licenses") | Out-Null
+          if ($env:RUNNER_OS -eq "Windows") {
+            New-Item -ItemType File -Force (Join-Path $bundle "onnxruntime.dll") | Out-Null
+          } else {
+            New-Item -ItemType File -Force (Join-Path $bundle "libonnxruntime.so") | Out-Null
+          }
+          "OpenVINO runtime license notices go here." | Set-Content (Join-Path $bundle "licenses/README.md")
+      - name: Build dist profile
+        env:
+          LUMNN_OPENVINO_BUNDLE_DIR: ${{ runner.temp }}/openvino-bundle
+        run: cargo xtask dist --profile ${{ matrix.profile }}
+      - name: Check dist layout
+        shell: pwsh
+        run: |
+          $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
+          if (!(Test-Path (Join-Path $artifact "README.md"))) { throw "missing README.md" }
+          if (!(Test-Path (Join-Path $artifact "checksums.txt"))) { throw "missing checksums.txt" }
+          if ($env:RUNNER_OS -eq "Windows") {
+            if (!(Test-Path (Join-Path $artifact "lumen-hub.exe"))) { throw "missing lumen-hub.exe" }
+          } else {
+            if (!(Test-Path (Join-Path $artifact "lumen-hub"))) { throw "missing lumen-hub" }
+          }
+      - name: Check OpenVINO dynamic runtime bundle
+        if: contains(matrix.profile, 'openvino')
+        shell: pwsh
+        run: |
+          $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
+          if (!(Test-Path (Join-Path $artifact "licenses"))) { throw "missing licenses directory" }
+          if ($env:RUNNER_OS -eq "Windows") {
+            if (!(Test-Path (Join-Path $artifact "onnxruntime.dll"))) { throw "missing onnxruntime.dll" }
+          } else {
+            if (!(Test-Path (Join-Path $artifact "libonnxruntime.so"))) { throw "missing libonnxruntime.so" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.profile }}
+          path: dist/**
+
+  compile-only-accelerators:
+    name: compile-${{ matrix.profile }}
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: profile-linux-x64-cuda
+          - profile: profile-linux-x64-tensorrt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compile accelerator profile
+        run: cargo check -p lumen-hub --no-default-features --features ${{ matrix.profile }}

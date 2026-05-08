@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmbeddingV1",
+  "description": "Universal schema for embedding responses across all Lumen services\n(face, clip, ocr, etc.).",
+  "type": "object",
+  "properties": {
+    "dim": {
+      "description": "Embedding dimension.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 1
+    },
+    "model_id": {
+      "description": "Model identifier that generated the embedding.",
+      "type": "string",
+      "minLength": 1
+    },
+    "vector": {
+      "description": "Embedding vector.",
+      "type": "array",
+      "items": {
+        "type": "number",
+        "format": "float"
+      },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "vector",
+    "dim",
+    "model_id"
+  ]
+}

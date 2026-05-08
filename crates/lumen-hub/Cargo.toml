@@ -1,0 +1,55 @@
+[package]
+name = "lumen-hub"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["clip", "siglip", "profile-cpu-portable"]
+clip = []
+siglip = []
+ort-download-binaries = ["lumnn/ort-download-binaries"]
+ort-load-dynamic = ["lumnn/ort-load-dynamic"]
+ort-pkg-config = ["lumnn/ort-pkg-config"]
+ort-cuda = ["lumnn/ort-cuda"]
+ort-tensorrt = ["lumnn/ort-tensorrt"]
+ort-directml = ["lumnn/ort-directml"]
+ort-coreml = ["lumnn/ort-coreml"]
+ort-xnnpack = ["lumnn/ort-xnnpack"]
+ort-openvino = ["lumnn/ort-openvino"]
+candle-cuda = ["lumnn/candle-cuda"]
+candle-cudnn = ["lumnn/candle-cudnn"]
+candle-metal = ["lumnn/candle-metal"]
+candle-accelerate = ["lumnn/candle-accelerate"]
+candle-mkl = ["lumnn/candle-mkl"]
+profile-cpu-portable = ["clip", "siglip", "ort-download-binaries"]
+profile-apple-arm64 = ["clip", "siglip", "ort-download-binaries", "ort-coreml", "candle-metal", "candle-accelerate"]
+profile-linux-x64-cuda = ["clip", "siglip", "ort-download-binaries", "ort-cuda", "candle-cuda"]
+profile-linux-x64-tensorrt = ["clip", "siglip", "ort-download-binaries", "ort-tensorrt", "ort-cuda", "candle-cudnn"]
+profile-windows-x64-dml = ["clip", "siglip", "ort-download-binaries", "ort-directml"]
+profile-linux-x64-openvino = ["clip", "siglip", "ort-openvino", "ort-load-dynamic"]
+profile-windows-x64-openvino = ["clip", "siglip", "ort-openvino", "ort-load-dynamic"]
+profile-linux-x64-cpu-optimized = ["clip", "siglip", "ort-download-binaries", "ort-xnnpack", "candle-mkl"]
+
+[dependencies]
+async-trait = "0.1.89"
+base64 = "0.22.1"
+bytes = "1.11.1"
+half = "2.7.1"
+image = "0.25.10"
+lumen-schema = { path = "../lumen-schema" }
+lumnn = { path = "../lumnn", default-features = false }
+minijinja = "2.9.2"
+rand = "0.8.5"
+mdns-sd = "0.19.0"
+prost = "0.14.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+tokenizers = "0.22.2"
+tokio = { version = "1.51.1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+tonic = { version = "0.14.5", features = ["transport"] }
+tonic-prost = "0.14.5"
+tracing = "0.1.44"
+
+[build-dependencies]
+tonic-prost-build = "0.14.5"

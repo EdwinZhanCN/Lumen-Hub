@@ -1,0 +1,48 @@
+{
+  "name": "clip-vit-b-32",
+  "version": "1.0.0",
+  "description": "CLIP ViT-B-32 text and image embedding model.",
+  "model_type": "clip",
+  "source": {
+    "format": "huggingface",
+    "repo_id": "openai/clip-vit-base-patch32"
+  },
+  "runtimes": {
+    "onnx": {
+      "available": true,
+      "components": ["text", "vision"],
+      "precisions": ["fp32", "fp16"]
+    }
+  },
+  "task_metadata": {
+    "tasks": {
+      "text_embed": {
+        "component": "text",
+        "input_names": ["input_ids", "attention_mask"],
+        "output_name": "text_embeds"
+      },
+      "image_embed": {
+        "component": "vision",
+        "input_names": ["pixel_values"],
+        "output_name": "image_embeds",
+        "preprocess": {
+          "resize_shortest_edge": 224,
+          "crop_size": {
+            "width": 224,
+            "height": 224
+          },
+          "do_resize": true,
+          "do_center_crop": true,
+          "do_rescale": true,
+          "do_normalize": true,
+          "rescale_factor": 0.00392156862745098,
+          "image_mean": [0.48145466, 0.4578275, 0.40821073],
+          "image_std": [0.26862954, 0.26130258, 0.27577711],
+          "resample": "bicubic",
+          "color_space": "rgb",
+          "layout": "nchw"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "name": "siglip-base-patch16-224",
+  "version": "1.0.0",
+  "description": "SigLIP base patch16 224 text and image embedding model.",
+  "model_type": "siglip",
+  "source": {
+    "format": "huggingface",
+    "repo_id": "google/siglip-base-patch16-224"
+  },
+  "runtimes": {
+    "onnx": {
+      "available": true,
+      "components": ["text", "vision"],
+      "precisions": ["fp32", "fp16"]
+    }
+  },
+  "task_metadata": {
+    "embedding_dim": 768,
+    "tasks": {
+      "semantic_text_embed": {
+        "component": "text",
+        "input_names": ["input_ids", "attention_mask"],
+        "output_name": "text_features",
+        "hidden_output_name": "last_hidden_state"
+      },
+      "semantic_image_embed": {
+        "component": "vision",
+        "input_names": ["pixel_values"],
+        "output_name": "image_features",
+        "hidden_output_name": "last_hidden_state",
+        "preprocess": {
+          "resize_shortest_edge": 224,
+          "crop_size": {
+            "width": 224,
+            "height": 224
+          },
+          "do_resize": true,
+          "do_center_crop": false,
+          "do_rescale": true,
+          "do_normalize": true,
+          "rescale_factor": 0.00392156862745098,
+          "image_mean": [0.5, 0.5, 0.5],
+          "image_std": [0.5, 0.5, 0.5],
+          "resample": "bicubic",
+          "color_space": "rgb",
+          "layout": "nchw"
+        }
+      }
+    }
+  }
+}

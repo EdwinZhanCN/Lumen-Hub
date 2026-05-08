@@ -1,0 +1,607 @@
+use std::{collections::HashMap, sync::Arc};
+
+use async_trait::async_trait;
+use half::f16;
+use image::{
+    RgbImage,
+    imageops::{self, FilterType},
+};
+use lumen_schema::EmbeddingV1;
+use lumnn::core::{
+    context::MLContext,
+    packet::{HostTensor, MLPacket, MLPacketDataType, MLPacketDescriptor},
+    pipeline::MLPipeline,
+};
+use serde::{Deserialize, Deserializer, de};
+
+use crate::service::{ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult, TaskSpec};
+
+const SUPPORTED_IMAGE_INPUT_MIMES: [&str; 4] =
+    ["image/jpeg", "image/png", "image/webp", "image/avif"];
+
+/// CLIP image preprocessing settings loaded from `model_info.json`
+/// `task_metadata.tasks.<image task>.preprocess`.
+#[derive(Debug, Clone)]
+pub struct ClipImagePreprocessConfig {
+    resize_shortest_edge: u32,
+    crop_width: u32,
+    crop_height: u32,
+    do_resize: bool,
+    do_center_crop: bool,
+    do_rescale: bool,
+    do_normalize: bool,
+    rescale_factor: f32,
+    image_mean: [f32; 3],
+    image_std: [f32; 3],
+    filter: FilterType,
+    color_space: ClipImageColorSpace,
+    layout: ClipTensorLayout,
+}
+
+impl ClipImagePreprocessConfig {
+    pub fn from_json_str(input: &str) -> Result<Self, String> {
+        serde_json::from_str(input)
+            .map_err(|err| format!("failed to parse image preprocess metadata: {err}"))
+    }
+
+    pub(crate) fn output_shape(&self) -> Vec<usize> {
+        debug_assert!(matches!(self.layout, ClipTensorLayout::Nchw));
+        vec![1, 3, self.crop_height as usize, self.crop_width as usize]
+    }
+
+    fn preprocess_image_bytes(&self, bytes: &[u8]) -> ServiceResult<Vec<f32>> {
+        debug_assert!(matches!(self.color_space, ClipImageColorSpace::Rgb));
+        let image = image::load_from_memory(bytes).map_err(|err| {
+            ServiceError::InvalidArgument(format!("failed to decode image: {err}"))
+        })?;
+        let mut rgb = image.to_rgb8();
+
+        if self.do_resize {
+            rgb = resize_shortest_edge(&rgb, self.resize_shortest_edge, self.filter);
+        }
+
+        if self.do_center_crop {
+            rgb = center_crop(&rgb, self.crop_width, self.crop_height, self.filter);
+        } else if rgb.width() != self.crop_width || rgb.height() != self.crop_height {
+            rgb = imageops::resize(&rgb, self.crop_width, self.crop_height, self.filter);
+        }
+
+        Ok(rgb_to_nchw_normalized(self, &rgb))
+    }
+
+    fn from_raw(raw: RawImagePreprocessConfig) -> Result<Self, String> {
+        if raw.resize_shortest_edge == 0 {
+            return Err("`resize_shortest_edge` must be greater than zero".to_owned());
+        }
+        if raw.crop_size.width == 0 || raw.crop_size.height == 0 {
+            return Err(
+                "`crop_size.width` and `crop_size.height` must be greater than zero".to_owned(),
+            );
+        }
+        if !raw.rescale_factor.is_finite() {
+            return Err("`rescale_factor` must be finite".to_owned());
+        }
+
+        Ok(Self {
+            resize_shortest_edge: raw.resize_shortest_edge,
+            crop_width: raw.crop_size.width,
+            crop_height: raw.crop_size.height,
+            do_resize: raw.do_resize,
+            do_center_crop: raw.do_center_crop,
+            do_rescale: raw.do_rescale,
+            do_normalize: raw.do_normalize,
+            rescale_factor: raw.rescale_factor,
+            image_mean: vec3(raw.image_mean, "image_mean")?,
+            image_std: nonzero_vec3(raw.image_std, "image_std")?,
+            filter: raw.resample.into_filter_type(),
+            color_space: raw.color_space,
+            layout: raw.layout,
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct RawImagePreprocessConfig {
+    resize_shortest_edge: u32,
+    crop_size: CropSize,
+    do_resize: bool,
+    do_center_crop: bool,
+    do_rescale: bool,
+    do_normalize: bool,
+    rescale_factor: f32,
+    image_mean: Vec<f32>,
+    image_std: Vec<f32>,
+    resample: ResizeFilter,
+    color_space: ClipImageColorSpace,
+    layout: ClipTensorLayout,
+}
+
+#[derive(Debug, Deserialize)]
+struct CropSize {
+    width: u32,
+    height: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResizeFilter {
+    Nearest,
+    Lanczos3,
+    Bilinear,
+    Bicubic,
+}
+
+impl ResizeFilter {
+    fn into_filter_type(self) -> FilterType {
+        match self {
+            ResizeFilter::Nearest => FilterType::Nearest,
+            ResizeFilter::Lanczos3 => FilterType::Lanczos3,
+            ResizeFilter::Bilinear => FilterType::Triangle,
+            ResizeFilter::Bicubic => FilterType::CatmullRom,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ResizeFilter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let normalized = match value {
+            serde_json::Value::String(value) => value.trim().to_ascii_lowercase(),
+            serde_json::Value::Number(value) => value.to_string(),
+            other => {
+                return Err(de::Error::custom(format!(
+                    "`resample` must be a string or integer, got {other}"
+                )));
+            }
+        };
+
+        match normalized.as_str() {
+            "nearest" | "0" => Ok(Self::Nearest),
+            "lanczos" | "lanczos3" | "1" => Ok(Self::Lanczos3),
+            "bilinear" | "triangle" | "2" => Ok(Self::Bilinear),
+            "bicubic" | "catmull_rom" | "catmullrom" | "3" => Ok(Self::Bicubic),
+            other => Err(de::Error::custom(format!(
+                "unsupported `resample` value `{other}`"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ClipImageColorSpace {
+    Rgb,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ClipTensorLayout {
+    Nchw,
+}
+
+impl<'de> Deserialize<'de> for ClipImagePreprocessConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawImagePreprocessConfig::deserialize(deserializer)?;
+        Self::from_raw(raw).map_err(de::Error::custom)
+    }
+}
+
+fn vec3(values: Vec<f32>, field_name: &str) -> Result<[f32; 3], String> {
+    if values.len() != 3 {
+        return Err(format!(
+            "`{field_name}` must contain exactly 3 values, got {}",
+            values.len()
+        ));
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(format!("`{field_name}` values must be finite"));
+    }
+    Ok([values[0], values[1], values[2]])
+}
+
+fn nonzero_vec3(values: Vec<f32>, field_name: &str) -> Result<[f32; 3], String> {
+    let values = vec3(values, field_name)?;
+    if values.contains(&0.0) {
+        return Err(format!("`{field_name}` values must be non-zero"));
+    }
+    Ok(values)
+}
+
+fn resize_shortest_edge(image: &RgbImage, shortest_edge: u32, filter: FilterType) -> RgbImage {
+    let (width, height) = image.dimensions();
+    let shortest = width.min(height);
+    if shortest == shortest_edge {
+        return image.clone();
+    }
+
+    let scale = shortest_edge as f32 / shortest as f32;
+    let resized_width = ((width as f32 * scale).round() as u32).max(1);
+    let resized_height = ((height as f32 * scale).round() as u32).max(1);
+    imageops::resize(image, resized_width, resized_height, filter)
+}
+
+fn center_crop(
+    image: &RgbImage,
+    crop_width: u32,
+    crop_height: u32,
+    filter: FilterType,
+) -> RgbImage {
+    let image = if image.width() < crop_width || image.height() < crop_height {
+        imageops::resize(image, crop_width, crop_height, filter)
+    } else {
+        image.clone()
+    };
+
+    let x = image.width().saturating_sub(crop_width) / 2;
+    let y = image.height().saturating_sub(crop_height) / 2;
+    imageops::crop_imm(&image, x, y, crop_width, crop_height).to_image()
+}
+
+fn rgb_to_nchw_normalized(config: &ClipImagePreprocessConfig, image: &RgbImage) -> Vec<f32> {
+    let width = image.width() as usize;
+    let height = image.height() as usize;
+    let plane = width * height;
+    let mut values = vec![0.0; 3 * plane];
+
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = image.get_pixel(x as u32, y as u32).0;
+            for channel in 0..3 {
+                let mut value = pixel[channel] as f32;
+                if config.do_rescale {
+                    value *= config.rescale_factor;
+                }
+                if config.do_normalize {
+                    value = (value - config.image_mean[channel]) / config.image_std[channel];
+                }
+
+                values[channel * plane + y * width + x] = value;
+            }
+        }
+    }
+
+    values
+}
+
+/// Task handler for CLIP **text** embedding.
+///
+/// Wraps a pipeline (ONNX forward + L2 normalize) and a HuggingFace tokenizer
+/// to convert raw text into an `EmbeddingV1` JSON response.
+pub struct ClipTextEmbedTask {
+    spec: TaskSpec,
+    pipeline: Arc<MLPipeline>,
+    context: Arc<MLContext>,
+    model_id: String,
+    input_names: Vec<String>,
+    output_name: String,
+    tokenizer: tokenizers::Tokenizer,
+}
+
+/// Task handler for CLIP **image** embedding.
+///
+/// Decodes an image payload, applies the CLIP image preprocessing declared in
+/// `model_info.json`, runs the vision encoder, and returns an L2-normalized
+/// `EmbeddingV1` JSON response.
+pub struct ClipImageEmbedTask {
+    spec: TaskSpec,
+    pipeline: Arc<MLPipeline>,
+    context: Arc<MLContext>,
+    model_id: String,
+    input_name: String,
+    input_dtype: MLPacketDataType,
+    output_name: String,
+    preprocess: ClipImagePreprocessConfig,
+}
+
+impl ClipImageEmbedTask {
+    pub fn new(
+        task_name: impl Into<String>,
+        pipeline: MLPipeline,
+        context: Arc<MLContext>,
+        model_id: impl Into<String>,
+        input_names: Vec<String>,
+        input_dtype: MLPacketDataType,
+        output_name: impl Into<String>,
+        preprocess: ClipImagePreprocessConfig,
+    ) -> ServiceResult<Self> {
+        let input_name = input_names.into_iter().next().ok_or_else(|| {
+            ServiceError::InvalidArgument("CLIP image task requires one ONNX input name".to_owned())
+        })?;
+        let output_name = output_name.into();
+        Ok(Self {
+            spec: TaskSpec::new(task_name, "CLIP vision encoder → L2-normalized embedding")
+                .with_input_mimes(SUPPORTED_IMAGE_INPUT_MIMES)
+                .with_output_mime("application/json;schema=embedding_v1"),
+            pipeline: Arc::new(pipeline),
+            context,
+            model_id: model_id.into(),
+            input_name,
+            input_dtype,
+            output_name,
+            preprocess,
+        })
+    }
+
+    fn preprocess_image(&self, bytes: &[u8]) -> ServiceResult<HashMap<String, MLPacket>> {
+        let pixel_values = self.preprocess.preprocess_image_bytes(bytes)?;
+        let tensor = match self.input_dtype {
+            MLPacketDataType::Float32 => HostTensor::Float32(pixel_values),
+            MLPacketDataType::Float16 => {
+                HostTensor::Float16(pixel_values.into_iter().map(f16::from_f32).collect())
+            }
+            other => {
+                return Err(ServiceError::Internal(format!(
+                    "CLIP image ONNX input `{}` has unsupported dtype {:?}",
+                    self.input_name, other
+                )));
+            }
+        };
+        let packet = self
+            .context
+            .packet_from_host_tensor(
+                MLPacketDescriptor::new(self.input_dtype, self.preprocess.output_shape()),
+                tensor,
+            )
+            .map_err(ServiceError::Internal)?;
+
+        Ok(HashMap::from([(self.input_name.clone(), packet)]))
+    }
+}
+
+#[async_trait]
+impl TaskHandler for ClipImageEmbedTask {
+    fn spec(&self) -> &TaskSpec {
+        &self.spec
+    }
+
+    async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
+        if !is_supported_image_input_mime(&request.payload_mime) {
+            return Err(ServiceError::InvalidArgument(format!(
+                "unsupported CLIP image input MIME `{}`; supported MIME types: {}",
+                request.payload_mime,
+                SUPPORTED_IMAGE_INPUT_MIMES.join(", ")
+            )));
+        }
+
+        let input_packets = self.preprocess_image(&request.payload)?;
+
+        let mut outputs = self
+            .pipeline
+            .run(input_packets)
+            .await
+            .map_err(ServiceError::Internal)?;
+
+        let embedding_packet = outputs.remove(&self.output_name).ok_or_else(|| {
+            ServiceError::Internal(format!(
+                "pipeline output missing key `{}`",
+                self.output_name
+            ))
+        })?;
+
+        let tensor = embedding_packet
+            .to_host_tensor()
+            .await
+            .map_err(ServiceError::Internal)?;
+
+        let embedding = match tensor {
+            HostTensor::Float32(values) => EmbeddingV1::new(values, &self.model_id),
+            other => {
+                return Err(ServiceError::Internal(format!(
+                    "unexpected tensor type from CLIP pipeline: {other:?}"
+                )));
+            }
+        };
+
+        let json_bytes = embedding
+            .to_json_bytes()
+            .map_err(|err| ServiceError::Internal(err.to_string()))?;
+
+        Ok(
+            TaskResult::new(json_bytes, "application/json;schema=embedding_v1")
+                .with_result_schema("embedding_v1"),
+        )
+    }
+}
+
+fn is_supported_image_input_mime(mime: &str) -> bool {
+    let base = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    SUPPORTED_IMAGE_INPUT_MIMES
+        .iter()
+        .any(|supported| *supported == base)
+}
+
+impl ClipTextEmbedTask {
+    pub fn new(
+        task_name: impl Into<String>,
+        pipeline: MLPipeline,
+        context: Arc<MLContext>,
+        model_id: impl Into<String>,
+        input_names: Vec<String>,
+        output_name: impl Into<String>,
+        tokenizer: tokenizers::Tokenizer,
+    ) -> Self {
+        let output_name = output_name.into();
+        Self {
+            spec: TaskSpec::new(task_name, "CLIP text encoder → L2-normalized embedding")
+                .with_input_mimes(["text/plain"])
+                .with_output_mime("application/json;schema=embedding_v1"),
+            pipeline: Arc::new(pipeline),
+            context,
+            model_id: model_id.into(),
+            input_names,
+            output_name,
+            tokenizer,
+        }
+    }
+
+    fn preprocess_text(&self, text: &str) -> ServiceResult<HashMap<String, MLPacket>> {
+        let encoding = self
+            .tokenizer
+            .encode(text, true)
+            .map_err(|e| ServiceError::Internal(format!("tokenization failed: {e}")))?;
+
+        let ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+        let seq_len = ids.len();
+
+        let mut packets = HashMap::new();
+
+        // Primary input (e.g. "input_ids")
+        let primary_name = &self.input_names[0];
+        let input_ids_packet = self
+            .context
+            .packet_from_host_tensor(
+                MLPacketDescriptor::new(MLPacketDataType::Int64, vec![1, seq_len]),
+                HostTensor::Int64(ids),
+            )
+            .map_err(ServiceError::Internal)?;
+        packets.insert(primary_name.clone(), input_ids_packet);
+
+        // Optional attention mask input
+        if self.input_names.len() > 1 {
+            let attention_mask: Vec<i64> = encoding
+                .get_attention_mask()
+                .iter()
+                .map(|&mask| mask as i64)
+                .collect();
+            let mask_name = &self.input_names[1];
+            let attention_mask_packet = self
+                .context
+                .packet_from_host_tensor(
+                    MLPacketDescriptor::new(MLPacketDataType::Int64, vec![1, seq_len]),
+                    HostTensor::Int64(attention_mask),
+                )
+                .map_err(ServiceError::Internal)?;
+            packets.insert(mask_name.clone(), attention_mask_packet);
+        }
+
+        Ok(packets)
+    }
+}
+
+#[async_trait]
+impl TaskHandler for ClipTextEmbedTask {
+    fn spec(&self) -> &TaskSpec {
+        &self.spec
+    }
+
+    async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
+        let text = std::str::from_utf8(&request.payload).map_err(|e| {
+            ServiceError::InvalidArgument(format!("payload is not valid UTF-8: {e}"))
+        })?;
+
+        let input_packets = self.preprocess_text(text)?;
+
+        let mut outputs = self
+            .pipeline
+            .run(input_packets)
+            .await
+            .map_err(ServiceError::Internal)?;
+
+        let embedding_packet = outputs.remove(&self.output_name).ok_or_else(|| {
+            ServiceError::Internal(format!(
+                "pipeline output missing key `{}`",
+                self.output_name
+            ))
+        })?;
+
+        let tensor = embedding_packet
+            .to_host_tensor()
+            .await
+            .map_err(ServiceError::Internal)?;
+
+        let embedding = match tensor {
+            HostTensor::Float32(values) => EmbeddingV1::new(values, &self.model_id),
+            other => {
+                return Err(ServiceError::Internal(format!(
+                    "unexpected tensor type from CLIP pipeline: {other:?}"
+                )));
+            }
+        };
+
+        let json_bytes = embedding
+            .to_json_bytes()
+            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+
+        Ok(
+            TaskResult::new(json_bytes, "application/json;schema=embedding_v1")
+                .with_result_schema("embedding_v1"),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{ClipImagePreprocessConfig, is_supported_image_input_mime};
+
+    #[test]
+    fn image_preprocess_config_parses_model_info_metadata() {
+        let config = ClipImagePreprocessConfig::from_json_str(
+            &json!({
+                "resize_shortest_edge": 224,
+                "crop_size": { "width": 224, "height": 224 },
+                "do_resize": true,
+                "do_center_crop": true,
+                "do_rescale": true,
+                "do_normalize": true,
+                "rescale_factor": 0.00392156862745098,
+                "image_mean": [0.48145466, 0.4578275, 0.40821073],
+                "image_std": [0.26862954, 0.26130258, 0.27577711],
+                "resample": "bicubic",
+                "color_space": "rgb",
+                "layout": "nchw"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(config.output_shape(), vec![1, 3, 224, 224]);
+    }
+
+    #[test]
+    fn image_preprocess_config_requires_explicit_metadata() {
+        let err = ClipImagePreprocessConfig::from_json_str(
+            &json!({
+                "resize_shortest_edge": 224,
+                "crop_size": { "width": 224, "height": 224 },
+                "do_resize": true,
+                "do_center_crop": true,
+                "do_rescale": true,
+                "do_normalize": true,
+                "rescale_factor": 0.00392156862745098,
+                "image_mean": [0.48145466, 0.4578275, 0.40821073],
+                "image_std": [0.26862954, 0.26130258, 0.27577711],
+                "resample": "bicubic",
+                "layout": "nchw"
+            })
+            .to_string(),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("color_space"));
+    }
+
+    #[test]
+    fn image_input_mime_support_is_explicit() {
+        assert!(is_supported_image_input_mime("image/jpeg"));
+        assert!(is_supported_image_input_mime("image/png"));
+        assert!(is_supported_image_input_mime("image/webp"));
+        assert!(is_supported_image_input_mime("image/avif"));
+        assert!(is_supported_image_input_mime("IMAGE/JPEG; charset=binary"));
+
+        assert!(!is_supported_image_input_mime("image/gif"));
+        assert!(!is_supported_image_input_mime("image/*"));
+        assert!(!is_supported_image_input_mime("application/octet-stream"));
+    }
+}

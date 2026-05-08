@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModelInfo",
+  "description": "Runtime-facing schema for model assets consumed directly by Lumen.",
+  "type": "object",
+  "properties": {
+    "description": {
+      "description": "Short human-readable description of the asset package.",
+      "type": "string",
+      "maxLength": 500,
+      "minLength": 1
+    },
+    "metadata": {
+      "description": "Optional descriptive metadata for humans and tooling.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ModelMetadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "model_type": {
+      "description": "High-level task family, for example `clip`, `face`, `ocr`, or `vlm`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "description": "Stable model asset identifier.",
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1
+    },
+    "runtimes": {
+      "description": "Runtime inventory available to Lumen.",
+      "$ref": "#/$defs/RuntimeInventory"
+    },
+    "source": {
+      "description": "Weak source reference for runtime introspection only.",
+      "$ref": "#/$defs/ModelSource"
+    },
+    "task_metadata": {
+      "description": "Task-specific weak contract area.",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": true,
+      "default": null
+    },
+    "version": {
+      "description": "Semantic version of this asset package.",
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "version",
+    "description",
+    "model_type",
+    "source",
+    "runtimes"
+  ],
+  "$defs": {
+    "ModelMetadata": {
+      "type": "object",
+      "properties": {
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "license": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "tags": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "string"
+          }
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "ModelSource": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/SourceFormat"
+        },
+        "repo_id": {
+          "description": "Upstream identifier or local logical identifier.",
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "repo_id"
+      ]
+    },
+    "RuntimeInventory": {
+      "description": "Runtime inventory keyed by runtime name.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/RuntimeSpec"
+      }
+    },
+    "RuntimeSpec": {
+      "type": "object",
+      "properties": {
+        "available": {
+          "description": "Whether this runtime has packaged artifacts for the model.",
+          "type": "boolean"
+        },
+        "components": {
+          "description": "Logical model components, such as `vision`, `text`, `detection`, or `recognition`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "precisions": {
+          "description": "Packaged artifact precisions, such as `fp32`, `fp16`, or `int8`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "components",
+        "precisions"
+      ]
+    },
+    "SourceFormat": {
+      "type": "string",
+      "enum": [
+        "huggingface",
+        "openclip",
+        "modelscope",
+        "custom",
+        "local"
+      ]
+    }
+  }
+}

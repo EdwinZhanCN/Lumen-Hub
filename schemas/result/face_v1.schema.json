@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FaceV1",
+  "description": "Universal schema for face detection and embedding responses across Lumen services.",
+  "type": "object",
+  "properties": {
+    "count": {
+      "description": "Number of detected faces.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "faces": {
+      "description": "Detected faces with bounding boxes and metadata.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Face"
+      }
+    },
+    "model_id": {
+      "description": "Model identifier.",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "faces",
+    "count",
+    "model_id"
+  ],
+  "$defs": {
+    "BboxItem": {
+      "type": "number",
+      "format": "float",
+      "minimum": 0.0
+    },
+    "Face": {
+      "type": "object",
+      "properties": {
+        "bbox": {
+          "description": "Bounding box coordinates [x1, y1, x2, y2] where (x1, y1) is top-left\ncorner and (x2, y2) is bottom-right corner.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BboxItem"
+          },
+          "maxItems": 4,
+          "minItems": 4
+        },
+        "confidence": {
+          "description": "Detection confidence score.",
+          "type": "number",
+          "format": "float",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "embedding": {
+          "description": "Face embedding vector for recognition/comparison (optional).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "number",
+            "format": "float"
+          }
+        },
+        "landmarks": {
+          "description": "Facial landmark points (optional).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "type": "number",
+            "format": "float"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "bbox",
+        "confidence"
+      ]
+    }
+  }
+}

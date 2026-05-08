@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "crates/*",
+]
+resolver = "2"  # 推荐使用 resolver 2

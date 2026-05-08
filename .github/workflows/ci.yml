@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  workspace:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Test workspace
+        run: cargo test --workspace
+
+  feature-profiles:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: apple-arm64
+            os: macos-15
+            features: profile-apple-arm64
+          - name: windows-dml
+            os: windows-2025
+            features: profile-windows-x64-dml
+          - name: linux-openvino
+            os: ubuntu-24.04
+            features: profile-linux-x64-openvino
+          - name: linux-cpu-optimized
+            os: ubuntu-24.04
+            features: profile-linux-x64-cpu-optimized
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check profile
+        run: cargo check -p lumen-hub --no-default-features --features ${{ matrix.features }}

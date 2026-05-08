@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LumenConfig",
+  "description": "Unified configuration schema for all Lumen ML services.",
+  "type": "object",
+  "properties": {
+    "deployment": {
+      "$ref": "#/$defs/Deployment"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "server": {
+      "$ref": "#/$defs/ServerConfig"
+    },
+    "services": {
+      "description": "Service definitions keyed by service name.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/ServiceConfig"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "metadata",
+    "deployment",
+    "server",
+    "services"
+  ],
+  "$defs": {
+    "Deployment": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "description": "Deployment mode.",
+          "$ref": "#/$defs/Mode"
+        },
+        "service": {
+          "description": "Service name for single mode.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ServiceName"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "services": {
+          "description": "Service names for hub mode.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "default": null,
+          "items": {
+            "$ref": "#/$defs/ServiceName"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ]
+    },
+    "Mdns": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable mDNS service discovery.",
+          "type": "boolean",
+          "default": false
+        },
+        "service_name": {
+          "description": "mDNS service name, required when `enabled` is true.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^[a-z][a-z0-9-]*$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Metadata": {
+      "type": "object",
+      "properties": {
+        "cache_dir": {
+          "description": "Model cache directory path (supports shell-style `~` expansion by callers).",
+          "type": "string",
+          "minLength": 1
+        },
+        "region": {
+          "description": "Platform region selection.",
+          "$ref": "#/$defs/Region"
+        },
+        "version": {
+          "description": "Configuration version (semantic versioning).",
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "region",
+        "cache_dir"
+      ]
+    },
+    "Mode": {
+      "description": "Deployment mode.",
+      "type": "string",
+      "enum": [
+        "single",
+        "hub"
+      ]
+    },
+    "ModelConfig": {
+      "type": "object",
+      "properties": {
+        "dataset": {
+          "description": "Dataset name for zero-shot classification.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "model": {
+          "description": "Model repository name.",
+          "type": "string",
+          "minLength": 1
+        },
+        "precision": {
+          "description": "Preferred precision for running the model.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "rknn_device": {
+          "description": "RKNN device identifier, required when `runtime` is `rknn`.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "pattern": "^rk\\d+$"
+        },
+        "runtime": {
+          "description": "Model runtime type.",
+          "$ref": "#/$defs/Runtime"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "runtime"
+      ]
+    },
+    "Region": {
+      "description": "Platform region selection.\n\n`cn` uses ModelScope. `other` is reserved for future Hugging Face routing.",
+      "type": "string",
+      "enum": [
+        "cn",
+        "other"
+      ]
+    },
+    "Runtime": {
+      "description": "Model runtime type.",
+      "type": "string",
+      "enum": [
+        "onnx",
+        "candle_onnx",
+        "rknn"
+      ]
+    },
+    "ServerConfig": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "description": "Server bind address.",
+          "type": "string",
+          "default": "0.0.0.0"
+        },
+        "mdns": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Mdns"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "port": {
+          "description": "gRPC server port.",
+          "type": "integer",
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 1024
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "port"
+      ]
+    },
+    "ServiceConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether to load this service.",
+          "type": "boolean"
+        },
+        "models": {
+          "description": "Model configurations (alias -> config).",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/ModelConfig"
+          }
+        },
+        "package": {
+          "description": "Rust service package/crate name.",
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*$"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "package",
+        "models"
+      ]
+    },
+    "ServiceName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    }
+  }
+}

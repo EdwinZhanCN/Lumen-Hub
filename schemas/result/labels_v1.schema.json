@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LabelsV1",
+  "description": "Classification response schema for Lumen services. Returns ranked labels\nwith confidence scores.",
+  "type": "object",
+  "properties": {
+    "labels": {
+      "description": "Array of classification results.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Label"
+      }
+    },
+    "model_id": {
+      "description": "Identifier of the model that generated the classification.",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "labels",
+    "model_id"
+  ],
+  "$defs": {
+    "Label": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "The classification label or class name.",
+          "type": "string"
+        },
+        "score": {
+          "description": "Confidence score for this label.",
+          "type": "number",
+          "format": "float"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "score"
+      ]
+    }
+  }
+}

@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OCRV1",
+  "description": "Universal schema for OCR text detection and recognition responses across\nLumen services.",
+  "type": "object",
+  "properties": {
+    "count": {
+      "description": "Number of detected text regions.",
+      "type": "integer",
+      "format": "uint",
+      "minimum": 0
+    },
+    "items": {
+      "description": "Detected text regions with content and metadata.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Item"
+      }
+    },
+    "model_id": {
+      "description": "Model identifier (combined detection and recognition models).",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "items",
+    "count",
+    "model_id"
+  ],
+  "$defs": {
+    "BoxItem": {
+      "description": "Point coordinates [x, y].",
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "format": "int64"
+      },
+      "maxItems": 2,
+      "minItems": 2
+    },
+    "Item": {
+      "type": "object",
+      "properties": {
+        "box": {
+          "description": "Polygon coordinates defining the text region (usually 4 points for\nrotated rectangle: TL, TR, BR, BL).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/BoxItem"
+          },
+          "minItems": 3
+        },
+        "confidence": {
+          "description": "Recognition confidence score.",
+          "type": "number",
+          "format": "float",
+          "maximum": 1.0,
+          "minimum": 0.0
+        },
+        "text": {
+          "description": "Recognized text content.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "box",
+        "text",
+        "confidence"
+      ]
+    }
+  }
+}
