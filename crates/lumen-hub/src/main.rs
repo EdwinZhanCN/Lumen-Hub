@@ -576,6 +576,7 @@ mod tests {
             port: 50_051,
             host: "127.0.0.1".to_owned(),
             mdns: None,
+            batching: Default::default(),
         };
 
         let overridden = server_config_with_override(&config, Some(50_052));

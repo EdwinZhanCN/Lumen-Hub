@@ -1,207 +1,183 @@
-//! Zero-config request batching for the daemon layer.
+//! Dynamic request batching for the daemon layer.
 //!
-//! ## Design
-//!
-//! Traditional batchers (e.g. Triton) expose two magic numbers:
-//! `max_batch_size` + `max_queue_delay`. Both require manual tuning and
-//! monitoring to get right.
-//!
-//! This batcher adopts a "busy-then-harvest" strategy that eliminates the
-//! delay parameter:
-//!
-//! ```text
-//!   model idle
-//!     → request arrives, execute immediately (batch_size = 1)
-//!     → while model is busy, new requests queue up
-//!     → model finishes, harvest entire queue at once
-//!     → batch_size = min(queue.len(), batch_limit)
-//!     → execute, repeat
-//! ```
-//!
-//! The model's own execution time acts as a self-adapting collection
-//! window: fast models collect fewer requests per batch; slow models
-//! naturally collect more. No delay knob needed.
-//!
-//! `batch_limit` can be auto-inferred from the model's dynamic input
-//! shape and GPU memory budget (see [`BatchLimit`]). Users can override
-//! it when they want explicit control.
+//! The daemon batches only complete, already reassembled requests. Transport
+//! chunking is handled before a request enters this layer.
 
-use std::future::Future;
-use std::pin::Pin;
+use std::{
+    collections::HashMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
-use crate::service::{ServiceResult, TaskRequest, TaskResult};
-use tokio::sync::mpsc;
+use crate::service::{BatchKey, ServiceError, ServiceResult, TaskRequest, TaskResult};
+use tokio::{sync::mpsc, time};
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-/// Describes where per-request results should be delivered.
 pub type Responder = tokio::sync::oneshot::Sender<ServiceResult<TaskResult>>;
+pub type ResponseReceiver = tokio::sync::oneshot::Receiver<ServiceResult<TaskResult>>;
 
-/// A request that has been submitted to the batcher but not yet executed.
-pub struct PendingRequest {
-    pub request: TaskRequest,
-    pub respond_to: Responder,
-}
-
-/// Strategy for determining the maximum batch size.
-///
-/// In zero-config mode, the batcher infers the limit from the model metadata
-/// (e.g. ONNX dynamic axis bounds). Users who want explicit control can
-/// override it with [`BatchLimit::Fixed`].
-pub enum BatchLimit {
-    /// Use a user-supplied upper bound.
-    Fixed(usize),
-    /// Infer from model metadata (the default zero-config path).
-    AutoInferred { fallback: usize },
-}
-
-impl Default for BatchLimit {
-    fn default() -> Self {
-        Self::AutoInferred { fallback: 8 }
-    }
-}
-
-impl BatchLimit {
-    /// Resolve the effective batch limit.
-    ///
-    /// In [`BatchLimit::AutoInferred`] mode, returns `fallback` for now.
-    /// A future implementation may inspect the ONNX model's input shape and
-    /// GPU memory budget to compute a tighter bound automatically.
-    pub fn resolve(&self) -> usize {
-        match self {
-            Self::Fixed(limit) => *limit,
-            Self::AutoInferred { fallback } => *fallback,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Batcher
-// ---------------------------------------------------------------------------
-
-type BatchFn = Box<
+pub type BatchFn = Arc<
     dyn Fn(Vec<TaskRequest>) -> Pin<Box<dyn Future<Output = ServiceResult<Vec<TaskResult>>> + Send>>
         + Send
         + Sync,
 >;
 
-/// Zero-config batcher that aggregates individual inference requests into
-/// batches using the model's execution rhythm as the natural collection
-/// window.
-///
-/// ## Usage
-///
-/// ```ignore
-/// let batcher = Batcher::new(batch_limit, batch_fn);
-/// let responder = batcher.submit(request).await?;
-/// let result = responder.await??;
-/// ```
+pub struct PendingRequest {
+    pub request: TaskRequest,
+    pub respond_to: Responder,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatcherConfig {
+    pub enabled: bool,
+    pub max_batch_size: usize,
+    pub queue_latency: Duration,
+}
+
+impl BatcherConfig {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            max_batch_size: 1,
+            queue_latency: Duration::from_millis(1),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct Batcher {
-    /// Queue of requests waiting to be batched.
-    tx: mpsc::UnboundedSender<PendingRequest>,
-    rx: mpsc::UnboundedReceiver<PendingRequest>,
-    batch_limit: usize,
+    config: BatcherConfig,
+    queues: Arc<Mutex<HashMap<BatchKey, mpsc::UnboundedSender<PendingRequest>>>>,
 }
 
 impl Batcher {
-    /// Creates a new [`Batcher`].
-    ///
-    /// Call [`Batcher::run`] (or `tokio::spawn(batcher.run(batch_fn))`)
-    /// to start the batching loop.
-    pub fn new(batch_limit: BatchLimit) -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let batch_limit = batch_limit.resolve();
+    pub fn new(config: BatcherConfig) -> Self {
         Self {
-            tx,
-            rx,
-            batch_limit,
+            config,
+            queues: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// Submit a single request and receive a oneshot channel that will
-    /// resolve once the batch has been executed.
-    pub fn submit(
-        &self,
-        request: TaskRequest,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ServiceResult<TaskResult>>,
-        mpsc::error::SendError<PendingRequest>,
-    > {
-        let (responder, receiver) = tokio::sync::oneshot::channel();
-        self.tx
-            .send(PendingRequest {
-                request,
-                respond_to: responder,
-            })
-            .map(|()| receiver)
+    pub fn config(&self) -> &BatcherConfig {
+        &self.config
     }
 
-    /// Run the batcher loop.
-    ///
-    /// Blocks the calling task. Typically spawned with
-    /// `tokio::spawn(batcher.run())`.
-    ///
-    /// ## Algorithm
-    ///
-    /// 1. Wait for the first request (blocks).
-    /// 2. Harvest any additional requests that have arrived in the meantime
-    ///    (non-blocking drain).
-    /// 3. Execute the batch.
-    /// 4. Scatter results back to each request's [`Responder`].
-    /// 5. Repeat.
-    pub async fn run(mut self, batch_fn: BatchFn) {
-        let mut pending: Vec<PendingRequest> = Vec::new();
+    pub fn submit(
+        &self,
+        key: BatchKey,
+        request: TaskRequest,
+        batch_fn: BatchFn,
+    ) -> ServiceResult<ResponseReceiver> {
+        let tx = self.queue_sender(key, batch_fn)?;
+        let (respond_to, receiver) = tokio::sync::oneshot::channel();
+        tx.send(PendingRequest {
+            request,
+            respond_to,
+        })
+        .map_err(|_| ServiceError::Unavailable("batch queue is closed".to_owned()))?;
+        Ok(receiver)
+    }
 
-        loop {
-            // --- step 1: wait for the first request ---
-            match self.rx.recv().await {
-                Some(req) => pending.push(req),
-                None => break, // channel closed
-            }
+    fn queue_sender(
+        &self,
+        key: BatchKey,
+        batch_fn: BatchFn,
+    ) -> ServiceResult<mpsc::UnboundedSender<PendingRequest>> {
+        let mut queues = self
+            .queues
+            .lock()
+            .map_err(|_| ServiceError::Internal("batch queue registry lock poisoned".to_owned()))?;
 
-            // --- step 2: drain any additional requests (non-blocking) ---
-            while pending.len() < self.batch_limit {
-                match self.rx.try_recv() {
-                    Ok(req) => pending.push(req),
-                    Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => {
-                        // Channel closed; process what we have.
-                        break;
+        if let Some(tx) = queues.get(&key) {
+            return Ok(tx.clone());
+        }
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        queues.insert(key, tx.clone());
+
+        let max_batch_size = self.config.max_batch_size.max(1);
+        let queue_latency = self.config.queue_latency;
+        tokio::spawn(run_queue(rx, max_batch_size, queue_latency, batch_fn));
+
+        Ok(tx)
+    }
+}
+
+async fn run_queue(
+    mut rx: mpsc::UnboundedReceiver<PendingRequest>,
+    max_batch_size: usize,
+    queue_latency: Duration,
+    batch_fn: BatchFn,
+) {
+    loop {
+        let Some(first) = rx.recv().await else {
+            break;
+        };
+
+        let mut pending = Vec::with_capacity(max_batch_size);
+        push_if_open(&mut pending, first);
+
+        let deadline = time::sleep(queue_latency);
+        tokio::pin!(deadline);
+
+        while pending.len() < max_batch_size {
+            tokio::select! {
+                _ = &mut deadline => break,
+                received = rx.recv() => {
+                    match received {
+                        Some(request) => push_if_open(&mut pending, request),
+                        None => break,
                     }
                 }
             }
+        }
 
-            // --- step 3: execute ---
-            let batch: Vec<TaskRequest> = pending
-                .iter()
-                .map(|p| TaskRequest {
-                    payload: p.request.payload.clone(),
-                    payload_mime: p.request.payload_mime.clone(),
-                    meta: p.request.meta.clone(),
-                })
-                .collect();
+        pending.retain(|request| !request.respond_to.is_closed());
+        if pending.is_empty() {
+            continue;
+        }
 
-            let respond_to: Vec<Responder> = pending.drain(..).map(|p| p.respond_to).collect();
+        flush(pending, &batch_fn).await;
+    }
+}
 
-            let results = batch_fn(batch).await;
+fn push_if_open(pending: &mut Vec<PendingRequest>, request: PendingRequest) {
+    if !request.respond_to.is_closed() {
+        pending.push(request);
+    }
+}
 
-            // --- step 4: scatter ---
-            match results {
-                Ok(results) => {
-                    for (responder, result) in respond_to.into_iter().zip(results.into_iter()) {
-                        let _ = responder.send(Ok(result));
-                    }
-                }
-                Err(err) => {
-                    // All requests in the batch share the same error.
-                    let msg = err.to_string();
-                    for responder in respond_to {
-                        let _ = responder
-                            .send(Err(crate::service::ServiceError::Internal(msg.clone())));
-                    }
-                }
+async fn flush(pending: Vec<PendingRequest>, batch_fn: &BatchFn) {
+    let batch = pending
+        .iter()
+        .map(|pending| pending.request.clone())
+        .collect::<Vec<_>>();
+    let respond_to = pending
+        .into_iter()
+        .map(|pending| pending.respond_to)
+        .collect::<Vec<_>>();
+
+    match batch_fn(batch).await {
+        Ok(results) if results.len() == respond_to.len() => {
+            for (responder, result) in respond_to.into_iter().zip(results) {
+                let _ = responder.send(Ok(result));
+            }
+        }
+        Ok(results) => {
+            let message = format!(
+                "batch handler returned {} results for {} requests",
+                results.len(),
+                respond_to.len()
+            );
+            for responder in respond_to {
+                let _ = responder.send(Err(ServiceError::Internal(message.clone())));
+            }
+        }
+        Err(err) => {
+            let message = err.to_string();
+            for responder in respond_to {
+                let _ = responder.send(Err(ServiceError::Internal(message.clone())));
             }
         }
     }
@@ -210,25 +186,199 @@ impl Batcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use tokio::sync::Notify;
+
+    fn echo_batch_fn() -> BatchFn {
+        Arc::new(|requests| {
+            Box::pin(async move {
+                Ok(requests
+                    .into_iter()
+                    .map(|request| TaskResult::new(request.payload, request.payload_mime))
+                    .collect())
+            })
+        })
+    }
 
     #[tokio::test]
-    async fn single_request_completes_immediately() {
-        let batcher = Batcher::new(BatchLimit::default());
+    async fn single_request_flushes_after_latency() {
+        let batcher = Batcher::new(BatcherConfig {
+            enabled: true,
+            max_batch_size: 8,
+            queue_latency: Duration::from_millis(1),
+        });
+        let receiver = batcher
+            .submit(
+                BatchKey::new("a"),
+                TaskRequest::new(Bytes::from_static(b"one"), "text/plain"),
+                echo_batch_fn(),
+            )
+            .unwrap();
 
-        let handle = tokio::spawn(async move {
-            batcher
-                .run(Box::new(move |requests| {
-                    let results = requests
+        let result = receiver.await.unwrap().unwrap();
+        assert_eq!(result.payload, Bytes::from_static(b"one"));
+    }
+
+    #[tokio::test]
+    async fn max_batch_size_flushes_immediately() {
+        let notify = Arc::new(Notify::new());
+        let batches = Arc::new(AtomicUsize::new(0));
+        let batch_fn: BatchFn = {
+            let notify = Arc::clone(&notify);
+            let batches = Arc::clone(&batches);
+            Arc::new(move |requests| {
+                let notify = Arc::clone(&notify);
+                let batches = Arc::clone(&batches);
+                Box::pin(async move {
+                    batches.fetch_add(1, Ordering::SeqCst);
+                    notify.notify_waiters();
+                    Ok(requests
                         .into_iter()
-                        .map(|r| TaskResult::new(r.payload, r.payload_mime))
-                        .collect();
-                    Box::pin(async move { Ok(results) })
-                }))
-                .await;
+                        .map(|request| TaskResult::new(request.payload, request.payload_mime))
+                        .collect())
+                })
+            })
+        };
+        let batcher = Batcher::new(BatcherConfig {
+            enabled: true,
+            max_batch_size: 2,
+            queue_latency: Duration::from_secs(60),
         });
 
-        // TODO: proper integration test with the batcher's submit path.
-        // For now this test validates the type signatures compile.
-        handle.abort();
+        let r1 = batcher
+            .submit(
+                BatchKey::new("a"),
+                TaskRequest::new(Bytes::from_static(b"one"), "text/plain"),
+                Arc::clone(&batch_fn),
+            )
+            .unwrap();
+        let r2 = batcher
+            .submit(
+                BatchKey::new("a"),
+                TaskRequest::new(Bytes::from_static(b"two"), "text/plain"),
+                batch_fn,
+            )
+            .unwrap();
+
+        notify.notified().await;
+        assert_eq!(batches.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            r1.await.unwrap().unwrap().payload,
+            Bytes::from_static(b"one")
+        );
+        assert_eq!(
+            r2.await.unwrap().unwrap().payload,
+            Bytes::from_static(b"two")
+        );
+    }
+
+    #[tokio::test]
+    async fn different_keys_use_different_queues() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let batch_fn: BatchFn = {
+            let calls = Arc::clone(&calls);
+            Arc::new(move |requests| {
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(requests
+                        .into_iter()
+                        .map(|request| TaskResult::new(request.payload, request.payload_mime))
+                        .collect())
+                })
+            })
+        };
+        let batcher = Batcher::new(BatcherConfig {
+            enabled: true,
+            max_batch_size: 8,
+            queue_latency: Duration::from_millis(1),
+        });
+
+        let r1 = batcher
+            .submit(
+                BatchKey::new("a"),
+                TaskRequest::new(Bytes::from_static(b"one"), "text/plain"),
+                Arc::clone(&batch_fn),
+            )
+            .unwrap();
+        let r2 = batcher
+            .submit(
+                BatchKey::new("b"),
+                TaskRequest::new(Bytes::from_static(b"two"), "text/plain"),
+                batch_fn,
+            )
+            .unwrap();
+
+        let _ = r1.await.unwrap().unwrap();
+        let _ = r2.await.unwrap().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn dropped_receiver_is_not_included_in_batch() {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let batch_fn: BatchFn = {
+            let seen = Arc::clone(&seen);
+            Arc::new(move |requests| {
+                let seen = Arc::clone(&seen);
+                Box::pin(async move {
+                    seen.store(requests.len(), Ordering::SeqCst);
+                    Ok(requests
+                        .into_iter()
+                        .map(|request| TaskResult::new(request.payload, request.payload_mime))
+                        .collect())
+                })
+            })
+        };
+        let batcher = Batcher::new(BatcherConfig {
+            enabled: true,
+            max_batch_size: 2,
+            queue_latency: Duration::from_millis(1),
+        });
+
+        let dropped = batcher
+            .submit(
+                BatchKey::new("a"),
+                TaskRequest::new(Bytes::from_static(b"drop"), "text/plain"),
+                Arc::clone(&batch_fn),
+            )
+            .unwrap();
+        drop(dropped);
+        let kept = batcher
+            .submit(
+                BatchKey::new("a"),
+                TaskRequest::new(Bytes::from_static(b"keep"), "text/plain"),
+                batch_fn,
+            )
+            .unwrap();
+
+        let result = kept.await.unwrap().unwrap();
+        assert_eq!(result.payload, Bytes::from_static(b"keep"));
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mismatched_result_count_returns_internal_error() {
+        let batch_fn: BatchFn = Arc::new(|_requests| Box::pin(async move { Ok(Vec::new()) }));
+        let batcher = Batcher::new(BatcherConfig {
+            enabled: true,
+            max_batch_size: 1,
+            queue_latency: Duration::from_secs(60),
+        });
+
+        let receiver = batcher
+            .submit(
+                BatchKey::new("a"),
+                TaskRequest::new(Bytes::from_static(b"one"), "text/plain"),
+                batch_fn,
+            )
+            .unwrap();
+
+        let err = receiver.await.unwrap().unwrap_err();
+        assert!(matches!(err, ServiceError::Internal(_)));
     }
 }

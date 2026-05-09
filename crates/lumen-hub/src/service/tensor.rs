@@ -162,6 +162,22 @@ pub fn bytes_to_f32_le(bytes: &[u8]) -> ServiceResult<Vec<f32>> {
         .collect())
 }
 
+pub fn bytes_to_f16_le(bytes: &[u8]) -> ServiceResult<Vec<half::f16>> {
+    if !bytes.len().is_multiple_of(std::mem::size_of::<half::f16>()) {
+        return Err(ServiceError::InvalidArgument(
+            "fp16 tensor payload byte length is not divisible by 2".to_owned(),
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(2)
+        .map(|chunk| {
+            half::f16::from_bits(u16::from_le_bytes(
+                chunk.try_into().expect("chunk length is 2"),
+            ))
+        })
+        .collect())
+}
+
 pub fn bytes_to_i64_le(bytes: &[u8]) -> ServiceResult<Vec<i64>> {
     if !bytes.len().is_multiple_of(std::mem::size_of::<i64>()) {
         return Err(ServiceError::InvalidArgument(

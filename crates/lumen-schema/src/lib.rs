@@ -4,8 +4,8 @@ pub mod model;
 pub mod result;
 
 pub use config::{
-    ConfigValidationError, Deployment, LumenConfig, Mdns, Metadata, Mode, ModelConfig, Region,
-    Runtime, ServerConfig, ServiceConfig, ServiceName,
+    BatchingConfig, ConfigValidationError, Deployment, LumenConfig, Mdns, Metadata, Mode,
+    ModelConfig, Region, Runtime, ServerConfig, ServiceConfig, ServiceName,
 };
 pub use model::{
     ModelInfo, ModelInfoValidationError, ModelMetadata, ModelSource, RuntimeInventory, RuntimeSpec,

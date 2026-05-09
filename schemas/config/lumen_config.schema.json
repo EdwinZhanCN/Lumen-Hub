@@ -29,6 +29,31 @@
     "services"
   ],
   "$defs": {
+    "BatchingConfig": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Enable daemon-level dynamic batching for eligible tensor requests.",
+          "type": "boolean",
+          "default": true
+        },
+        "max_batch_size": {
+          "description": "Maximum number of compatible requests collected into one batch.",
+          "type": "integer",
+          "format": "uint",
+          "default": 8,
+          "minimum": 1
+        },
+        "queue_latency_ms": {
+          "description": "Maximum time to wait after the first queued request before flushing.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 2,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
     "Deployment": {
       "type": "object",
       "properties": {
@@ -182,6 +207,15 @@
     "ServerConfig": {
       "type": "object",
       "properties": {
+        "batching": {
+          "description": "Dynamic batching configuration for daemon-level request queues.",
+          "$ref": "#/$defs/BatchingConfig",
+          "default": {
+            "enabled": true,
+            "max_batch_size": 8,
+            "queue_latency_ms": 2
+          }
+        },
         "host": {
           "description": "Server bind address.",
           "type": "string",

@@ -133,6 +133,39 @@ pub struct ServerConfig {
     #[validate(nested)]
     #[serde(default)]
     pub mdns: Option<Mdns>,
+
+    /// Dynamic batching configuration for daemon-level request queues.
+    #[validate(nested)]
+    #[serde(default)]
+    pub batching: BatchingConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Validate, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BatchingConfig {
+    /// Enable daemon-level dynamic batching for eligible tensor requests.
+    #[serde(default = "default_batching_enabled")]
+    pub enabled: bool,
+
+    /// Maximum number of compatible requests collected into one batch.
+    #[validate(range(min = 1))]
+    #[serde(default = "default_max_batch_size")]
+    pub max_batch_size: usize,
+
+    /// Maximum time to wait after the first queued request before flushing.
+    #[validate(range(min = 1))]
+    #[serde(default = "default_queue_latency_ms")]
+    pub queue_latency_ms: u64,
+}
+
+impl Default for BatchingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_batching_enabled(),
+            max_batch_size: default_max_batch_size(),
+            queue_latency_ms: default_queue_latency_ms(),
+        }
+    }
 }
 
 /// Model runtime type.
@@ -373,12 +406,24 @@ fn default_host() -> String {
     "0.0.0.0".to_owned()
 }
 
+fn default_batching_enabled() -> bool {
+    true
+}
+
+fn default_max_batch_size() -> usize {
+    8
+}
+
+fn default_queue_latency_ms() -> u64 {
+    2
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
     use validator::Validate;
 
-    use super::{LumenConfig, Mode, Runtime, ServerConfig};
+    use super::{BatchingConfig, LumenConfig, Mode, Runtime, ServerConfig};
 
     #[test]
     fn parses_and_validates_single_service_config() {
@@ -416,8 +461,93 @@ mod tests {
 
         assert_eq!(config.deployment.mode, Mode::Single);
         assert_eq!(config.server.host, "0.0.0.0");
+        assert!(config.server.batching.enabled);
+        assert_eq!(config.server.batching.max_batch_size, 8);
+        assert_eq!(config.server.batching.queue_latency_ms, 2);
         assert!(config.service_enabled("clip"));
         assert_eq!(config.deployment_service_names(), vec!["clip"]);
+    }
+
+    #[test]
+    fn parses_server_batching_config() {
+        let config = LumenConfig::from_json_str(
+            &json!({
+                "metadata": {
+                    "version": "1.0.0",
+                    "region": "cn",
+                    "cache_dir": "~/.lumen/models"
+                },
+                "deployment": {
+                    "mode": "single",
+                    "service": "clip"
+                },
+                "server": {
+                    "port": 50051,
+                    "batching": {
+                        "enabled": false,
+                        "max_batch_size": 16,
+                        "queue_latency_ms": 5
+                    }
+                },
+                "services": {
+                    "clip": {
+                        "enabled": true,
+                        "package": "lumen_clip",
+                        "models": {
+                            "default": {
+                                "model": "ViT-B-32",
+                                "runtime": "onnx"
+                            }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("valid batching config parses");
+
+        assert!(!config.server.batching.enabled);
+        assert_eq!(config.server.batching.max_batch_size, 16);
+        assert_eq!(config.server.batching.queue_latency_ms, 5);
+    }
+
+    #[test]
+    fn rejects_invalid_server_batching_config() {
+        let config = LumenConfig::from_json_str(
+            &json!({
+                "metadata": {
+                    "version": "1.0.0",
+                    "region": "cn",
+                    "cache_dir": "~/.lumen/models"
+                },
+                "deployment": {
+                    "mode": "single",
+                    "service": "clip"
+                },
+                "server": {
+                    "port": 50051,
+                    "batching": {
+                        "max_batch_size": 0,
+                        "queue_latency_ms": 0
+                    }
+                },
+                "services": {
+                    "clip": {
+                        "enabled": true,
+                        "package": "lumen_clip",
+                        "models": {
+                            "default": {
+                                "model": "ViT-B-32",
+                                "runtime": "onnx"
+                            }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        );
+
+        assert!(config.is_err());
     }
 
     #[test]
@@ -718,6 +848,7 @@ mod tests {
             port: 50051,
             host: "127.0.0.1".to_owned(),
             mdns: None,
+            batching: BatchingConfig::default(),
         };
 
         assert!(server.validate().is_ok());

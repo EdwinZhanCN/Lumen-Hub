@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::service::{
-    ServiceCapability, ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult, TaskSpec,
+    BatchKey, ServiceCapability, ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult,
+    TaskSpec,
 };
 
 #[derive(Default)]
@@ -40,6 +41,22 @@ impl TaskRegistry {
 
     pub async fn handle(&self, task_name: &str, request: TaskRequest) -> ServiceResult<TaskResult> {
         self.get(task_name)?.handle(request).await
+    }
+
+    pub fn batch_key(
+        &self,
+        task_name: &str,
+        request: &TaskRequest,
+    ) -> ServiceResult<Option<BatchKey>> {
+        self.get(task_name)?.batch_key(request)
+    }
+
+    pub async fn handle_batch(
+        &self,
+        task_name: &str,
+        requests: Vec<TaskRequest>,
+    ) -> ServiceResult<Vec<TaskResult>> {
+        self.get(task_name)?.handle_batch(requests).await
     }
 
     pub fn task_names(&self) -> Vec<String> {

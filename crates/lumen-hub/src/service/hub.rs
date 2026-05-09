@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::service::{
-    InferenceService, ServiceCapability, ServiceError, ServiceResult, TaskRequest, TaskResult,
+    BatchKey, InferenceService, ServiceCapability, ServiceError, ServiceResult, TaskRequest,
+    TaskResult,
 };
 
 /// Protocol-independent registry and router for inference services.
@@ -51,6 +52,26 @@ impl ServiceHub {
     ) -> ServiceResult<TaskResult> {
         let service = self.get(service_name)?;
         service.tasks().handle(task_name, request).await
+    }
+
+    pub fn batch_key(
+        &self,
+        service_name: &str,
+        task_name: &str,
+        request: &TaskRequest,
+    ) -> ServiceResult<Option<BatchKey>> {
+        let service = self.get(service_name)?;
+        service.tasks().batch_key(task_name, request)
+    }
+
+    pub async fn handle_batch(
+        &self,
+        service_name: &str,
+        task_name: &str,
+        requests: Vec<TaskRequest>,
+    ) -> ServiceResult<Vec<TaskResult>> {
+        let service = self.get(service_name)?;
+        service.tasks().handle_batch(task_name, requests).await
     }
 
     pub fn capabilities(&self) -> Vec<ServiceCapability> {

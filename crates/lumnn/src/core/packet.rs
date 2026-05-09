@@ -3,7 +3,18 @@ use half::f16;
 use std::{any::Any, sync::Arc};
 use tokio::sync::Mutex;
 
-/// Supported data types for machine learning packets.
+/// Elementary data types for tensor elements.
+///
+/// Each variant maps to a known Rust type and has a fixed
+/// [`byte_size`](MLPacketDataType::byte_size).
+///
+/// # Example
+///
+/// ```
+/// use lumnn::core::packet::MLPacketDataType;
+/// assert_eq!(MLPacketDataType::Float32.byte_size(), 4);
+/// assert_eq!(MLPacketDataType::Int8.byte_size(),   1);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MLPacketDataType {
     Float32,
@@ -17,7 +28,7 @@ pub enum MLPacketDataType {
 }
 
 impl MLPacketDataType {
-    /// Returns the size in bytes of one element of this data type.
+    /// Size in bytes of a single element of this type.
     pub fn byte_size(&self) -> usize {
         match self {
             MLPacketDataType::Float32 | MLPacketDataType::Int32 | MLPacketDataType::Uint32 => 4,
@@ -28,16 +39,66 @@ impl MLPacketDataType {
     }
 }
 
-/// Describes the data type and shape of an MLPacket.
+/// Describes the data type, shape, and axis variability of an [`MLPacket`].
+///
+/// A descriptor serves two roles:
+///
+/// * **Contract** — a node declares what it accepts/produces via
+///   [`input_descriptors`](crate::core::node::MLNode::input_descriptors).
+///   Dynamic axes (batch, sequence length) are declared here.
+/// * **Metadata** — a concrete packet carries a fully-resolved descriptor
+///   so downstream consumers can validate compatibility.
+///
+/// Use [`validate_compatibility`](MLPacketDescriptor::validate_compatibility)
+/// to check that a runtime descriptor satisfies a contract.
+///
+/// # Dynamic axes
+///
+/// When a dimension can vary at runtime (e.g., batch size or KV-cache length),
+/// mark the descriptor with [`with_dynamic_batch`](MLPacketDescriptor::with_dynamic_batch)
+/// or [`with_dynamic_axis`](MLPacketDescriptor::with_dynamic_axis).
+/// The contract carries dynamic markers; the runtime descriptor must supply
+/// concrete values.
+///
+/// # Examples
+///
+/// ```
+/// use lumnn::core::packet::{MLPacketDescriptor, MLPacketDataType};
+///
+/// // Fixed 224×224 RGB image with batch=1
+/// let fixed = MLPacketDescriptor::new(
+///     MLPacketDataType::Float32,
+///     vec![1, 3, 224, 224],
+/// );
+/// assert_eq!(fixed.element_count(), 150528);
+///
+/// // Variable batch size
+/// let dyn_batch = MLPacketDescriptor::new(
+///     MLPacketDataType::Float32,
+///     vec![1, 3, 224, 224],
+/// ).with_dynamic_batch();
+///
+/// // Validate a concrete batch of 4
+/// let concrete = MLPacketDescriptor::new(
+///     MLPacketDataType::Float32,
+///     vec![4, 3, 224, 224],
+/// );
+/// dyn_batch.validate_compatibility(&concrete, "images").unwrap();
+/// ```
 #[derive(Debug, Clone)]
 pub struct MLPacketDescriptor {
+    /// Data type of each element.
     pub dtype: MLPacketDataType,
+    /// Shape with concrete dims (contract may use placeholder for dynamic axes).
     pub shape: Vec<usize>,
+    /// Whether axis 0 (batch) may vary.
     pub dynamic_batch: bool,
+    /// Per-axis dynamic markers; length equals `shape.len()`.
     pub dynamic_axes: Vec<bool>,
 }
 
 impl MLPacketDescriptor {
+    /// Creates a descriptor with all axes fixed.
     pub fn new(dtype: MLPacketDataType, shape: Vec<usize>) -> Self {
         let dynamic_axes = vec![false; shape.len()];
         Self {
@@ -48,6 +109,7 @@ impl MLPacketDescriptor {
         }
     }
 
+    /// Marks axis 0 (batch) as dynamic.
     pub fn with_dynamic_batch(mut self) -> Self {
         self.dynamic_batch = true;
         if !self.dynamic_axes.is_empty() {
@@ -56,6 +118,9 @@ impl MLPacketDescriptor {
         self
     }
 
+    /// Marks a specific axis as dynamic.
+    ///
+    /// If `axis` is 0, this also sets `dynamic_batch = true`.
     pub fn with_dynamic_axis(mut self, axis: usize) -> Self {
         if axis >= self.dynamic_axes.len() {
             self.dynamic_axes.resize(self.shape.len(), false);
@@ -69,19 +134,26 @@ impl MLPacketDescriptor {
         self
     }
 
-    /// Returns the total number of elements in the tensor described by this descriptor.
+    /// Total number of elements: `shape.iter().product()`.
     pub fn element_count(&self) -> usize {
         self.shape.iter().product()
     }
 
-    /// Returns the total byte length of the tensor described by this descriptor.
+    /// Total byte length: `element_count × dtype.byte_size()`.
     pub fn byte_length(&self) -> usize {
         self.element_count() * self.dtype.byte_size()
     }
 
-    /// 校验当前描述符是否能接受另一个实际描述符。
+    /// Validates that `actual` satisfies `self` (the contract).
     ///
-    /// 这里把 `self` 视为契约中的“期望值”，`actual` 视为运行时收到的真实数据描述。
+    /// The contract (`self`) may declare dynamic axes; the runtime descriptor
+    /// (`actual`) must be fully concrete. Validation checks dtype, rank, and
+    /// shape on fixed axes. For dynamic axes, only a zero batch is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` on dtype mismatch, rank mismatch, shape mismatch on fixed
+    /// axes, zero-sized dynamic batch, or if `actual` still has dynamic markers.
     pub fn validate_compatibility(&self, actual: &Self, packet_name: &str) -> Result<(), String> {
         if actual.dtype != self.dtype {
             return Err(format!(
@@ -141,24 +213,60 @@ impl MLPacketDescriptor {
     }
 }
 
-/// Represents the runtime type where the packet payload resides.
+/// Where a packet's payload currently resides.
+///
+/// Nodes use this to decide whether to take a fast path (data already on the
+/// right device) or a slow path (transfer needed).
+///
+/// # Example
+///
+/// ```
+/// use lumnn::core::packet::RuntimeType;
+///
+/// let cpu = RuntimeType::Cpu;
+/// let cuda = RuntimeType::backend("cuda", "cuda:0");
+///
+/// match cpu {
+///     RuntimeType::Cpu => println!("host memory"),
+///     RuntimeType::Backend { backend, .. } => println!("{backend} device"),
+///     RuntimeType::Unknown => println!("opaque"),
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeType {
+    /// Payload is in host (CPU) memory.
     Cpu,
+    /// Payload lives on an accelerator backend.
     Backend {
         backend: &'static str,
         device: &'static str,
     },
+    /// Payload origin is unknown; materialize via [`to_host_tensor`](PacketPayload::to_host_tensor).
     Unknown,
 }
 
 impl RuntimeType {
+    /// Convenience constructor for [`RuntimeType::Backend`].
     pub fn backend(backend: &'static str, device: &'static str) -> Self {
         Self::Backend { backend, device }
     }
 }
 
-/// A tensor stored in host memory, supporting various data types.
+/// A tensor in host (CPU) memory.
+///
+/// `HostTensor` is the canonical in-memory representation that all backends
+/// can materialize to. Variants hold owned `Vec` data of the corresponding
+/// Rust type.
+///
+/// # Example
+///
+/// ```
+/// use lumnn::core::packet::{HostTensor, MLPacketDataType};
+///
+/// let t = HostTensor::Float32(vec![1.0, 2.0, 3.0, 4.0]);
+/// assert_eq!(t.dtype(), MLPacketDataType::Float32);
+/// assert_eq!(t.element_count(), 4);
+/// ```
 #[derive(Debug, Clone)]
 pub enum HostTensor {
     Float32(Vec<f32>),
@@ -172,7 +280,7 @@ pub enum HostTensor {
 }
 
 impl HostTensor {
-    /// Returns the data type of this host tensor.
+    /// Returns the data type of this tensor.
     pub fn dtype(&self) -> MLPacketDataType {
         match self {
             HostTensor::Float32(_) => MLPacketDataType::Float32,
@@ -186,7 +294,7 @@ impl HostTensor {
         }
     }
 
-    /// Returns the number of elements in this tensor.
+    /// Returns the number of elements.
     pub fn element_count(&self) -> usize {
         match self {
             HostTensor::Float32(values) => values.len(),
@@ -200,7 +308,11 @@ impl HostTensor {
         }
     }
 
-    /// Validates that this tensor matches the given descriptor.
+    /// Checks that dtype and element count match the given descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` on dtype or element-count mismatch.
     pub fn validate_against(
         &self,
         descriptor: &MLPacketDescriptor,
@@ -225,7 +337,10 @@ impl HostTensor {
         Ok(())
     }
 
-    /// Creates a HostTensor from a boxed Any, given the data type.
+    /// Downcasts a `Box<dyn Any + Send + Sync>` into a `HostTensor` of the
+    /// given dtype.
+    ///
+    /// Supports both `Vec<T>` and `Box<[T]>` as the underlying allocation.
     pub fn from_any(
         data: Box<dyn Any + Send + Sync>,
         dtype: MLPacketDataType,
@@ -243,15 +358,32 @@ impl HostTensor {
     }
 }
 
-/// Trait for payloads in an MLPacket that can be materialized as host tensors.
+/// Abstraction over backend-specific tensor payloads.
+///
+/// Implementations live in backend crates and wrap device-resident tensors
+/// (ORT values, Candle tensors, etc.). The trait lets [`MLPacket`] store a
+/// heterogeneous payload without knowing the concrete backend type.
+///
+/// The default implementation is [`HostTensor`], which represents CPU-resident
+/// data.
+///
+/// # Required methods
+///
+/// * [`runtime`](PacketPayload::runtime) — where the payload lives; consumers
+///   use this to pick a fast path.
+/// * [`to_host_tensor`](PacketPayload::to_host_tensor) — materialize to host
+///   memory. For [`HostTensor`] this is a cheap clone; for device payloads it
+///   may trigger a GPU→CPU transfer.
 pub trait PacketPayload: Send + Sync + Any {
-    /// Returns the runtime type of this payload.
+    /// Where this payload resides (CPU, GPU, etc.).
     fn runtime(&self) -> RuntimeType;
-    /// Returns this payload as a reference to Any.
+    /// Erased reference for downcasting.
     fn as_any(&self) -> &(dyn Any + Send + Sync);
-    /// Consumes this payload into a Box<Any>.
+    /// Erased owned value for downcasting.
     fn into_any(self: Box<Self>) -> Box<dyn Any + Send + Sync>;
-    /// Converts this payload to a host tensor.
+    /// Materialize this payload into a [`HostTensor`].
+    ///
+    /// For host-resident data this is cheap; for device data it may transfer.
     fn to_host_tensor(&self) -> Result<HostTensor, String>;
 }
 
@@ -272,7 +404,46 @@ impl PacketPayload for HostTensor {
     }
 }
 
-/// A packet containing machine learning data, including descriptor and payload.
+/// The unit of data flowing through a computational graph.
+///
+/// An `MLPacket` carries:
+/// * a public [`descriptor`](MLPacketDescriptor) (dtype + shape),
+/// * a reference-counted [`MLContext`] (ownership anchor),
+/// * a [`PacketPayload`] behind a [`tokio::sync::Mutex`] for async-safe access.
+///
+/// Packets are created via [`MLContext`] factory methods
+/// ([`packet_from_f32`](MLContext::packet_from_f32),
+/// [`packet_from_host_tensor`](MLContext::packet_from_host_tensor)),
+/// or directly through the constructors on this type.
+///
+/// # Lifecycle
+///
+/// 1. **Create** — context creates the packet with a payload.
+/// 2. **Flow** — nodes consume input packets and produce output packets.
+/// 3. **Inspect** — call [`runtime`](MLPacket::runtime) to dispatch,
+///    [`to_host_tensor`](MLPacket::to_host_tensor) to read data.
+/// 4. **Destroy** — call [`destroy`](MLPacket::destroy) to eagerly drop the
+///    payload (useful for GPU memory management).
+/// 5. **Consume** — call [`into_parts`](MLPacket::into_parts) to take ownership
+///    of the payload for zero-copy processing.
+///
+/// # Example
+///
+/// ```
+/// use lumnn::core::{
+///     context::{MLContext, MLContextOptions},
+///     packet::{HostTensor, MLPacketDescriptor, MLPacketDataType},
+/// };
+///
+/// let ctx = MLContext::new(MLContextOptions::default()).unwrap();
+/// let desc = MLPacketDescriptor::new(MLPacketDataType::Float32, vec![1, 3]);
+///
+/// let packet = ctx.packet_from_host_tensor(desc, HostTensor::Float32(vec![1.0, 2.0, 3.0]))
+///     .expect("creation should succeed");
+///
+/// // Later, in an async context:
+/// // let tensor = packet.to_host_tensor().await?;
+/// ```
 pub struct MLPacket {
     pub descriptor: MLPacketDescriptor,
     context: Arc<MLContext>,
@@ -280,7 +451,15 @@ pub struct MLPacket {
 }
 
 impl MLPacket {
-    /// Creates a new MLPacket from raw data.
+    /// Creates a packet from an untyped `Box<dyn Any>`.
+    ///
+    /// The data is downcast based on `descriptor.dtype` and wrapped in a
+    /// [`HostTensor`]. Supports both `Vec<T>` and `Box<[T]>` allocations.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the downcast fails or the data doesn't match the
+    /// descriptor.
     pub fn new(
         context: Arc<MLContext>,
         descriptor: MLPacketDescriptor,
@@ -296,7 +475,12 @@ impl MLPacket {
         ))
     }
 
-    /// Creates a new MLPacket from a host tensor.
+    /// Creates a packet from a [`HostTensor`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the tensor's dtype or element count disagrees with
+    /// the descriptor.
     pub fn from_host_tensor(
         context: Arc<MLContext>,
         descriptor: MLPacketDescriptor,
@@ -306,7 +490,10 @@ impl MLPacket {
         Ok(Self::from_payload(context, descriptor, Box::new(tensor)))
     }
 
-    /// Creates a new MLPacket from a payload.
+    /// Creates a packet from an already-constructed [`PacketPayload`].
+    ///
+    /// This is the low-level entry point for backend implementations that
+    /// produce custom payload types (e.g., ORT values directly on GPU).
     pub fn from_payload(
         context: Arc<MLContext>,
         descriptor: MLPacketDescriptor,
@@ -319,13 +506,24 @@ impl MLPacket {
         }
     }
 
-    /// Destroys the payload in this packet.
+    /// Eagerly drops the payload.
+    ///
+    /// Useful for releasing GPU memory before the packet itself goes out of
+    /// scope. After destruction, [`runtime`](MLPacket::runtime) and
+    /// [`to_host_tensor`](MLPacket::to_host_tensor) return errors.
     pub async fn destroy(&self) {
         let mut data_guard = self.data.lock().await;
         *data_guard = None;
     }
 
-    /// Returns the runtime type of the current payload, allowing the caller to dispatch fast or slow paths.
+    /// Returns the [`RuntimeType`] of the current payload.
+    ///
+    /// Nodes use this to decide between fast paths (payload already on the
+    /// right device) and slow paths (transfer needed).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the payload has been [`destroy`](MLPacket::destroy)ed.
     pub async fn runtime(&self) -> Result<RuntimeType, String> {
         let data_guard = self.data.lock().await;
         let payload = data_guard
@@ -334,9 +532,15 @@ impl MLPacket {
         Ok(payload.runtime())
     }
 
-    /// Materializes the current payload into a standard host tensor.
-    /// For payloads that are already host tensors, this is just a lightweight clone.
-    /// For backend-specific payloads, this may trigger actual data transfer.
+    /// Materializes the payload into a [`HostTensor`].
+    ///
+    /// For CPU-resident payloads this is a cheap clone. For device-resident
+    /// payloads this triggers a device→host transfer, which may be expensive.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the payload has been [`destroy`](MLPacket::destroy)ed
+    /// or if the backend transfer fails.
     pub async fn to_host_tensor(&self) -> Result<HostTensor, String> {
         let data_guard = self.data.lock().await;
         let payload = data_guard
@@ -345,7 +549,15 @@ impl MLPacket {
         payload.to_host_tensor()
     }
 
-    /// Consumes the current packet and returns the context, descriptor, and underlying payload.
+    /// Consumes the packet and returns its parts.
+    ///
+    /// This is the zero-copy extraction path: nodes that can consume the
+    /// payload directly (without cloning or transferring) should use this
+    /// instead of [`to_host_tensor`](MLPacket::to_host_tensor).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the payload has been [`destroy`](MLPacket::destroy)ed.
     pub fn into_parts(
         self,
     ) -> Result<(Arc<MLContext>, MLPacketDescriptor, Box<dyn PacketPayload>), String> {

@@ -4,12 +4,15 @@ use bytes::Bytes;
 use tonic::{Request, Response, Status};
 
 use crate::{
-    daemon::proto::home_native::v1,
+    daemon::{BatchFn, Batcher, BatcherConfig, proto::home_native::v1},
     service::{ServiceCapability, ServiceError, ServiceHub, TaskRequest, TaskResult, TaskSpec},
 };
 
 const SERVICE_META_KEY: &str = "service";
 const RESPONSE_CHUNK_SIZE: usize = 4 * 1024 * 1024;
+const META_INPUT_KIND: &str = "lumen.input.kind";
+const META_PREPROCESS_SKIP: &str = "lumen.preprocess.skip";
+const INPUT_KIND_TENSOR: &str = "tensor";
 
 type ResponseStream<T> =
     Pin<Box<dyn tonic::codegen::tokio_stream::Stream<Item = Result<T, Status>> + Send + 'static>>;
@@ -17,11 +20,15 @@ type ResponseStream<T> =
 /// gRPC adapter for the protocol-independent `ServiceHub`.
 pub struct HubGrpcService {
     hub: Arc<ServiceHub>,
+    batcher: Batcher,
 }
 
 impl HubGrpcService {
-    pub fn new(hub: Arc<ServiceHub>) -> Self {
-        Self { hub }
+    pub fn new(hub: Arc<ServiceHub>, batching: BatcherConfig) -> Self {
+        Self {
+            hub,
+            batcher: Batcher::new(batching),
+        }
     }
 
     pub fn hub(&self) -> &Arc<ServiceHub> {
@@ -39,22 +46,52 @@ impl HubGrpcService {
 
         let mut meta = request.meta;
         meta.remove(SERVICE_META_KEY);
+        let task_request = TaskRequest {
+            payload: request.payload,
+            payload_mime: request.payload_mime,
+            meta,
+        };
 
         let result = self
-            .hub
-            .handle(
-                &service_name,
-                &task_name,
-                TaskRequest {
-                    payload: request.payload,
-                    payload_mime: request.payload_mime,
-                    meta,
-                },
-            )
+            .handle_task_request(service_name, task_name, task_request)
             .await
             .map_err(service_error_to_status)?;
 
         task_result_to_responses(correlation_id, result)
+    }
+
+    async fn handle_task_request(
+        &self,
+        service_name: String,
+        task_name: String,
+        request: TaskRequest,
+    ) -> Result<TaskResult, ServiceError> {
+        if !self.batcher.config().enabled || !is_batch_wire_eligible(&request) {
+            return self.hub.handle(&service_name, &task_name, request).await;
+        }
+
+        let Some(task_key) = self.hub.batch_key(&service_name, &task_name, &request)? else {
+            return self.hub.handle(&service_name, &task_name, request).await;
+        };
+
+        let batch_key = crate::service::BatchKey::new(format!(
+            "service={service_name}\ntask={task_name}\n{}",
+            task_key.as_str()
+        ));
+        let hub = Arc::clone(&self.hub);
+        let batch_service = service_name.clone();
+        let batch_task = task_name.clone();
+        let batch_fn: BatchFn = Arc::new(move |requests| {
+            let hub = Arc::clone(&hub);
+            let service_name = batch_service.clone();
+            let task_name = batch_task.clone();
+            Box::pin(async move { hub.handle_batch(&service_name, &task_name, requests).await })
+        });
+
+        let receiver = self.batcher.submit(batch_key, request, batch_fn)?;
+        receiver
+            .await
+            .map_err(|_| ServiceError::Unavailable("batch response channel closed".to_owned()))?
     }
 }
 
@@ -261,6 +298,15 @@ fn resolve_service_name(
     }
 }
 
+fn is_batch_wire_eligible(request: &TaskRequest) -> bool {
+    normalized_meta(request.meta.get(META_INPUT_KIND)).as_deref() == Some(INPUT_KIND_TENSOR)
+        && request.meta.get(META_PREPROCESS_SKIP).map(String::as_str) == Some("true")
+}
+
+fn normalized_meta(value: Option<&String>) -> Option<String> {
+    value.map(|value| value.trim().to_ascii_lowercase())
+}
+
 fn task_result_to_responses(
     correlation_id: String,
     result: TaskResult,
@@ -359,7 +405,8 @@ mod tests {
     use crate::{
         daemon::{HubGrpcService, grpc::assemble_task_request, proto::home_native::v1},
         service::{
-            InferenceService, ServiceCapability, ServiceError, ServiceHub, ServiceResult,
+            BatchKey, DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, InferenceService, META_INPUT_KIND,
+            META_PREPROCESS_SKIP, ServiceCapability, ServiceError, ServiceHub, ServiceResult,
             TaskHandler, TaskRegistry, TaskRequest, TaskResult, TaskSpec,
         },
     };
@@ -394,7 +441,10 @@ mod tests {
     async fn grpc_service_routes_to_hub_and_builds_final_response() {
         let mut hub = ServiceHub::new();
         hub.register(EchoService::new("echo", "echo_text")).unwrap();
-        let service = HubGrpcService::new(std::sync::Arc::new(hub));
+        let service = HubGrpcService::new(
+            std::sync::Arc::new(hub),
+            crate::daemon::BatcherConfig::disabled(),
+        );
 
         let responses = service
             .handle_messages(vec![infer_chunk(
@@ -427,7 +477,10 @@ mod tests {
             .unwrap();
         hub.register(EchoService::new("echo-b", "echo_text"))
             .unwrap();
-        let service = HubGrpcService::new(std::sync::Arc::new(hub));
+        let service = HubGrpcService::new(
+            std::sync::Arc::new(hub),
+            crate::daemon::BatcherConfig::disabled(),
+        );
 
         let err = service
             .handle_messages(vec![infer_chunk(
@@ -444,6 +497,95 @@ mod tests {
 
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
         assert!(err.message().contains("service"));
+    }
+
+    #[tokio::test]
+    async fn grpc_service_batches_eligible_tensor_requests() {
+        let mut hub = ServiceHub::new();
+        hub.register(BatchEchoService::new("echo", "embed"))
+            .unwrap();
+        let service = HubGrpcService::new(
+            std::sync::Arc::new(hub),
+            crate::daemon::BatcherConfig {
+                enabled: true,
+                max_batch_size: 2,
+                queue_latency: std::time::Duration::from_secs(60),
+            },
+        );
+
+        let first = service.handle_messages(vec![tensor_chunk("a", "embed", b"one")]);
+        let second = service.handle_messages(vec![tensor_chunk("b", "embed", b"two")]);
+        let (first, second) = tokio::join!(first, second);
+
+        let first = first.unwrap().into_iter().next().unwrap();
+        let second = second.unwrap().into_iter().next().unwrap();
+        assert_eq!(first.correlation_id, "a");
+        assert_eq!(second.correlation_id, "b");
+        assert_eq!(first.result, b"batch:one");
+        assert_eq!(second.result, b"batch:two");
+    }
+
+    #[tokio::test]
+    async fn grpc_service_bypasses_batcher_for_raw_requests() {
+        let mut hub = ServiceHub::new();
+        hub.register(BatchEchoService::new("echo", "embed"))
+            .unwrap();
+        let service = HubGrpcService::new(
+            std::sync::Arc::new(hub),
+            crate::daemon::BatcherConfig {
+                enabled: true,
+                max_batch_size: 8,
+                queue_latency: std::time::Duration::from_millis(1),
+            },
+        );
+
+        let response = service
+            .handle_messages(vec![infer_chunk(
+                "raw",
+                "embed",
+                "text/plain",
+                0,
+                1,
+                0,
+                b"hello",
+            )])
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert_eq!(response.result, b"single:hello");
+    }
+
+    #[tokio::test]
+    async fn grpc_service_bypasses_batcher_when_tensor_skip_is_false() {
+        let mut request = tensor_chunk("skip-false", "embed", b"hello");
+        request
+            .meta
+            .insert(META_PREPROCESS_SKIP.to_owned(), "false".to_owned());
+
+        let mut hub = ServiceHub::new();
+        hub.register(BatchEchoService::new("echo", "embed"))
+            .unwrap();
+        let service = HubGrpcService::new(
+            std::sync::Arc::new(hub),
+            crate::daemon::BatcherConfig {
+                enabled: true,
+                max_batch_size: 8,
+                queue_latency: std::time::Duration::from_millis(1),
+            },
+        );
+
+        let response = service
+            .handle_messages(vec![request])
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+
+        assert_eq!(response.result, b"single:hello");
     }
 
     #[test]
@@ -500,6 +642,17 @@ mod tests {
         }
     }
 
+    fn tensor_chunk(correlation_id: &str, task: &str, payload: &[u8]) -> v1::InferRequest {
+        let mut request = infer_chunk(correlation_id, task, DEFAULT_TENSOR_MIME, 0, 1, 0, payload);
+        request
+            .meta
+            .insert(META_INPUT_KIND.to_owned(), INPUT_KIND_TENSOR.to_owned());
+        request
+            .meta
+            .insert(META_PREPROCESS_SKIP.to_owned(), "true".to_owned());
+        request
+    }
+
     struct EchoService {
         name: String,
         tasks: TaskRegistry,
@@ -554,6 +707,82 @@ mod tests {
         async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
             Ok(TaskResult::new(request.payload, "text/plain")
                 .with_meta("handled_by", self.spec.name.clone()))
+        }
+    }
+
+    struct BatchEchoService {
+        name: String,
+        tasks: TaskRegistry,
+    }
+
+    impl BatchEchoService {
+        fn new(name: &str, task_name: &str) -> Self {
+            let mut tasks = TaskRegistry::new();
+            tasks.register(BatchEchoTask::new(task_name)).unwrap();
+            Self {
+                name: name.to_owned(),
+                tasks,
+            }
+        }
+    }
+
+    impl InferenceService for BatchEchoService {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn tasks(&self) -> &TaskRegistry {
+            &self.tasks
+        }
+
+        fn capability(&self) -> ServiceCapability {
+            self.tasks()
+                .build_capability(&self.name, vec!["batch-echo-model".to_owned()], "cpu")
+        }
+    }
+
+    struct BatchEchoTask {
+        spec: TaskSpec,
+    }
+
+    impl BatchEchoTask {
+        fn new(name: &str) -> Self {
+            Self {
+                spec: TaskSpec::new(name, "batch echo")
+                    .with_input_mimes([DEFAULT_TENSOR_MIME, "text/plain"])
+                    .with_output_mime("text/plain"),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl TaskHandler for BatchEchoTask {
+        fn spec(&self) -> &TaskSpec {
+            &self.spec
+        }
+
+        fn batch_key(&self, request: &TaskRequest) -> ServiceResult<Option<BatchKey>> {
+            if request.meta.get(META_PREPROCESS_SKIP).map(String::as_str) != Some("true") {
+                return Ok(None);
+            }
+            Ok(Some(BatchKey::new("batch-echo")))
+        }
+
+        async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
+            let mut payload = b"single:".to_vec();
+            payload.extend_from_slice(&request.payload);
+            Ok(TaskResult::new(payload, "text/plain"))
+        }
+
+        async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> {
+            Ok(requests
+                .into_iter()
+                .map(|request| {
+                    let mut payload = b"batch:".to_vec();
+                    payload.extend_from_slice(&request.payload);
+                    TaskResult::new(payload, "text/plain")
+                })
+                .collect())
         }
     }
 

@@ -14,10 +14,17 @@ use lumnn::core::{
 };
 use serde::{Deserialize, Deserializer, de};
 
-use crate::service::{ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult, TaskSpec};
+use crate::service::{
+    BatchKey, DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, META_INPUT_KIND, META_MODEL_ID,
+    META_MODEL_VERSION, ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult,
+    TaskSpec, TensorDescriptor, TensorValidationOptions, bytes_to_f16_le, bytes_to_f32_le,
+    validate_tensor_request,
+};
 
 const SUPPORTED_IMAGE_INPUT_MIMES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/avif"];
+const IMAGE_TENSOR_LAYOUT: &str = "NCHW";
+const CLIP_IMAGE_PREPROCESS_ID: &str = "clip_image_preprocess_v1";
 
 /// CLIP image preprocessing settings loaded from `model_info.json`
 /// `task_metadata.tasks.<image task>.preprocess`.
@@ -315,7 +322,7 @@ impl ClipImageEmbedTask {
         let output_name = output_name.into();
         Ok(Self {
             spec: TaskSpec::new(task_name, "CLIP vision encoder → L2-normalized embedding")
-                .with_input_mimes(SUPPORTED_IMAGE_INPUT_MIMES)
+                .with_input_mimes(image_input_mimes_with_tensor())
                 .with_output_mime("application/json;schema=embedding_v1"),
             pipeline: Arc::new(pipeline),
             context,
@@ -351,39 +358,111 @@ impl ClipImageEmbedTask {
 
         Ok(HashMap::from([(self.input_name.clone(), packet)]))
     }
-}
 
-#[async_trait]
-impl TaskHandler for ClipImageEmbedTask {
-    fn spec(&self) -> &TaskSpec {
-        &self.spec
-    }
-
-    async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
-        if !is_supported_image_input_mime(&request.payload_mime) {
+    fn tensor_input_descriptor(&self, request: &TaskRequest) -> ServiceResult<TensorDescriptor> {
+        let descriptor = validate_tensor_request(
+            request,
+            TensorValidationOptions {
+                dtype: ml_dtype_to_tensor_dtype(self.input_dtype)?,
+                layout: IMAGE_TENSOR_LAYOUT,
+                preprocess_id: CLIP_IMAGE_PREPROCESS_ID,
+            },
+        )?;
+        let expected_shape = self.preprocess.output_shape();
+        if descriptor.shape != expected_shape {
             return Err(ServiceError::InvalidArgument(format!(
-                "unsupported CLIP image input MIME `{}`; supported MIME types: {}",
-                request.payload_mime,
-                SUPPORTED_IMAGE_INPUT_MIMES.join(", ")
+                "CLIP image tensor shape must be {:?}, got {:?}",
+                expected_shape, descriptor.shape
             )));
         }
+        Ok(descriptor)
+    }
 
-        let input_packets = self.preprocess_image(&request.payload)?;
+    fn tensor_request_to_packet(&self, request: &TaskRequest) -> ServiceResult<MLPacket> {
+        let descriptor = self.tensor_input_descriptor(request)?;
+        let tensor = tensor_payload_to_host_tensor(&request.payload, self.input_dtype)?;
+        self.context
+            .packet_from_host_tensor(
+                MLPacketDescriptor::new(self.input_dtype, descriptor.shape),
+                tensor,
+            )
+            .map_err(ServiceError::Internal)
+    }
 
+    fn tensor_request_to_packets(
+        &self,
+        request: &TaskRequest,
+    ) -> ServiceResult<HashMap<String, MLPacket>> {
+        Ok(HashMap::from([(
+            self.input_name.clone(),
+            self.tensor_request_to_packet(request)?,
+        )]))
+    }
+
+    fn batched_tensor_packets(
+        &self,
+        requests: &[TaskRequest],
+    ) -> ServiceResult<HashMap<String, MLPacket>> {
+        let expected_shape = self.preprocess.output_shape();
+        let mut batched_shape = expected_shape.clone();
+        batched_shape[0] = requests.len();
+
+        let tensor = match self.input_dtype {
+            MLPacketDataType::Float32 => {
+                let mut values = Vec::new();
+                for request in requests {
+                    self.tensor_input_descriptor(request)?;
+                    values.extend(bytes_to_f32_le(&request.payload)?);
+                }
+                HostTensor::Float32(values)
+            }
+            MLPacketDataType::Float16 => {
+                let mut values = Vec::new();
+                for request in requests {
+                    self.tensor_input_descriptor(request)?;
+                    values.extend(bytes_to_f16_le(&request.payload)?);
+                }
+                HostTensor::Float16(values)
+            }
+            other => {
+                return Err(ServiceError::Internal(format!(
+                    "CLIP image ONNX input `{}` has unsupported dtype {:?}",
+                    self.input_name, other
+                )));
+            }
+        };
+
+        let packet = self
+            .context
+            .packet_from_host_tensor(
+                MLPacketDescriptor::new(self.input_dtype, batched_shape),
+                tensor,
+            )
+            .map_err(ServiceError::Internal)?;
+
+        Ok(HashMap::from([(self.input_name.clone(), packet)]))
+    }
+
+    async fn run_pipeline(
+        &self,
+        input_packets: HashMap<String, MLPacket>,
+    ) -> ServiceResult<MLPacket> {
         let mut outputs = self
             .pipeline
             .run(input_packets)
             .await
             .map_err(ServiceError::Internal)?;
 
-        let embedding_packet = outputs.remove(&self.output_name).ok_or_else(|| {
+        outputs.remove(&self.output_name).ok_or_else(|| {
             ServiceError::Internal(format!(
                 "pipeline output missing key `{}`",
                 self.output_name
             ))
-        })?;
+        })
+    }
 
-        let tensor = embedding_packet
+    async fn embedding_result_from_packet(&self, packet: MLPacket) -> ServiceResult<TaskResult> {
+        let tensor = packet
             .to_host_tensor()
             .await
             .map_err(ServiceError::Internal)?;
@@ -397,14 +476,96 @@ impl TaskHandler for ClipImageEmbedTask {
             }
         };
 
-        let json_bytes = embedding
-            .to_json_bytes()
-            .map_err(|err| ServiceError::Internal(err.to_string()))?;
+        embedding_json_result(embedding)
+    }
+}
 
-        Ok(
-            TaskResult::new(json_bytes, "application/json;schema=embedding_v1")
-                .with_result_schema("embedding_v1"),
-        )
+#[async_trait]
+impl TaskHandler for ClipImageEmbedTask {
+    fn spec(&self) -> &TaskSpec {
+        &self.spec
+    }
+
+    fn batch_key(&self, request: &TaskRequest) -> ServiceResult<Option<BatchKey>> {
+        if normalized_meta(request.meta.get(META_INPUT_KIND)).as_deref() != Some(INPUT_KIND_TENSOR)
+        {
+            return Ok(None);
+        }
+        let descriptor = self.tensor_input_descriptor(request)?;
+        Ok(Some(BatchKey::new(format!(
+            "model.id={}\nmodel.version={}\npayload_mime={}\ndtype={}\nshape_tail={:?}\nlayout={}\nformat={}\nbyte_order={}\npreprocess.id={}",
+            request
+                .meta
+                .get(META_MODEL_ID)
+                .map(String::as_str)
+                .unwrap_or(&self.model_id),
+            request
+                .meta
+                .get(META_MODEL_VERSION)
+                .map(String::as_str)
+                .unwrap_or(""),
+            DEFAULT_TENSOR_MIME,
+            descriptor.dtype,
+            &descriptor.shape[1..],
+            descriptor.layout,
+            descriptor.format,
+            descriptor.byte_order,
+            CLIP_IMAGE_PREPROCESS_ID
+        ))))
+    }
+
+    async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
+        if normalized_meta(request.meta.get(META_INPUT_KIND)).as_deref() == Some(INPUT_KIND_TENSOR)
+        {
+            let packet = self
+                .run_pipeline(self.tensor_request_to_packets(&request)?)
+                .await?;
+            return self.embedding_result_from_packet(packet).await;
+        }
+
+        if !is_supported_image_input_mime(&request.payload_mime) {
+            return Err(ServiceError::InvalidArgument(format!(
+                "unsupported CLIP image input MIME `{}`; supported MIME types: {}",
+                request.payload_mime,
+                SUPPORTED_IMAGE_INPUT_MIMES.join(", ")
+            )));
+        }
+
+        let input_packets = self.preprocess_image(&request.payload)?;
+        let packet = self.run_pipeline(input_packets).await?;
+        self.embedding_result_from_packet(packet).await
+    }
+
+    async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> {
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let batch_len = requests.len();
+        let packet = self
+            .run_pipeline(self.batched_tensor_packets(&requests)?)
+            .await?;
+        let (values, shape) = float32_values_and_shape(packet).await?;
+        if shape.first().copied() != Some(batch_len) {
+            return Err(ServiceError::Internal(format!(
+                "CLIP batch output shape {:?} does not match batch size {batch_len}",
+                shape
+            )));
+        }
+        let row_width = values.len().checked_div(batch_len).ok_or_else(|| {
+            ServiceError::Internal("CLIP batch output has invalid batch size".to_owned())
+        })?;
+        if row_width * batch_len != values.len() {
+            return Err(ServiceError::Internal(format!(
+                "CLIP batch output element count {} is not divisible by batch size {batch_len}",
+                values.len()
+            )));
+        }
+
+        values
+            .chunks(row_width)
+            .map(|row| embedding_json_result(EmbeddingV1::new(row.to_vec(), &self.model_id)))
+            .collect()
     }
 }
 
@@ -418,6 +579,67 @@ fn is_supported_image_input_mime(mime: &str) -> bool {
     SUPPORTED_IMAGE_INPUT_MIMES
         .iter()
         .any(|supported| *supported == base)
+}
+
+fn image_input_mimes_with_tensor() -> Vec<String> {
+    SUPPORTED_IMAGE_INPUT_MIMES
+        .iter()
+        .copied()
+        .chain(std::iter::once(DEFAULT_TENSOR_MIME))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn normalized_meta(value: Option<&String>) -> Option<String> {
+    value.map(|value| value.trim().to_ascii_lowercase())
+}
+
+fn ml_dtype_to_tensor_dtype(dtype: MLPacketDataType) -> ServiceResult<&'static str> {
+    match dtype {
+        MLPacketDataType::Float32 => Ok("fp32"),
+        MLPacketDataType::Float16 => Ok("fp16"),
+        other => Err(ServiceError::Internal(format!(
+            "unsupported image tensor dtype {other:?}"
+        ))),
+    }
+}
+
+fn tensor_payload_to_host_tensor(
+    payload: &[u8],
+    dtype: MLPacketDataType,
+) -> ServiceResult<HostTensor> {
+    match dtype {
+        MLPacketDataType::Float32 => Ok(HostTensor::Float32(bytes_to_f32_le(payload)?)),
+        MLPacketDataType::Float16 => Ok(HostTensor::Float16(bytes_to_f16_le(payload)?)),
+        other => Err(ServiceError::Internal(format!(
+            "unsupported image tensor dtype {other:?}"
+        ))),
+    }
+}
+
+async fn float32_values_and_shape(packet: MLPacket) -> ServiceResult<(Vec<f32>, Vec<usize>)> {
+    let shape = packet.descriptor.shape.clone();
+    let tensor = packet
+        .to_host_tensor()
+        .await
+        .map_err(ServiceError::Internal)?;
+    match tensor {
+        HostTensor::Float32(values) => Ok((values, shape)),
+        other => Err(ServiceError::Internal(format!(
+            "unexpected tensor type from CLIP pipeline: {other:?}"
+        ))),
+    }
+}
+
+fn embedding_json_result(embedding: EmbeddingV1) -> ServiceResult<TaskResult> {
+    let json_bytes = embedding
+        .to_json_bytes()
+        .map_err(|err| ServiceError::Internal(err.to_string()))?;
+
+    Ok(
+        TaskResult::new(json_bytes, "application/json;schema=embedding_v1")
+            .with_result_schema("embedding_v1"),
+    )
 }
 
 impl ClipTextEmbedTask {
@@ -541,9 +763,25 @@ impl TaskHandler for ClipTextEmbedTask {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use lumnn::core::{
+        context::{MLContext, MLContextOptions},
+        pipeline::MLPipeline,
+    };
     use serde_json::json;
 
-    use super::{ClipImagePreprocessConfig, is_supported_image_input_mime};
+    use crate::service::{
+        DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, META_INPUT_KIND, META_PREPROCESS_ID,
+        META_PREPROCESS_SKIP, META_TENSOR_BYTE_ORDER, META_TENSOR_DTYPE, META_TENSOR_FORMAT,
+        META_TENSOR_LAYOUT, META_TENSOR_SHAPE, TENSOR_BYTE_ORDER_LITTLE, TENSOR_FORMAT_CONTIGUOUS,
+        TaskHandler, TaskRequest, f32_to_le_bytes,
+    };
+
+    use super::{
+        CLIP_IMAGE_PREPROCESS_ID, ClipImageEmbedTask, ClipImagePreprocessConfig,
+        image_input_mimes_with_tensor, is_supported_image_input_mime,
+    };
 
     #[test]
     fn image_preprocess_config_parses_model_info_metadata() {
@@ -603,5 +841,73 @@ mod tests {
         assert!(!is_supported_image_input_mime("image/gif"));
         assert!(!is_supported_image_input_mime("image/*"));
         assert!(!is_supported_image_input_mime("application/octet-stream"));
+    }
+
+    #[test]
+    fn image_task_advertises_tensor_input_mime() {
+        assert!(image_input_mimes_with_tensor().contains(&DEFAULT_TENSOR_MIME.to_owned()));
+    }
+
+    #[test]
+    fn image_tensor_batch_key_validates_shape_and_preprocess_id() {
+        let task = test_image_task();
+        let request = tensor_request(vec![1, 3, 224, 224], CLIP_IMAGE_PREPROCESS_ID);
+
+        assert!(task.batch_key(&request).unwrap().is_some());
+
+        let wrong_shape = tensor_request(vec![1, 3, 112, 112], CLIP_IMAGE_PREPROCESS_ID);
+        assert!(task.batch_key(&wrong_shape).is_err());
+
+        let wrong_preprocess = tensor_request(vec![1, 3, 224, 224], "wrong_preprocess");
+        assert!(task.batch_key(&wrong_preprocess).is_err());
+    }
+
+    fn test_image_task() -> ClipImageEmbedTask {
+        let context = MLContext::new(MLContextOptions::default()).unwrap();
+        let pipeline = MLPipeline::new("test", Arc::clone(&context), Vec::new());
+        ClipImageEmbedTask::new(
+            "clip_image_embed",
+            pipeline,
+            context,
+            "clip-test",
+            vec!["pixel_values".to_owned()],
+            lumnn::core::packet::MLPacketDataType::Float32,
+            "embedding",
+            ClipImagePreprocessConfig::from_json_str(
+                &json!({
+                    "resize_shortest_edge": 224,
+                    "crop_size": { "width": 224, "height": 224 },
+                    "do_resize": true,
+                    "do_center_crop": true,
+                    "do_rescale": true,
+                    "do_normalize": true,
+                    "rescale_factor": 0.00392156862745098,
+                    "image_mean": [0.48145466, 0.4578275, 0.40821073],
+                    "image_std": [0.26862954, 0.26130258, 0.27577711],
+                    "resample": "bicubic",
+                    "color_space": "rgb",
+                    "layout": "nchw"
+                })
+                .to_string(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn tensor_request(shape: Vec<usize>, preprocess_id: &str) -> TaskRequest {
+        let element_count = shape.iter().product::<usize>();
+        TaskRequest::new(
+            f32_to_le_bytes(&vec![0.0; element_count]),
+            DEFAULT_TENSOR_MIME,
+        )
+        .with_meta(META_INPUT_KIND, INPUT_KIND_TENSOR)
+        .with_meta(META_TENSOR_DTYPE, "fp32")
+        .with_meta(META_TENSOR_SHAPE, serde_json::to_string(&shape).unwrap())
+        .with_meta(META_TENSOR_LAYOUT, "NCHW")
+        .with_meta(META_TENSOR_FORMAT, TENSOR_FORMAT_CONTIGUOUS)
+        .with_meta(META_TENSOR_BYTE_ORDER, TENSOR_BYTE_ORDER_LITTLE)
+        .with_meta(META_PREPROCESS_ID, preprocess_id)
+        .with_meta(META_PREPROCESS_SKIP, "true")
     }
 }

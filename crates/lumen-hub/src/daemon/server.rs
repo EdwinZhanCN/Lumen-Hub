@@ -1,11 +1,11 @@
-use std::{future::Future, net::SocketAddr, sync::Arc};
+use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
 use lumen_schema::ServerConfig;
 use tonic::transport::Server;
 
 use crate::{
     daemon::{
-        DaemonError, DaemonResult, HubGrpcService, MdnsAdvertisement,
+        BatcherConfig, DaemonError, DaemonResult, HubGrpcService, MdnsAdvertisement,
         proto::home_native::v1::inference_server::InferenceServer,
     },
     service::ServiceHub,
@@ -62,7 +62,10 @@ async fn serve_grpc_at_addr(
     tracing::info!(%addr, services = hub.len(), "starting Lumen gRPC server");
 
     Server::builder()
-        .add_service(InferenceServer::new(HubGrpcService::new(hub)))
+        .add_service(InferenceServer::new(HubGrpcService::new(
+            hub,
+            batcher_config(config),
+        )))
         .serve(addr)
         .await?;
 
@@ -82,11 +85,22 @@ where
     tracing::info!(%addr, services = hub.len(), "starting Lumen gRPC server");
 
     Server::builder()
-        .add_service(InferenceServer::new(HubGrpcService::new(hub)))
+        .add_service(InferenceServer::new(HubGrpcService::new(
+            hub,
+            batcher_config(config),
+        )))
         .serve_with_shutdown(addr, shutdown)
         .await?;
 
     Ok(())
+}
+
+fn batcher_config(config: &ServerConfig) -> BatcherConfig {
+    BatcherConfig {
+        enabled: config.batching.enabled,
+        max_batch_size: config.batching.max_batch_size,
+        queue_latency: Duration::from_millis(config.batching.queue_latency_ms),
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +150,7 @@ mod tests {
             port,
             host: host.to_owned(),
             mdns: None,
+            batching: Default::default(),
         }
     }
 }

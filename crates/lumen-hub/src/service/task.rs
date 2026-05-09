@@ -5,6 +5,19 @@ use bytes::Bytes;
 
 use crate::service::ServiceResult;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BatchKey(String);
+
+impl BatchKey {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskSpec {
     pub name: String,
@@ -116,5 +129,17 @@ impl TaskResult {
 pub trait TaskHandler: Send + Sync {
     fn spec(&self) -> &TaskSpec;
 
+    fn batch_key(&self, _request: &TaskRequest) -> ServiceResult<Option<BatchKey>> {
+        Ok(None)
+    }
+
     async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult>;
+
+    async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> {
+        let mut results = Vec::with_capacity(requests.len());
+        for request in requests {
+            results.push(self.handle(request).await?);
+        }
+        Ok(results)
+    }
 }

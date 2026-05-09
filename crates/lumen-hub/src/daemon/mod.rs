@@ -10,6 +10,7 @@ pub mod mdns;
 pub mod proto;
 pub mod server;
 
+pub use batcher::{BatchFn, Batcher, BatcherConfig};
 pub use error::{DaemonError, DaemonResult};
 pub use grpc::HubGrpcService;
 pub use mdns::{DEFAULT_MDNS_SERVICE_TYPE, MdnsAdvertisement};
