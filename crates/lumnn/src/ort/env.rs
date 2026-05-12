@@ -97,43 +97,117 @@ fn accelerated_execution_providers() -> Result<ExecutionProviderPlan, OrtEnvInit
 
     #[cfg(feature = "ort-tensorrt")]
     {
-        providers.push(ort::ep::TensorRT::default().build());
-        provider_names.push("TensorRT".to_owned());
+        let trt_cache = std::env::var("ORT_TRT_CACHE_DIR")
+            .unwrap_or_else(|_| ".cache/onnxruntime/tensorrt".to_owned());
+
+        providers.push(
+            ort::ep::TensorRT::default()
+                .with_device_id(0)
+                .with_fp16(true)
+                .with_int8(false)
+                .with_max_workspace_size(4usize * 1024 * 1024 * 1024)
+                .with_min_subgraph_size(3)
+                .with_max_partition_iterations(1000)
+                .with_engine_cache(true)
+                .with_engine_cache_path(&trt_cache)
+                .with_timing_cache(true)
+                .with_timing_cache_path(&trt_cache)
+                .with_builder_optimization_level(5)
+                .with_context_memory_sharing(true)
+                .with_layer_norm_fp32_fallback(true)
+                .with_build_heuristics(false)
+                .with_cuda_graph(false)
+                .with_sparsity(false)
+                .with_engine_hw_compatible(false)
+                .build(),
+        );
+        provider_names.push(format!("TensorRT(fp16,cache={trt_cache})"));
     }
 
     #[cfg(feature = "ort-cuda")]
     {
-        providers.push(ort::ep::CUDA::default().build());
-        provider_names.push("CUDA".to_owned());
+        providers.push(
+            ort::ep::CUDA::default()
+                .with_device_id(0)
+                .with_conv_algorithm_search(ort::ep::cuda::ConvAlgorithmSearch::Exhaustive)
+                .with_conv_max_workspace(true)
+                .with_tf32(true)
+                .with_cuda_graph(false)
+                .with_skip_layer_norm_strict_mode(false)
+                .with_fuse_conv_bias(true)
+                .build(),
+        );
+        provider_names.push("CUDA(tf32,exhaustive-cudnn)".to_owned());
     }
 
     #[cfg(feature = "ort-directml")]
     {
-        providers.push(ort::ep::DirectML::default().build());
-        provider_names.push("DirectML".to_owned());
+        providers.push(
+            ort::ep::DirectML::default()
+                .with_performance_preference(ort::ep::directml::PerformancePreference::HighPerformance)
+                .with_device_filter(ort::ep::directml::DeviceFilter::Gpu)
+                .build(),
+        );
+        provider_names.push("DirectML(high-performance-gpu)".to_owned());
     }
 
     #[cfg(feature = "ort-coreml")]
     {
-        providers.push(ort::ep::CoreML::default().build());
-        provider_names.push("CoreML".to_owned());
+        let coreml_cache = std::env::var("ORT_COREML_CACHE_DIR")
+            .unwrap_or_else(|_| ".cache/onnxruntime/coreml".to_owned());
+
+        providers.push(
+            ort::ep::CoreML::default()
+                .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+                .with_compute_units(ort::ep::coreml::ComputeUnits::All)
+                .with_static_input_shapes(false)
+                .with_subgraphs(false)
+                .with_specialization_strategy(
+                    ort::ep::coreml::SpecializationStrategy::FastPrediction,
+                )
+                .with_low_precision_accumulation_on_gpu(false)
+                .with_model_cache_directory(coreml_cache.clone())
+                .build(),
+        );
+        provider_names.push(format!("CoreML(MLProgram,ALL,cache={coreml_cache})"));
     }
 
     #[cfg(feature = "ort-openvino")]
     {
         let device = openvino_device();
-        providers.push(
-            ort::ep::OpenVINO::default()
-                .with_device_type(&device)
-                .build(),
-        );
-        provider_names.push(format!("OpenVINO({device})"));
+
+        let ov_cache = std::env::var("ORT_OPENVINO_CACHE_DIR")
+            .unwrap_or_else(|_| ".cache/onnxruntime/openvino".to_owned());
+        
+        let mut ep = ort::ep::OpenVINO::default()
+            .with_device_type(&device)
+            .with_cache_dir(&ov_cache)
+            .with_dynamic_shapes(true);
+
+        if device.contains("GPU") || device.contains("NPU") {
+            ep = ep.with_precision("FP16").with_num_streams(2);
+        } else if device.contains("CPU") {
+            ep = ep.with_precision("FP32");
+        }
+
+        providers.push(ep.build());
+        provider_names.push(format!("OpenVINO({device},cache={ov_cache})"));
     }
 
     #[cfg(feature = "ort-xnnpack")]
     {
-        providers.push(ort::ep::XNNPACK::default().build());
-        provider_names.push("XNNPACK".to_owned());
+        use std::num::NonZeroUsize;
+        let threads = std::thread::available_parallelism()
+            .ok()
+            .and_then(|n| NonZeroUsize::new(n.get()))
+            .unwrap_or_else(|| NonZeroUsize::new(1).unwrap());
+
+        providers.push(
+            ort::ep::XNNPACK::default()
+                .with_intra_op_num_threads(threads)
+                .build(),
+        );
+        provider_names.push(format!("XNNPACK({threads} threads)"));
     }
 
     if providers.is_empty() {
@@ -142,6 +216,7 @@ fn accelerated_execution_providers() -> Result<ExecutionProviderPlan, OrtEnvInit
 
     Ok((providers, provider_names))
 }
+
 
 fn ort_environment_builder() -> Result<EnvironmentBuilder, OrtEnvInitError> {
     #[cfg(feature = "ort-load-dynamic")]

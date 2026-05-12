@@ -12,6 +12,8 @@ use std::{
 
 #[cfg(feature = "clip")]
 use lumen_hub::models::clip::ClipService;
+#[cfg(feature = "fastvlm")]
+use lumen_hub::models::fastvlm::FastVlmService;
 #[cfg(feature = "siglip")]
 use lumen_hub::models::siglip::SiglipService;
 use lumen_hub::{
@@ -19,7 +21,7 @@ use lumen_hub::{
     service::ServiceHub,
 };
 use lumen_schema::{ConfigValidationError, LumenConfig, Mode, ServerConfig};
-#[cfg(any(feature = "clip", feature = "siglip"))]
+#[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip"))]
 use lumnn::core::context::{MLContext, MLContextOptions};
 use thiserror::Error;
 use tracing::{
@@ -162,10 +164,10 @@ fn load_config(path: &PathBuf) -> StartupResult<LumenConfig> {
 }
 
 fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceHub> {
-    #[cfg(any(feature = "clip", feature = "siglip"))]
+    #[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip"))]
     let context = MLContext::new(MLContextOptions::default()).map_err(StartupError::ContextInit)?;
 
-    #[cfg(any(feature = "clip", feature = "siglip"))]
+    #[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip"))]
     let cache_dir = expand_tilde(&config.metadata.cache_dir);
 
     let requested_services = config
@@ -174,7 +176,10 @@ fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceH
         .map(str::to_owned)
         .collect::<Vec<_>>();
 
-    #[cfg_attr(not(any(feature = "clip", feature = "siglip")), allow(unused_mut))]
+    #[cfg_attr(
+        not(any(feature = "clip", feature = "fastvlm", feature = "siglip")),
+        allow(unused_mut)
+    )]
     let mut hub = ServiceHub::new();
 
     for service_name in &requested_services {
@@ -208,6 +213,31 @@ fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceH
                 return Err(StartupError::PackageDisabled {
                     package: svc_config.package.clone(),
                     feature: "clip",
+                });
+            }
+            #[cfg(feature = "fastvlm")]
+            "fastvlm" | "lumen_fastvlm" => {
+                let service = FastVlmService::from_config(
+                    service_name,
+                    svc_config,
+                    &cache_dir,
+                    Arc::clone(&context),
+                )
+                .map_err(|e| StartupError::ServiceConstruction {
+                    service: service_name.to_owned(),
+                    message: e.to_string(),
+                })?;
+                hub.register(service)
+                    .map_err(|e| StartupError::ServiceConstruction {
+                        service: service_name.to_owned(),
+                        message: e.to_string(),
+                    })?;
+            }
+            #[cfg(not(feature = "fastvlm"))]
+            "fastvlm" | "lumen_fastvlm" => {
+                return Err(StartupError::PackageDisabled {
+                    package: svc_config.package.clone(),
+                    feature: "fastvlm",
                 });
             }
             #[cfg(feature = "siglip")]
@@ -246,7 +276,7 @@ fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceH
     Ok(hub)
 }
 
-#[cfg(any(feature = "clip", feature = "siglip", test))]
+#[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip", test))]
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix('~')
         && let Ok(home) = env::var("HOME")
@@ -518,7 +548,11 @@ enum StartupError {
     #[error("unknown service package `{package}`")]
     UnknownPackage { package: String },
 
-    #[cfg(any(not(feature = "clip"), not(feature = "siglip")))]
+    #[cfg(any(
+        not(feature = "clip"),
+        not(feature = "fastvlm"),
+        not(feature = "siglip")
+    ))]
     #[error(
         "service package `{package}` was not enabled at compile time; rebuild with feature `{feature}`"
     )]
@@ -527,7 +561,7 @@ enum StartupError {
         feature: &'static str,
     },
 
-    #[cfg(any(feature = "clip", feature = "siglip"))]
+    #[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip"))]
     #[error("failed to construct service `{service}`: {message}")]
     ServiceConstruction { service: String, message: String },
 

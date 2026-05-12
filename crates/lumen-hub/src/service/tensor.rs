@@ -142,6 +142,14 @@ pub fn f32_to_le_bytes(values: &[f32]) -> Bytes {
     Bytes::from(bytes)
 }
 
+pub fn f16_to_le_bytes(values: &[half::f16]) -> Bytes {
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
+    for value in values {
+        bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
+    Bytes::from(bytes)
+}
+
 pub fn i64_to_le_bytes(values: &[i64]) -> Bytes {
     let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<i64>());
     for value in values {

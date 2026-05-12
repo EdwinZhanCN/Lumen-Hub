@@ -21,6 +21,6 @@ pub use tensor::{
     META_PREPROCESS_ID, META_PREPROCESS_SKIP, META_TENSOR_BYTE_ORDER, META_TENSOR_DTYPE,
     META_TENSOR_FORMAT, META_TENSOR_LAYOUT, META_TENSOR_SHAPE, OUTPUT_KIND_TENSOR,
     TENSOR_BYTE_ORDER_LITTLE, TENSOR_FORMAT_CONTIGUOUS, TensorDescriptor, TensorValidationOptions,
-    bytes_to_f16_le, bytes_to_f32_le, bytes_to_i64_le, f32_to_le_bytes, i64_to_le_bytes,
-    tensor_response_meta, validate_tensor_request,
+    bytes_to_f16_le, bytes_to_f32_le, bytes_to_i64_le, f16_to_le_bytes, f32_to_le_bytes,
+    i64_to_le_bytes, tensor_response_meta, validate_tensor_request,
 };

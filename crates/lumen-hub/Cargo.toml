@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = ["clip", "siglip", "profile-cpu-portable"]
 clip = []
+fastvlm = []
 siglip = []
 ort-download-binaries = ["lumnn/ort-download-binaries"]
 ort-load-dynamic = ["lumnn/ort-load-dynamic"]

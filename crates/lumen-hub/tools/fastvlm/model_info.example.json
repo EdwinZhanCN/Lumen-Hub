@@ -1,0 +1,26 @@
+{
+  "name": "fastvlm-0-5b",
+  "version": "1.0.0",
+  "description": "FastVLM 0.5B deployment assets for image-conditioned text generation.",
+  "model_type": "fastvlm",
+  "source": {
+    "format": "huggingface",
+    "repo_id": "apple/FastVLM-0.5B"
+  },
+  "runtimes": {
+    "onnx": {
+      "available": true,
+      "components": ["vision", "embed", "decoder"],
+      "precisions": ["fp32", "fp16"]
+    }
+  },
+  "task_metadata": {
+    "tasks": {
+      "vlm_embeds": {
+        "components": ["vision", "embed"],
+        "output_name": "merged_inputs_embeds",
+        "preprocess_id": "fastvlm_image_preprocess_v1"
+      }
+    }
+  }
+}

@@ -47,14 +47,14 @@ use crate::core::packet::{MLPacket, MLPacketDescriptor};
 ///    connectivity before execution.
 /// 2. **Execution** — the pipeline calls `execute()` with a `HashMap` of
 ///    named inputs. The node consumes those packets, performs its computation
-///    (which may involve GPU work, ONNX Runtime sessions, or pure CPU math),
+///    (which may involve accelerated runtime work or pure CPU math),
 ///    and returns a `HashMap` of named outputs.
 ///
 /// # Concurrency
 ///
 /// The supertraits `Send + Sync` mean a single `Arc<dyn MLNode>` can be
 /// invoked concurrently from multiple pipelines or multiple async tasks.
-/// Implementations that hold mutable state internally (e.g., an ONNX Runtime
+/// Implementations that hold mutable state internally (for example, a model
 /// session) must use interior mutability ([`std::sync::Mutex`], [`tokio::sync::Mutex`],
 /// etc.) to uphold the `&self` contract.
 ///
@@ -62,10 +62,9 @@ use crate::core::packet::{MLPacket, MLPacketDescriptor};
 ///
 /// Concrete implementations fall into two categories:
 ///
-/// * **Model nodes** — wrap a serialized model (ONNX, Candle, etc.), parse its
+/// * **Model nodes** — wrap a serialized model, parse its
 ///   I/O signatures to populate descriptors, and run inference on each
-///   `execute()` call. Examples: [`OrtNode`](crate::ort::node::OrtNode),
-///   [`CandleOnnxNode`](crate::candle::node::CandleOnnxNode).
+///   `execute()` call.
 /// * **Operator nodes** — perform a specific mathematical or data-movement
 ///   operation directly on host tensors, without a separate model file.
 ///   Example: [`NdArrayNode`](crate::ndarray::node::NdArrayNode).
@@ -210,7 +209,7 @@ pub trait MLNode: Send + Sync {
 /// ```
 /// use std::sync::Arc;
 /// use lumnn::core::node::MLNodeRef;
-/// // OrtNode, CandleOnnxNode, NdArrayNode, and any custom MLNode
+/// // Any concrete MLNode implementation can be stored behind MLNodeRef.
 /// // implementation can all be stored in an MLNodeRef.
 /// fn register(name: &str, node: MLNodeRef) {
 ///     println!("registered node `{name}`");

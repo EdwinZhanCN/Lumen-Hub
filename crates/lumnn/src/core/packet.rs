@@ -361,7 +361,7 @@ impl HostTensor {
 /// Abstraction over backend-specific tensor payloads.
 ///
 /// Implementations live in backend crates and wrap device-resident tensors
-/// (ORT values, Candle tensors, etc.). The trait lets [`MLPacket`] store a
+/// (accelerator buffers, runtime tensors, etc.). The trait lets [`MLPacket`] store a
 /// heterogeneous payload without knowing the concrete backend type.
 ///
 /// The default implementation is [`HostTensor`], which represents CPU-resident
