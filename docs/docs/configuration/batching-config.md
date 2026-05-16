@@ -2,11 +2,11 @@
 sidebar_position: 2
 ---
 
-# 批处理配置
+# Batching Config
 
-`BatchingConfig` 控制 daemon 层的动态请求批处理行为。
+`BatchingConfig` controls the daemon layer's dynamic request batching behaviour.
 
-## 配置示例
+## Example
 
 ```json
 {
@@ -20,15 +20,15 @@ sidebar_position: 2
 }
 ```
 
-## 字段说明
+## Fields
 
-| 字段 | 类型 | 默认值 | 说明 |
+| Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | bool | `true` | 全局批处理开关 |
-| `max_batch_size` | usize | `8` | 单批次最多合并的请求数，最小值为 1 |
-| `queue_latency_ms` | u64 | `2` | 首个请求入队后最多等待的时间（毫秒），最小值为 1 |
+| `enabled` | bool | `true` | Global batching toggle |
+| `max_batch_size` | usize | `8` | Max requests merged per batch (minimum: 1) |
+| `queue_latency_ms` | u64 | `2` | Max wait after first request enqueues, in ms (minimum: 1) |
 
-## 生效流程
+## Flow
 
 ```
 LumenConfig::from_json_str(json)
@@ -39,25 +39,25 @@ LumenConfig::from_json_str(json)
       → Batcher::new(batching)
 ```
 
-## 调优建议
+## Tuning Recommendations
 
-| 场景 | `max_batch_size` | `queue_latency_ms` |
+| Scenario | `max_batch_size` | `queue_latency_ms` |
 |---|---|---|
-| 高吞吐 GPU 推理 | 16-32 | 5-10ms |
-| 低延迟要求 | 2-4 | 1ms |
-| CPU 推理 | 1-2 | 1ms |
-| 禁用批处理 | — | 设置 `enabled: false` |
+| High-throughput GPU | 16–32 | 5–10 ms |
+| Low-latency required | 2–4 | 1 ms |
+| CPU inference | 1–2 | 1 ms |
+| Disable batching | — | Set `enabled: false` |
 
-## 覆盖批处理
+## Bypassing Batching
 
-即使 `enabled: true`，以下情况也不会批处理：
+Even with `enabled: true`, batching is skipped when:
 
-1. 请求不是张量输入（`lumen.input.kind != "tensor"`）
-2. 请求需要预处理（`lumen.preprocess.skip != "true"`）
-3. 任务未实现 `batch_key()`（返回 `None`）
+1. Request input is not a tensor (`lumen.input.kind != "tensor"`)
+2. Request requires preprocessing (`lumen.preprocess.skip != "true"`)
+3. Task doesn't implement `batch_key()` (returns `None`)
 
-## 关键代码
+## Key Source
 
-- `crates/lumen-schema/src/config/lumen_config.rs` — `BatchingConfig` 定义
+- `crates/lumen-schema/src/config/lumen_config.rs` — `BatchingConfig` definition
 - `crates/lumen-hub/src/daemon/batcher.rs` — `Batcher::new(config)`
 - `crates/lumen-hub/src/daemon/grpc.rs` — `is_batch_wire_eligible()`

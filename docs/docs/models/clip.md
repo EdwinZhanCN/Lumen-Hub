@@ -4,34 +4,52 @@ sidebar_position: 1
 
 # CLIP
 
-OpenAI CLIP 视觉-文本对齐模型。
+CLIP dual-encoder service for text and image embeddings.
 
-## 任务
+## Repository Layout
 
-| 任务名 | 输入 | 输出 | 支持批处理 |
-|---|---|---|---|
-| `image_embed` | 图像文件 (JPEG/PNG/WebP/AVIF) 或预处理张量 | L2 归一化嵌入向量 | ✅ 仅张量 |
-| `text_embed` | 文本字符串 | L2 归一化嵌入向量 | ❌ |
+```text
+{cache_dir}/{model_name}/
+├── model_info.json
+├── tokenizer.json
+└── onnx/
+    ├── text.fp32.onnx
+    ├── text.fp16.onnx
+    ├── vision.fp32.onnx
+    └── vision.fp16.onnx
+```
 
-## 预处理
+| Path | Required | Purpose |
+|------|----------|---------|
+| `model_info.json` | yes | Runtime metadata SSOT |
+| `tokenizer.json` | text task only | Tokenizer artifact |
+| `{runtime}/{component}.{precision}.{ext}` | yes | Model artifact |
 
-图像预处理参数由 `model_info.json` 中的 `task_metadata.tasks.<task>.preprocess` 定义：
+Complete example: [`crates/lumen-hub/tools/clip/model_info.example.json`](https://github.com/lumen-rs/lumen-rs/blob/main/crates/lumen-hub/tools/clip/model_info.example.json)
 
-- `resize` — 最长边缩放目标
-- `center_crop` — 中心裁剪尺寸
-- `mean` / `std` — 归一化参数
+## Runtime Metadata
 
-## 批处理
+Runtime reads `model_info.json.task_metadata` and consumes these fields:
 
-`ClipImageEmbedTask` 覆盖了 `batch_key()` 和 `handle_batch()`：
+| Field | Required | Purpose |
+|------|----------|---------|
+| `tasks` | yes | Task definitions keyed by task name |
+| `tasks.<task>.component` | yes | `text` or `vision` |
+| `tasks.<task>.input_names` | yes | Model input names |
+| `tasks.<task>.output_name` | yes | Primary embedding output |
+| `tasks.<task>.preprocess` | image task only | Image preprocessing contract |
 
-- `batch_key()` 返回模型 ID + 版本 + 张量形状 + 数据类型，确保兼容
-- `handle_batch()` 沿 batch 维度（NCHW 的第一个维度）拼接多个 `[C, H, W]` 张量为 `[N, C, H, W]`
+`embedding_dim` is optional descriptive metadata. Runtime does not require it.
 
-## 关键文件
+## Tasks
 
-- `crates/lumen-hub/src/models/clip/task.rs` — TaskHandler 实现
-- `crates/lumen-hub/src/models/clip/pipeline.rs` — 推理管线
-- `crates/lumen-hub/src/models/clip/nodes.rs` — L2NormalizeNode
-- `crates/lumen-hub/src/models/clip/service.rs` — InferenceService
-- `crates/lumen-hub/src/models/clip/factory.rs` — ModelFactory
+| Task | Input | Output | Uses |
+|------|-------|--------|------|
+| `semantic_text_embed` | `text/plain` | `application/json;schema=embedding_v1` | `tokenizer.json` + `text.{precision}.{ext}` |
+| `semantic_image_embed` | `image/jpeg`, `image/png`, `image/webp`, `image/avif`, `application/octet-stream` | `application/json;schema=embedding_v1` | `vision.{precision}.{ext}` |
+
+## Limits
+
+- Image tensor input must match the declared preprocess contract.
+- Image preprocess metadata is required for image tasks.
+- Path convention is fixed to `{cache_dir}/{model_name}/{runtime}/{component}.{precision}.{ext}`.

@@ -38,7 +38,7 @@ struct ClipTaskConfig {
 /// CLIP inference service.
 ///
 /// Created from a `ServiceConfig` and `model_info.json`. Each model alias in
-/// the config may expose one or both of `text_embed` / `image_embed` tasks.
+/// the config may expose one or both of `semantic_text_embed` / `semantic_image_embed` tasks.
 pub struct ClipService {
     name: String,
     tasks: TaskRegistry,
@@ -110,9 +110,8 @@ impl ClipService {
                         )
                         .map_err(ServiceError::Internal)?;
 
-                        let task_name = format!("{}_{}", alias, task_key);
                         let task = ClipTextEmbedTask::new(
-                            task_name,
+                            "semantic_text_embed",
                             pipeline,
                             Arc::clone(&context),
                             model_name,
@@ -187,9 +186,8 @@ impl ClipService {
                         )
                         .map_err(ServiceError::Internal)?;
 
-                        let task_name = format!("{}_{}", alias, task_key);
                         let task = ClipImageEmbedTask::new(
-                            task_name,
+                            "semantic_image_embed",
                             pipeline,
                             Arc::clone(&context),
                             model_name,
@@ -249,7 +247,7 @@ mod tests {
         let clip_meta: ClipTaskMetadata = serde_json::from_value(raw_meta).unwrap();
 
         assert_eq!(clip_meta.embedding_dim, None);
-        let image_task = clip_meta.tasks.get("image_embed").unwrap();
+        let image_task = clip_meta.tasks.get("semantic_image_embed").unwrap();
         let preprocess = image_task.preprocess.as_ref().unwrap();
         assert_eq!(preprocess.output_shape(), vec![1, 3, 224, 224]);
     }

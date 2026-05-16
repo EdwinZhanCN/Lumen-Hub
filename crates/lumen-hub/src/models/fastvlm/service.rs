@@ -6,7 +6,7 @@ use lumnn::core::{context::MLContext, node::MLNodeRef};
 use super::{
     factory::FastVlmModelFactory,
     metadata::METADATA,
-    task::{FASTVLM_PREPROCESS_ID, FastVlmEmbedsTask},
+    task::{FASTVLM_PREPROCESS_ID, FastVlmDecodeTask, FastVlmEmbedsTask},
 };
 use crate::service::{
     InferenceService, ServiceCapability, ServiceError, ServiceResult, TaskRegistry,
@@ -71,19 +71,42 @@ impl FastVlmService {
                 precision,
                 &context,
             )?;
+            let decoder_node = factory.create_component(
+                model_name,
+                model_config.runtime,
+                "decoder",
+                precision,
+                &context,
+            )?;
 
-            validate_component_io(model_name, vision_node.as_ref(), embed_node.as_ref())?;
+            validate_component_io(
+                model_name,
+                vision_node.as_ref(),
+                embed_node.as_ref(),
+                decoder_node.as_ref(),
+            )?;
 
             let vision_node: MLNodeRef = Arc::from(vision_node);
             let embed_node: MLNodeRef = Arc::from(embed_node);
+            let decoder_node: MLNodeRef = Arc::from(decoder_node);
 
             let task = FastVlmEmbedsTask::new(
-                format!("{}_vlm_embeds", alias),
+                "vlm_embeds",
                 Arc::clone(&context),
                 model_name,
                 &model_info.version,
                 vision_node,
+                Arc::clone(&embed_node),
+                factory.load_tokenizer(model_name)?,
+            )?;
+            tasks.register(task)?;
+            let task = FastVlmDecodeTask::new(
+                "vlm_decode",
+                Arc::clone(&context),
+                model_name,
+                &model_info.version,
                 embed_node,
+                decoder_node,
                 factory.load_tokenizer(model_name)?,
             )?;
             tasks.register(task)?;
@@ -132,6 +155,7 @@ fn validate_component_io(
     model_name: &str,
     vision_node: &dyn lumnn::core::node::MLNode,
     embed_node: &dyn lumnn::core::node::MLNode,
+    decoder_node: &dyn lumnn::core::node::MLNode,
 ) -> ServiceResult<()> {
     let vision_input = vision_node
         .input_descriptors()
@@ -179,6 +203,73 @@ fn validate_component_io(
                 METADATA.embed_output_name
             ))
         })?;
+
+    let decoder_inputs_embeds = decoder_node
+        .input_descriptors()
+        .get(METADATA.decoder_input_name)
+        .ok_or_else(|| {
+            ServiceError::InvalidArgument(format!(
+                "model `{model_name}` decoder component missing input `{}`",
+                METADATA.decoder_input_name
+            ))
+        })?;
+    if decoder_inputs_embeds.shape.len() != 3
+        || decoder_inputs_embeds.shape[2] != METADATA.hidden_size
+    {
+        return Err(ServiceError::InvalidArgument(format!(
+            "model `{model_name}` decoder input `{}` must be [B,S,{}], got {:?}",
+            METADATA.decoder_input_name, METADATA.hidden_size, decoder_inputs_embeds.shape
+        )));
+    }
+    decoder_node
+        .input_descriptors()
+        .get(METADATA.decoder_attention_mask_name)
+        .ok_or_else(|| {
+            ServiceError::InvalidArgument(format!(
+                "model `{model_name}` decoder component missing input `{}`",
+                METADATA.decoder_attention_mask_name
+            ))
+        })?;
+    decoder_node
+        .input_descriptors()
+        .get(METADATA.decoder_position_ids_name)
+        .ok_or_else(|| {
+            ServiceError::InvalidArgument(format!(
+                "model `{model_name}` decoder component missing input `{}`",
+                METADATA.decoder_position_ids_name
+            ))
+        })?;
+    decoder_node
+        .output_descriptors()
+        .get(METADATA.decoder_output_name)
+        .ok_or_else(|| {
+            ServiceError::InvalidArgument(format!(
+                "model `{model_name}` decoder component missing output `{}`",
+                METADATA.decoder_output_name
+            ))
+        })?;
+
+    let past_count = decoder_node
+        .input_descriptors()
+        .keys()
+        .filter(|name| name.starts_with("past_key_values."))
+        .count();
+    let present_count = decoder_node
+        .output_descriptors()
+        .keys()
+        .filter(|name| name.starts_with("present."))
+        .count();
+    let expected_kv_count = METADATA.kv_cache.num_layers * 2;
+    if past_count != expected_kv_count {
+        return Err(ServiceError::InvalidArgument(format!(
+            "model `{model_name}` decoder component must expose {expected_kv_count} past_kv inputs, got {past_count}"
+        )));
+    }
+    if present_count != expected_kv_count {
+        return Err(ServiceError::InvalidArgument(format!(
+            "model `{model_name}` decoder component must expose {expected_kv_count} present outputs, got {present_count}"
+        )));
+    }
 
     let _ = FASTVLM_PREPROCESS_ID;
     Ok(())

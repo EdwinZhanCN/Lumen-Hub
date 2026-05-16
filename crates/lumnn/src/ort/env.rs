@@ -144,7 +144,9 @@ fn accelerated_execution_providers() -> Result<ExecutionProviderPlan, OrtEnvInit
     {
         providers.push(
             ort::ep::DirectML::default()
-                .with_performance_preference(ort::ep::directml::PerformancePreference::HighPerformance)
+                .with_performance_preference(
+                    ort::ep::directml::PerformancePreference::HighPerformance,
+                )
                 .with_device_filter(ort::ep::directml::DeviceFilter::Gpu)
                 .build(),
         );
@@ -178,7 +180,7 @@ fn accelerated_execution_providers() -> Result<ExecutionProviderPlan, OrtEnvInit
 
         let ov_cache = std::env::var("ORT_OPENVINO_CACHE_DIR")
             .unwrap_or_else(|_| ".cache/onnxruntime/openvino".to_owned());
-        
+
         let mut ep = ort::ep::OpenVINO::default()
             .with_device_type(&device)
             .with_cache_dir(&ov_cache)
@@ -216,7 +218,6 @@ fn accelerated_execution_providers() -> Result<ExecutionProviderPlan, OrtEnvInit
 
     Ok((providers, provider_names))
 }
-
 
 fn ort_environment_builder() -> Result<EnvironmentBuilder, OrtEnvInitError> {
     #[cfg(feature = "ort-load-dynamic")]

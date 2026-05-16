@@ -836,7 +836,7 @@ mod tests {
         let context = MLContext::new(MLContextOptions::default()).unwrap();
         let pipeline = MLPipeline::new("test", Arc::clone(&context), Vec::new());
         SiglipImageEmbedTask::new(
-            "siglip_image_embed",
+            "semantic_image_embed",
             pipeline,
             context,
             "siglip-test",

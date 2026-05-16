@@ -2,11 +2,11 @@
 sidebar_position: 4
 ---
 
-# 模型集成模式
+# Model Integration Pattern
 
-每个模型在 Lumen Hub 中遵循统一的集成模式：**Factory → Service → Pipeline → Task**。
+Every model in Lumen Hub follows the same integration pattern: **Factory → Service → Pipeline → Task**.
 
-## 模式概览
+## Pattern Overview
 
 ```mermaid
 graph TD
@@ -15,31 +15,31 @@ graph TD
     ISvc --> Capability[ServiceCapability]
     Registry --> TH1[TaskHandler]
     Registry --> TH2[TaskHandler ...]
-    TH1 -->|handle| Single[单请求推理]
-    TH1 -->|batch_key| BCompat[批处理兼容性标识]
-    TH1 -->|handle_batch| Batch[批量推理]
+    TH1 -->|handle| Single[Single-request inference]
+    TH1 -->|batch_key| BCompat[Batching compatibility key]
+    TH1 -->|handle_batch| Batch[Batched inference]
     TH1 --> Pipeline[MLPipeline]
-    Pipeline --> Backend[ONNX / Candle 管线]
+    Pipeline --> Backend[ONNX / Candle pipeline]
 ```
 
 ## 1. ModelFactory (`factory.rs`)
 
-实现 `ModelFactory` trait，负责：
-- 模型文件发现和加载
-- 设备选择（CPU/CUDA/Metal）
-- 设置模型上下文（输入/输出名称、dtype、形状约束）
+Implements the `ModelFactory` trait. Responsibilities:
+- Discover and load model files
+- Select device (CPU/CUDA/Metal)
+- Set model context (input/output names, dtype, shape constraints)
 
 ```rust
 impl ModelFactory for ClipModelFactory {
     fn build(&self, config: &str, context: Arc<MLContext>) -> ServiceResult<InferenceServiceInstance> {
-        // 加载 ONNX 模型 → 创建 ClipService
+        // Load ONNX model → create ClipService
     }
 }
 ```
 
 ## 2. InferenceService (`service.rs`)
 
-服务的入口点，实现 `InferenceService` trait：
+The entry point for a service. Implements the `InferenceService` trait:
 
 ```rust
 pub trait InferenceService: Send + Sync {
@@ -49,11 +49,11 @@ pub trait InferenceService: Send + Sync {
 }
 ```
 
-一个 `InferenceService` 可以包含多个任务（如 CLIP 的图像嵌入 + 文本嵌入）。
+One `InferenceService` can contain multiple tasks (e.g., CLIP image embedding + text embedding).
 
 ## 3. Pipeline (`pipeline.rs`)
 
-将模型 forward + 后处理节点连接成 `MLPipeline`：
+Connects model forward pass and postprocessing nodes into an `MLPipeline`:
 
 ```mermaid
 flowchart LR
@@ -62,24 +62,24 @@ flowchart LR
     L2 --> Output[Output embedding]
 ```
 
-Pipeline 由 `lumnn` 提供，支持 ONNX 和 Candle 后端。
+Pipeline is provided by `lumnn` and supports ONNX and Candle backends.
 
 ## 4. TaskHandler (`task.rs`)
 
-每个任务实现 `TaskHandler` trait：
+Each task implements the `TaskHandler` trait:
 
 ```rust
 pub trait TaskHandler: Send + Sync {
     fn spec(&self) -> &TaskSpec;
 
-    // 默认返回 None（不参与批处理）
+    // Default: returns None (opts out of batching)
     fn batch_key(&self, request: &TaskRequest) -> ServiceResult<Option<BatchKey>> {
         Ok(None)
     }
 
     async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult>;
 
-    // 默认逐个调用 handle()
+    // Default: calls handle() one by one
     async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> {
         let mut results = Vec::with_capacity(requests.len());
         for request in requests {
@@ -90,26 +90,26 @@ pub trait TaskHandler: Send + Sync {
 }
 ```
 
-**要支持批处理，模型需要覆盖两个方法**：
+**To support batching, a model must override two methods:**
 
-- `batch_key()` — 返回张量形状/数据类型/模型标识，确保只有兼容的请求合并
-- `handle_batch()` — 沿 batch 维度拼接张量，一次 forward，拆分结果
+- `batch_key()` — Returns tensor shape/dtype/model identifier, ensuring only compatible requests merge
+- `handle_batch()` — Concatenate tensors along the batch dimension, run one forward pass, split results
 
-## 现有模型
+## Existing Models
 
-| 模型 | 任务 | 支持批处理 | 后端 |
+| Model | Tasks | Batching | Backend |
 |---|---|---|---|
-| CLIP | `image_embed`, `text_embed` | ✅ 图像张量 | ONNX |
-| SigLIP | `image_embed`, `text_embed` | ✅ 图像张量 | ONNX |
-| FastVLM | 规划中 | 规划中 | — |
+| CLIP | `image_embed`, `text_embed` | ✅ Image tensors | ONNX |
+| SigLIP | `image_embed`, `text_embed` | ✅ Image tensors | ONNX |
+| FastVLM | Planning | Planning | — |
 
-## 添加新模型清单
+## Checklist for Adding a New Model
 
-1. 在 `models/<name>/` 创建目录
-2. 实现 `ModelFactory`（加载模型、创建设备上下文）
-3. 实现 `InferenceService`（包装 `TaskRegistry`）
-4. 实现 `Pipeline`（拼接 forward + 后处理节点）
-5. 实现 `TaskHandler`（单请求推理；可选覆盖 `batch_key` + `handle_batch`）
-6. 在 `models/mod.rs` 添加模块
-7. 在 `Cargo.toml` 添加 feature gate
-8. 在 `LumenConfig` 中注册服务名
+1. Create directory at `models/<name>/`
+2. Implement `ModelFactory` (load model, create device context)
+3. Implement `InferenceService` (wrap `TaskRegistry`)
+4. Implement `Pipeline` (compose forward + postprocessing nodes)
+5. Implement `TaskHandler` (single-request inference; optionally override `batch_key` + `handle_batch`)
+6. Add module in `models/mod.rs`
+7. Add feature gate in `Cargo.toml`
+8. Register service name in `LumenConfig`

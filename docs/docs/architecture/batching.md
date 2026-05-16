@@ -2,41 +2,41 @@
 sidebar_position: 3
 ---
 
-# 批处理设计
+# Batching Design
 
-动态批处理是 Lumen Hub 的核心性能特性，允许将多个兼容的推理请求合并为一个批次执行，提升 GPU/ONNX 吞吐。
+Dynamic batching is a core performance feature of Lumen Hub. It merges compatible inference requests into a single batch, improving GPU/ONNX throughput.
 
-## 设计目标
+## Design Goals
 
-- **零侵入**：不强迫所有任务参与批处理。`TaskHandler` 提供默认的 `batch_key() → None`（即"不参与"）
-- **可配置**：通过 `BatchingConfig` 控制开关、批次大小、等待时长
-- **按需分组**：不同模型/任务的请求自动隔离，不会混批
+- **Zero-intrusion**: Not all tasks must participate. `TaskHandler` defaults `batch_key()` to `None` ("opt out")
+- **Configurable**: The `BatchingConfig` controls the on/off switch, batch size, and wait time
+- **On-demand grouping**: Requests for different models/tasks are isolated — no cross-contamination
 
-## 两层架构
+## Two-Layer Architecture
 
 ```mermaid
 graph TD
-    subgraph daemon["daemon 层（编排）"]
+    subgraph daemon["daemon (Orchestration)"]
         Batcher
-        Queue[per-BatchKey 队列]
-        Trigger[按 max_batch_size / queue_latency 触发]
-        BatchFn[调用 BatchFn 执行批次]
+        Queue[per-BatchKey Queue]
+        Trigger[Trigger by max_batch_size / queue_latency]
+        BatchFn[Call BatchFn to execute batch]
     end
 
-    subgraph service["service 层（路由）"]
+    subgraph service["service (Routing)"]
         Hub[ServiceHub]
         Registry[TaskRegistry]
-        BKey[batch_key 决定队列分配]
-        HBatch[handle_batch 执行批量推理]
+        BKey[batch_key decides queue assignment]
+        HBatch[handle_batch runs batched inference]
     end
 
-    subgraph model["model 层（执行）"]
+    subgraph model["model (Execution)"]
         CLIP
         SigLIP
         FVLM[FastVLM]
-        Concat[沿 batch 维度拼接张量]
-        Forward[一次 forward]
-        Split[拆分输出]
+        Concat[Concat tensors along batch dim]
+        Forward[Single forward pass]
+        Split[Split outputs]
     end
 
     Batcher --> Hub
@@ -48,11 +48,11 @@ graph TD
     HBatch --> FVLM
 ```
 
-## BatchKey：分组的核心
+## BatchKey: Grouping Core
 
-`BatchKey` 是一个字符串标识，决定哪些请求可以合并。同一 `BatchKey` 的请求 = 同一服务 + 同一任务 + 相同形状/数据类型的张量。
+`BatchKey` is a string identifier that determines which requests can merge. Same `BatchKey` = same service + same task + same tensor shape/dtype.
 
-生成过程（以 CLIP 为例）：
+Generation (CLIP example):
 
 ```
 grpc.rs:
@@ -63,39 +63,39 @@ grpc.rs:
   ))
 ```
 
-`task_key` 由 `ClipImageEmbedTask::batch_key()` 生成，包含模型 ID、版本、张量形状、数据类型——确保只有**完全兼容**的请求才合并。
+`task_key` is produced by `ClipImageEmbedTask::batch_key()` and includes model ID, version, tensor shape, and dtype — ensuring only **fully compatible** requests are merged.
 
-## BatchFn：执行回调
+## BatchFn: Execution Callback
 
-`Batcher` 不直接知道如何执行推理。它通过 `BatchFn` 回调执行：
+`Batcher` does not know how to run inference directly. It delegates via the `BatchFn` callback:
 
 ```rust
 type BatchFn = Arc<dyn Fn(Vec<TaskRequest>) -> Pin<Box<dyn Future<Output = ServiceResult<Vec<TaskResult>>> + Send>> + Send + Sync>;
 ```
 
-`grpc.rs` 创建 `BatchFn` 时捕获了 `Arc<ServiceHub>`、`service_name`、`task_name`，触发时直接调用 `hub.handle_batch()`。
+In `grpc.rs`, the `BatchFn` captures `Arc<ServiceHub>`, `service_name`, and `task_name`. When triggered, it calls `hub.handle_batch()`.
 
-## 触发条件
+## Trigger Conditions
 
-批次在满足以下**任一**条件时触发：
+A batch fires when **either** condition is met:
 
-1. **数量条件**：队列长度达到 `config.max_batch_size`
-2. **时间条件**：第一个请求入队后等待超过 `config.queue_latency_ms`
+1. **Size**: Queue length reaches `config.max_batch_size`
+2. **Time**: First request has waited longer than `config.queue_latency_ms`
 
-实现逻辑（`batcher.rs:run()`）：
+Implementation (`batcher.rs:run()`):
 
 ```mermaid
 flowchart TD
-    Start([开始]) --> Wait[等待队列中第一个请求]
-    Wait --> Collect[收集更多请求]
-    Collect --> Check{max_batch_size 或 timeout?}
-    Check -->|否| Collect
-    Check -->|是| Execute[执行 batch_fn requests]
-    Execute --> Respond[oneshot channel 返回各调用方]
+    Start([Start]) --> Wait[Wait for first request in queue]
+    Wait --> Collect[Collect more requests]
+    Collect --> Check{max_batch_size or timeout?}
+    Check -->|No| Collect
+    Check -->|Yes| Execute[Execute batch_fn(requests)]
+    Execute --> Respond[Return via oneshot channel to each caller]
     Respond --> Wait
 ```
 
-## 配置
+## Config
 
 ```json
 {
@@ -109,17 +109,17 @@ flowchart TD
 }
 ```
 
-| 字段 | 默认值 | 说明 |
+| Field | Default | Description |
 |---|---|---|
-| `enabled` | `true` | 全局批处理开关。关闭后所有请求走单请求路径 |
-| `max_batch_size` | `8` | 单批次最大请求数 |
-| `queue_latency_ms` | `2` | 首个请求入队后最多等待的毫秒数 |
+| `enabled` | `true` | Global batching toggle. When off, all requests go through the single-request path |
+| `max_batch_size` | `8` | Maximum requests per batch |
+| `queue_latency_ms` | `2` | Max milliseconds to wait after the first request enqueues |
 
-## 批处理 vs 不批处理
+## Batching vs. Non-Batching
 
-| 场景 | 走批处理？ | 原因 |
+| Scenario | Batched? | Reason |
 |---|---|---|
-| 预处理好的张量 (`preprocess.skip=true`) | ✅ | 形状已知、可直接拼接 |
-| 原始图片 (`image/jpeg`) | ❌ | 预处理开销不均、无法安全拼接 |
-| 原始文本 | ❌ | tokenize 后序列长度不同、需要 padding |
-| 模型未实现 `batch_key()` | ❌ | 返回 `None`，默认不参与 |
+| Preprocessed tensors (`preprocess.skip=true`) | ✅ | Shapes known, directly concatenable |
+| Raw images (`image/jpeg`) | ❌ | Uneven preprocessing cost, unsafe to concatenate |
+| Raw text | ❌ | Tokenized sequences vary in length, need padding |
+| Model doesn't implement `batch_key()` | ❌ | Returns `None`, opts out by default |

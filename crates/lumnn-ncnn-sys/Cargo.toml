@@ -1,0 +1,17 @@
+[package]
+name = "lumnn-ncnn-sys"
+version = "0.1.0"
+edition = "2024"
+links = "ncnn"
+
+[features]
+default = ["vendored", "shared", "vulkan"]
+vendored = []
+system = []
+shared = []
+static = []
+vulkan = []
+openmp = []
+
+[lib]
+path = "src/lib.rs"

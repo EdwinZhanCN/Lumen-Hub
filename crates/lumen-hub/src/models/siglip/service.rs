@@ -100,7 +100,7 @@ impl SiglipService {
                         )
                         .map_err(ServiceError::Internal)?;
                         let task = SiglipTextEmbedTask::new(
-                            format!("{}_{}", alias, task_key),
+                            "semantic_text_embed",
                             pipeline,
                             Arc::clone(&context),
                             model_name,
@@ -157,7 +157,7 @@ impl SiglipService {
                         )
                         .map_err(ServiceError::Internal)?;
                         let task = SiglipImageEmbedTask::new(
-                            format!("{}_{}", alias, task_key),
+                            "semantic_image_embed",
                             pipeline,
                             Arc::clone(&context),
                             model_name,

@@ -4,31 +4,52 @@ sidebar_position: 2
 
 # SigLIP
 
-Google SigLIP（Sigmoid Loss for Language-Image Pre-training）模型。
+SigLIP dual-encoder service for text and image embeddings.
 
-## 任务
+## Repository Layout
 
-| 任务名 | 输入 | 输出 | 支持批处理 |
-|---|---|---|---|
-| `image_embed` | 图像文件 (JPEG/PNG/WebP/AVIF) 或预处理张量 | L2 归一化嵌入向量 | ✅ 仅张量 |
-| `text_embed` | 文本字符串 | L2 归一化嵌入向量 | ❌ |
+```text
+{cache_dir}/{model_name}/
+├── model_info.json
+├── tokenizer.json
+└── onnx/
+    ├── text.fp32.onnx
+    ├── text.fp16.onnx
+    ├── vision.fp32.onnx
+    └── vision.fp16.onnx
+```
 
-## 实现
+| Path | Required | Purpose |
+|------|----------|---------|
+| `model_info.json` | yes | Runtime metadata SSOT |
+| `tokenizer.json` | text task only | Tokenizer artifact |
+| `{runtime}/{component}.{precision}.{ext}` | yes | Model artifact |
 
-SigLIP 的实现结构与 CLIP 完全一致，差异仅在于：
+Complete example: [`crates/lumen-hub/tools/siglip/model_info.example.json`](https://github.com/lumen-rs/lumen-rs/blob/main/crates/lumen-hub/tools/siglip/model_info.example.json)
 
-- 模型权重/架构不同
-- 预处理参数不同（从各自的 `model_info.json` 读取）
-- 图像输入分辨率可能不同
+## Runtime Metadata
 
-## 批处理
+Runtime reads `model_info.json.task_metadata` and consumes these fields:
 
-`SiglipImageEmbedTask` 的批处理方式与 CLIP 相同——沿 NCHW 的第一个维度拼接张量。
+| Field | Required | Purpose |
+|------|----------|---------|
+| `tasks` | yes | Task definitions keyed by task name |
+| `tasks.<task>.component` | yes | `text` or `vision` |
+| `tasks.<task>.input_names` | yes | Model input names |
+| `tasks.<task>.output_name` | yes | Primary embedding output |
+| `tasks.<task>.preprocess` | image task only | Image preprocessing contract |
 
-## 关键文件
+`embedding_dim` and `hidden_output_name` may be present as descriptive metadata. Current semantic embedding runtime does not require them.
 
-- `crates/lumen-hub/src/models/siglip/task.rs` — TaskHandler 实现
-- `crates/lumen-hub/src/models/siglip/pipeline.rs` — 推理管线
-- `crates/lumen-hub/src/models/siglip/nodes.rs` — L2NormalizeNode
-- `crates/lumen-hub/src/models/siglip/service.rs` — InferenceService
-- `crates/lumen-hub/src/models/siglip/factory.rs` — ModelFactory
+## Tasks
+
+| Task | Input | Output | Uses |
+|------|-------|--------|------|
+| `semantic_text_embed` | `text/plain` | `application/json;schema=embedding_v1` | `tokenizer.json` + `text.{precision}.{ext}` |
+| `semantic_image_embed` | `image/jpeg`, `image/png`, `image/webp`, `image/avif`, `application/octet-stream` | `application/json;schema=embedding_v1` | `vision.{precision}.{ext}` |
+
+## Limits
+
+- Image tensor input must match the declared preprocess contract.
+- Image preprocess metadata is required for image tasks.
+- Path convention is fixed to `{cache_dir}/{model_name}/{runtime}/{component}.{precision}.{ext}`.

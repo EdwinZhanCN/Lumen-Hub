@@ -1,106 +1,107 @@
-import {themes as prismThemes} from 'prism-react-renderer';
-import type {Config} from '@docusaurus/types';
-import type * as Preset from '@docusaurus/preset-classic';
+import { themes as prismThemes } from "prism-react-renderer";
+import type { Config } from "@docusaurus/types";
+import type * as Preset from "@docusaurus/preset-classic";
 
 const config: Config = {
-  title: 'Lumen Hub',
-  tagline: '统一多模态推理网关',
-  favicon: 'img/favicon.ico',
+  title: "Lumen Hub",
+  tagline: "Unified Multimodal Inference Gateway",
+  favicon: "img/favicon.ico",
 
   future: {
     v4: true,
   },
 
-  url: 'https://lumen-rs.dev',
-  baseUrl: '/hub/',
+  url: "https://lumen-rs.dev",
+  baseUrl: "/hub/",
 
-  organizationName: 'lumen-rs',
-  projectName: 'lumen-rs',
+  organizationName: "lumen-rs",
+  projectName: "lumen-rs",
 
-  onBrokenLinks: 'throw',
+  onBrokenLinks: "throw",
 
   i18n: {
-    defaultLocale: 'zh-Hans',
-    locales: ['zh-Hans'],
+    defaultLocale: "zh-Hans",
+    locales: ["zh-Hans"],
   },
 
   markdown: {
     mermaid: true,
   },
-  themes: ['@docusaurus/theme-mermaid'],
+  themes: ["@docusaurus/theme-mermaid"],
 
   presets: [
     [
-      'classic',
+      "classic",
       {
         docs: {
-          sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/lumen-rs/lumen-rs/tree/main/docs/',
-          routeBasePath: '/',
+          sidebarPath: "./sidebars.ts",
+          editUrl: "https://github.com/lumen-rs/lumen-rs/tree/main/docs/",
+          routeBasePath: "/",
         },
         blog: false,
         theme: {
-          customCss: './src/css/custom.css',
+          customCss: "./src/css/custom.css",
         },
       } satisfies Preset.Options,
     ],
   ],
 
   themeConfig: {
-    image: 'img/docusaurus-social-card.jpg',
+    image: "img/docusaurus-social-card.jpg",
     colorMode: {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'Lumen Hub',
+      title: "Lumen Hub",
       logo: {
-        alt: 'Lumen Hub Logo',
-        src: 'img/logo.svg',
+        alt: "Lumen Hub Logo",
+        src: "img/logo.svg",
       },
       items: [
         {
-          type: 'docSidebar',
-          sidebarId: 'docsSidebar',
-          position: 'left',
-          label: '文档',
+          type: "docSidebar",
+          sidebarId: "docsSidebar",
+          position: "left",
+          label: "Docs",
         },
         {
-          href: 'https://github.com/lumen-rs/lumen-rs',
-          label: 'GitHub',
-          position: 'right',
+          href: "https://github.com/lumen-rs/lumen-rs",
+          label: "GitHub",
+          position: "right",
         },
       ],
     },
     footer: {
-      style: 'dark',
+      style: "dark",
       links: [
         {
-          title: '文档',
+          title: "Docs",
           items: [
             {
-              label: '架构概览',
-              to: '/architecture/overview',
+              label: "Architecture Overview",
+              to: "/architecture/overview",
             },
             {
-              label: '批处理设计',
-              to: '/architecture/batching',
+              label: "Batching Design",
+              to: "/architecture/batching",
             },
           ],
         },
         {
-          title: '模型',
+          title: "Models",
           items: [
-            {label: 'CLIP', to: '/models/clip'},
-            {label: 'SigLIP', to: '/models/siglip'},
-            {label: 'FastVLM', to: '/models/fastvlm'},
+            { label: "CLIP", to: "/models/clip" },
+            { label: "SigLIP", to: "/models/siglip" },
+            { label: "FastVLM", to: "/models/fastvlm" },
+            { label: "PP-OCR", to: "/models/ppocr" },
           ],
         },
         {
-          title: '更多',
+          title: "More",
           items: [
             {
-              label: 'GitHub',
-              href: 'https://github.com/lumen-rs/lumen-rs',
+              label: "GitHub",
+              href: "https://github.com/lumen-rs/lumen-rs",
             },
           ],
         },
@@ -110,7 +111,7 @@ const config: Config = {
     prism: {
       theme: prismThemes.github,
       darkTheme: prismThemes.dracula,
-      additionalLanguages: ['rust', 'toml', 'json'],
+      additionalLanguages: ["rust", "toml", "json"],
     },
   } satisfies Preset.ThemeConfig,
 };

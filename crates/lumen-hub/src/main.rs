@@ -14,6 +14,8 @@ use std::{
 use lumen_hub::models::clip::ClipService;
 #[cfg(feature = "fastvlm")]
 use lumen_hub::models::fastvlm::FastVlmService;
+#[cfg(feature = "ppocr")]
+use lumen_hub::models::ppocr::PpocrService;
 #[cfg(feature = "siglip")]
 use lumen_hub::models::siglip::SiglipService;
 use lumen_hub::{
@@ -21,7 +23,12 @@ use lumen_hub::{
     service::ServiceHub,
 };
 use lumen_schema::{ConfigValidationError, LumenConfig, Mode, ServerConfig};
-#[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip"))]
+#[cfg(any(
+    feature = "clip",
+    feature = "fastvlm",
+    feature = "ppocr",
+    feature = "siglip"
+))]
 use lumnn::core::context::{MLContext, MLContextOptions};
 use thiserror::Error;
 use tracing::{
@@ -164,10 +171,20 @@ fn load_config(path: &PathBuf) -> StartupResult<LumenConfig> {
 }
 
 fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceHub> {
-    #[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip"))]
+    #[cfg(any(
+        feature = "clip",
+        feature = "fastvlm",
+        feature = "ppocr",
+        feature = "siglip"
+    ))]
     let context = MLContext::new(MLContextOptions::default()).map_err(StartupError::ContextInit)?;
 
-    #[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip"))]
+    #[cfg(any(
+        feature = "clip",
+        feature = "fastvlm",
+        feature = "ppocr",
+        feature = "siglip"
+    ))]
     let cache_dir = expand_tilde(&config.metadata.cache_dir);
 
     let requested_services = config
@@ -177,7 +194,12 @@ fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceH
         .collect::<Vec<_>>();
 
     #[cfg_attr(
-        not(any(feature = "clip", feature = "fastvlm", feature = "siglip")),
+        not(any(
+            feature = "clip",
+            feature = "fastvlm",
+            feature = "ppocr",
+            feature = "siglip"
+        )),
         allow(unused_mut)
     )]
     let mut hub = ServiceHub::new();
@@ -263,6 +285,31 @@ fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceH
                 return Err(StartupError::PackageDisabled {
                     package: svc_config.package.clone(),
                     feature: "siglip",
+                });
+            }
+            #[cfg(feature = "ppocr")]
+            "ppocr" | "lumen_ppocr" => {
+                let service = PpocrService::from_config(
+                    service_name,
+                    svc_config,
+                    &cache_dir,
+                    Arc::clone(&context),
+                )
+                .map_err(|e| StartupError::ServiceConstruction {
+                    service: service_name.to_owned(),
+                    message: e.to_string(),
+                })?;
+                hub.register(service)
+                    .map_err(|e| StartupError::ServiceConstruction {
+                        service: service_name.to_owned(),
+                        message: e.to_string(),
+                    })?;
+            }
+            #[cfg(not(feature = "ppocr"))]
+            "ppocr" | "lumen_ppocr" => {
+                return Err(StartupError::PackageDisabled {
+                    package: svc_config.package.clone(),
+                    feature: "ppocr",
                 });
             }
             other => {
@@ -538,7 +585,12 @@ enum StartupError {
     #[error("failed to initialize logging: {0}")]
     Logging(#[from] SetGlobalDefaultError),
 
-    #[cfg(any(feature = "clip", feature = "siglip"))]
+    #[cfg(any(
+        feature = "clip",
+        feature = "fastvlm",
+        feature = "ppocr",
+        feature = "siglip"
+    ))]
     #[error("failed to initialize ML context: {0}")]
     ContextInit(String),
 
@@ -551,6 +603,7 @@ enum StartupError {
     #[cfg(any(
         not(feature = "clip"),
         not(feature = "fastvlm"),
+        not(feature = "ppocr"),
         not(feature = "siglip")
     ))]
     #[error(
@@ -561,7 +614,12 @@ enum StartupError {
         feature: &'static str,
     },
 
-    #[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip"))]
+    #[cfg(any(
+        feature = "clip",
+        feature = "fastvlm",
+        feature = "ppocr",
+        feature = "siglip"
+    ))]
     #[error("failed to construct service `{service}`: {message}")]
     ServiceConstruction { service: String, message: String },
 

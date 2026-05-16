@@ -2,29 +2,29 @@
 sidebar_position: 1
 ---
 
-# 架构概览
+# Architecture Overview
 
-Lumen Hub 采用三层架构，上层依赖下层，下层完全不感知上层。
+Lumen Hub uses a three-layer architecture. Upper layers depend on lower ones; lower layers are completely unaware of the layers above.
 
-## 分层图
+## Layer Diagram
 
 ```mermaid
 graph TD
-    subgraph daemon["daemon/ 传输层"]
-        gRPC[gRPC 编解码]
+    subgraph daemon["daemon/ Transport"]
+        gRPC[gRPC codec]
         Batcher[Batched]
         mDNS[mDNS]
         Server[Tonic Server]
     end
 
-    subgraph service["service/ 抽象层"]
+    subgraph service["service/ Abstraction"]
         Hub[ServiceHub]
         Registry[TaskRegistry]
         ISvc[InferenceService]
         TH[TaskHandler]
     end
 
-    subgraph models["models/ 模型层"]
+    subgraph models["models/ Model"]
         CLIP[CLIP]
         SigLIP[SigLIP]
         FastVLM[FastVLM]
@@ -41,64 +41,63 @@ graph TD
     ISvc -.-> Registry
 ```
 
-## daemon/ — 传输层
+## daemon/ — Transport Layer
 
-**关心的东西**：gRPC chunk 组装、`TaskRequest` 反序列化、批处理队列、mDNS 广播、Tonic 服务器生命周期。
+**Concerns**: gRPC chunk assembly, `TaskRequest` deserialization, batching queue, mDNS broadcast, Tonic server lifecycle.
 
-**不关心的东西**：请求里是什么模型、数据怎么预处理、推理怎么跑。
+**Ignores**: What model the request is for, how data is preprocessed, how inference runs.
 
-关键组件：
+Key components:
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `server.rs` | 绑定地址、注册 gRPC service → 启动 Tonic Server |
-| `grpc.rs` | 实现 `Inference` trait：组装流式 chunk → `TaskRequest` → 路由到 ServiceHub |
-| `batcher.rs` | 维护 per-BatchKey 的请求队列，按 `max_batch_size` / `queue_latency` 触发批次执行 |
-| `mdns.rs` | 通过 mDNS-SD 广播 `_lumen._tcp` 服务，客户端可自动发现 |
+| `server.rs` | Bind address, register gRPC service → start Tonic Server |
+| `grpc.rs` | Implement `Inference` trait: assemble streaming chunks → `TaskRequest` → route to ServiceHub |
+| `batcher.rs` | Maintain per-BatchKey request queues; trigger batch execution when `max_batch_size` / `queue_latency` fires |
+| `mdns.rs` | Advertise `_lumen._tcp` service via mDNS-SD — clients can auto-discover |
 
-## service/ — 抽象层
+## service/ — Abstraction Layer
 
-**关心的东西**：服务注册和查找、任务路由、`BatchKey` 生成（用于批处理分组）。
+**Concerns**: Service registration and lookup, task routing, `BatchKey` generation (for batching groups).
 
-**不关心的东西**：网络协议、模型的具体实现。
+**Ignores**: Network protocols, concrete model implementations.
 
-关键组件：
+Key components:
 
-| 文件 | 职责 |
+| File | Responsibility |
 |---|---|
-| `hub.rs` (`ServiceHub`) | 持有 `HashMap<service_name, Arc<dyn InferenceService>>`，按服务名/任务名路由请求 |
-| `registry.rs` (`TaskRegistry`) | 持有 `HashMap<task_name, Arc<dyn TaskHandler>>`，每个 model service 注册自己的任务 |
-| `service.rs` (`InferenceService`) | Trait：`name()` + `capability()` + `tasks()` |
-| `task.rs` (`TaskHandler`) | Trait：`spec()` + `handle()` + `batch_key()` + `handle_batch()` |
-| `factory.rs` (`ModelFactory`) | Trait：标准化模型构建流程 |
+| `hub.rs` (`ServiceHub`) | Holds `HashMap<service_name, Arc<dyn InferenceService>>`; routes requests by service/task name |
+| `registry.rs` (`TaskRegistry`) | Holds `HashMap<task_name, Arc<dyn TaskHandler>>`; each model service registers its own tasks |
+| `service.rs` (`InferenceService`) | Trait: `name()` + `capability()` + `tasks()` |
+| `task.rs` (`TaskHandler`) | Trait: `spec()` + `handle()` + `batch_key()` + `handle_batch()` |
+| `factory.rs` (`ModelFactory`) | Trait: standardised model construction flow |
 
-## models/ — 模型层
+## models/ — Model Layer
 
-**关心的东西**：ONNX/Candle 模型加载、图像/文本预处理、推理执行、后处理（如 L2 归一化）。
+**Concerns**: ONNX/Candle model loading, image/text preprocessing, inference execution, postprocessing (e.g. L2 normalisation).
 
-**不关心的东西**：上层路由、传输协议。
+**Ignores**: Upper-layer routing, transport protocols.
 
-每个模型遵循统一的目录结构：
+Each model follows a uniform directory layout:
 
 ```
 models/<name>/
-  factory.rs   → ModelFactory 实现
-  service.rs   → InferenceService 实现
-  pipeline.rs  → 推理管线构建
-  nodes.rs     → 自定义处理节点（如 L2 归一化）
-  task.rs      → TaskHandler 实现（支持单请求 + 批量推理）
+  factory.rs   → ModelFactory impl
+  service.rs   → InferenceService impl
+  pipeline.rs  → Inference pipeline construction
+  nodes.rs     → Custom processing nodes (e.g. L2 normalisation)
+  task.rs      → TaskHandler impl (single-request + batch inference)
 ```
 
-## 依赖方向
+## Dependency Direction
 
 ```
 main.rs
-  → LumenConfig（schema 层）
-  → daemon::serve_grpc（启动服务）
-    → HubGrpcService（持有 ServiceHub + Batcher）
+  → LumenConfig (schema layer)
+  → daemon::serve_grpc (start server)
+    → HubGrpcService (holds ServiceHub + Batcher)
       → ServiceHub::handle / handle_batch
         → TaskRegistry::handle / handle_batch
-          → TaskHandler（在 models/ 中实现）
+          → TaskHandler (implemented in models/)
 
-跨层依赖都是通过 Arc<dyn Trait> 注入，不依赖具体类型。
-```
+Cross-layer dependencies are injected via Arc<dyn Trait> — no concrete type coupling.

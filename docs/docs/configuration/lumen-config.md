@@ -2,60 +2,60 @@
 sidebar_position: 1
 ---
 
-# 配置概览
+# Configuration Overview
 
-Lumen Hub 使用 JSON 配置文件驱动所有行为，配置 schema 由 `lumen-schema` crate 定义和校验。
+Lumen Hub is driven by a JSON config file, validated against a schema defined in the `lumen-schema` crate.
 
-## 配置文件位置
+## Config File Location
 
-默认路径：`~/.lumen/config.json`
+Default path: `~/.lumen/config.json`
 
-可通过 `--config` 参数覆盖：
+Override with `--config`:
 
 ```bash
 lumen-hub --config /path/to/config.json
 ```
 
-## 顶级结构
+## Top-Level Structure
 
 ```json
 {
-  "metadata": { ... },      // 版本、区域、缓存目录
-  "deployment": { ... },    // 部署模式、服务选择
-  "server": { ... },        // 服务器绑定、mDNS、批处理配置
-  "services": { ... }       // 各服务的模型配置
+  "metadata": { ... },      // Version, region, cache directory
+  "deployment": { ... },    // Deployment mode, service selection
+  "server": { ... },        // Server binding, mDNS, batching config
+  "services": { ... }       // Per-service model config
 }
 ```
 
-## 关键配置项
+## Key Fields
 
 ### metadata
 
-| 字段 | 类型 | 说明 |
+| Field | Type | Description |
 |---|---|---|
-| `version` | string | 配置格式版本 |
-| `region` | string | 部署区域（如 `cn`） |
-| `cache_dir` | string | 模型缓存目录 |
+| `version` | string | Config format version |
+| `region` | string | Deployment region (e.g. `cn`) |
+| `cache_dir` | string | Model cache directory |
 
 ### deployment
 
-| 字段 | 类型 | 说明 |
+| Field | Type | Description |
 |---|---|---|
-| `mode` | string | `"single"` / `"federated"` — 单机或联合部署 |
-| `service` | string | 单机模式下要启用的服务名 |
+| `mode` | string | `"single"` or `"federated"` — standalone or federated deployment |
+| `service` | string | Service name to enable in standalone mode |
 
 ### server
 
-| 字段 | 类型 | 默认值 | 说明 |
+| Field | Type | Default | Description |
 |---|---|---|---|
-| `port` | u16 | `50051` | gRPC 端口 |
-| `host` | string | `"0.0.0.0"` | 绑定地址 |
-| `mdns` | object? | `null` | mDNS 配置 |
-| `batching` | object | `{...}` | [批处理配置](./batching-config) |
+| `port` | u16 | `50051` | gRPC port |
+| `host` | string | `"0.0.0.0"` | Bind address |
+| `mdns` | object? | `null` | mDNS config |
+| `batching` | object | `{...}` | [Batching config](./batching-config) |
 
 ### services
 
-每个服务通过服务名索引，包含 `enabled` 标志和 `models` 配置：
+Each service is indexed by name and contains an `enabled` flag and `models` config:
 
 ```json
 {
@@ -74,12 +74,12 @@ lumen-hub --config /path/to/config.json
 }
 ```
 
-## Schema 校验
+## Schema Validation
 
-配置在加载时通过 `jsonschema` 校验。Schema 定义文件：
+Config is validated by `jsonschema` on load. Schema definition file:
 
 - `schemas/config/lumen_config.schema.json`
 
-## 关键代码
+## Key Source
 
-- `crates/lumen-schema/src/config/lumen_config.rs` — 配置结构和校验逻辑
+- `crates/lumen-schema/src/config/lumen_config.rs` — Config structure and validation logic

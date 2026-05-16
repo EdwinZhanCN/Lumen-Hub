@@ -2,13 +2,13 @@
 sidebar_position: 1
 ---
 
-# 添加新模型
+# Adding a New Model
 
-本文档描述如何在 Lumen Hub 中集成一个新的推理模型。
+This document describes how to integrate a new inference model into Lumen Hub.
 
-## 步骤清单
+## Step-by-Step
 
-### 1. 创建模型目录
+### 1. Create the Model Directory
 
 ```
 crates/lumen-hub/src/models/<name>/
@@ -16,11 +16,11 @@ crates/lumen-hub/src/models/<name>/
   factory.rs
   service.rs
   pipeline.rs
-  nodes.rs     # （如需自定义后处理）
+  nodes.rs     # (optional custom postprocessing)
   task.rs
 ```
 
-### 2. 实现 ModelFactory
+### 2. Implement ModelFactory
 
 ```rust
 // factory.rs
@@ -32,14 +32,14 @@ impl ModelFactory for MyModelFactory {
         config: &str,
         context: Arc<MLContext>,
     ) -> ServiceResult<InferenceServiceInstance> {
-        // 1. 解析 model_info.json
-        // 2. 加载模型权重
-        // 3. 创建 MyModelService
+        // 1. Parse model_info.json
+        // 2. Load model weights
+        // 3. Create MyModelService
     }
 }
 ```
 
-### 3. 实现 InferenceService
+### 3. Implement InferenceService
 
 ```rust
 // service.rs
@@ -55,7 +55,7 @@ impl InferenceService for MyModelService {
 }
 ```
 
-### 4. 构建 Pipeline
+### 4. Build Pipeline
 
 ```rust
 // pipeline.rs
@@ -65,12 +65,12 @@ pub fn build_my_pipeline(
 ) -> ServiceResult<MLPipeline> {
     let mut pipeline = MLPipeline::new();
     pipeline.add_node(model); // forward node
-    // 可选：添加后处理节点
+    // Optional: add postprocessing nodes
     Ok(pipeline)
 }
 ```
 
-### 5. 实现 TaskHandler
+### 5. Implement TaskHandler
 
 ```rust
 // task.rs
@@ -80,7 +80,7 @@ pub struct MyModelTask { ... }
 impl TaskHandler for MyModelTask {
     fn spec(&self) -> &TaskSpec { &self.spec }
 
-    // 如果要支持批处理，覆盖这两个方法：
+    // To support batching, override these two methods:
     fn batch_key(&self, request: &TaskRequest) -> ServiceResult<Option<BatchKey>> { ... }
     async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> { ... }
 
@@ -88,34 +88,34 @@ impl TaskHandler for MyModelTask {
 }
 ```
 
-### 6. 注册模块
+### 6. Register the Module
 
-在 `crates/lumen-hub/src/models/mod.rs`：
+In `crates/lumen-hub/src/models/mod.rs`:
 
 ```rust
 #[cfg(feature = "my_model")]
 pub mod my_model;
 ```
 
-### 7. 添加 Feature Gate
+### 7. Add a Feature Gate
 
-在 `crates/lumen-hub/Cargo.toml`：
+In `crates/lumen-hub/Cargo.toml`:
 
 ```toml
 [features]
 my_model = []
 ```
 
-### 8. 注册服务名
+### 8. Register the Service Name
 
-在 `lumen-schema` 的配置校验逻辑中注册新的服务名（如需配置驱动加载）。
+Register the new service name in `lumen-schema`'s config validation logic (if you want config-driven loading).
 
-## 支持批处理
+## Supporting Batching
 
-如果要支持批处理，需要：
+To support batching, you need:
 
-1. **定义兼容性规则**：在 `batch_key()` 中返回包含模型 ID、张量形状、数据类型的 key
-2. **实现拼接逻辑**：在 `handle_batch()` 中沿 batch 维度拼接多个请求的输入张量
-3. **拆分输出**：将单个 batch 输出拆分为每个请求的独立结果
+1. **Define compatibility rules**: Return a key containing model ID, tensor shape, and dtype in `batch_key()`
+2. **Implement concatenation logic**: In `handle_batch()`, concatenate input tensors from multiple requests along the batch dimension
+3. **Split outputs**: Split the single batch output back into per-request results
 
-参考 CLIP/SigLIP 的 `batched_tensor_packets()` 实现。
+See CLIP/SigLIP's `batched_tensor_packets()` implementation for reference.

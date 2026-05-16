@@ -6,6 +6,8 @@ pub mod models {
     pub mod clip;
     #[cfg(feature = "fastvlm")]
     pub mod fastvlm;
+    #[cfg(feature = "ppocr")]
+    pub mod ppocr;
     #[cfg(feature = "siglip")]
     pub mod siglip;
 }

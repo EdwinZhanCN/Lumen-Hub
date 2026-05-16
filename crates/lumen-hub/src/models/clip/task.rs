@@ -866,7 +866,7 @@ mod tests {
         let context = MLContext::new(MLContextOptions::default()).unwrap();
         let pipeline = MLPipeline::new("test", Arc::clone(&context), Vec::new());
         ClipImageEmbedTask::new(
-            "clip_image_embed",
+            "semantic_image_embed",
             pipeline,
             context,
             "clip-test",

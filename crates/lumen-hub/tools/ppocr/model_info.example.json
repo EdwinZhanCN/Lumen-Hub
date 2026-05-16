@@ -1,0 +1,47 @@
+{
+    "name": "ppocr-v5",
+    "version": "1.0.0",
+    "description": "PP-OCRv5 detection and recognition model for text OCR.",
+    "model_type": "ocr",
+    "source": {
+        "format": "modelscope",
+        "repo_id": "PaddleOCR/PP-OCRv5"
+    },
+    "runtimes": {
+        "onnx": {
+            "available": true,
+            "components": ["detection", "recognition"],
+            "precisions": ["fp32"]
+        }
+    },
+    "task_metadata": {
+        "tasks": {
+            "ocr": {
+                "detection": {
+                    "component": "detection",
+                    "input_name": "x",
+                    "output_name": "fetch_name_0",
+                    "mean": [0.485, 0.456, 0.406],
+                    "std": [0.229, 0.224, 0.225],
+                    "scale": 0.00392156862745098,
+                    "limit_side_len": 960,
+                    "thresh": 0.3,
+                    "box_thresh": 0.6,
+                    "unclip_ratio": 1.5
+                },
+                "recognition": {
+                    "component": "recognition",
+                    "input_name": "x",
+                    "output_name": "fetch_name_0",
+                    "mean": [0.5, 0.5, 0.5],
+                    "std": [0.5, 0.5, 0.5],
+                    "scale": 0.00392156862745098,
+                    "image_shape": [3, 48, 320],
+                    "character_dict_path": "ppocrv5_dict.txt",
+                    "use_space_char": true,
+                    "blank_id": 0
+                }
+            }
+        }
+    }
+}
