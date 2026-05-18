@@ -255,7 +255,7 @@ jobs:
             - name: Create release
               uses: softprops/action-gh-release@v2
               with:
-                  prerelease: true
+                  prerelease: false
                   fail_on_unmatched_files: true
                   body_path: release-body.md
                   files: |

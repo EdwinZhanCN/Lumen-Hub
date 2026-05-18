@@ -868,15 +868,17 @@ json_field() {{
   target="$2"
   field="$3"
   awk -v target="$target" -v field="$field" '
-    $0 ~ "\"target\"" {{
-      in_target = index($0, "\"" target "\"") > 0
+    BEGIN {{
+      RS = "[{{}}]"
     }}
-    in_target && $0 ~ "\"" field "\"" {{
+    index($0, "\"target\": \"" target "\"") > 0 {{
       value = $0
-      sub(/^[^:]*:[[:space:]]*/, "", value)
-      sub(/,[[:space:]]*$/, "", value)
+      pattern = "\"" field "\": \""
+      start = index(value, pattern)
+      if (!start) exit 1
+      value = substr(value, start + length(pattern))
+      sub(/".*$/, "", value)
       sub(/^"/, "", value)
-      sub(/"$/, "", value)
       print value
       found = 1
       exit
