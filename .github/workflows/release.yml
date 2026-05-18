@@ -1,69 +1,162 @@
 name: Release Profiles
 
 on:
-  workflow_dispatch:
+    push:
+        tags:
+            - "v*"
+    workflow_dispatch:
+
+permissions:
+    contents: write
 
 jobs:
-  dist:
-    name: dist-${{ matrix.profile }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - profile: universal-cpu
-            os: ubuntu-24.04
-          - profile: darwin-arm64
-            os: macos-15
-          - profile: linux-x64-cuda
-            os: ubuntu-24.04
-          - profile: windows-x64-dml
-            os: windows-2025
-          - profile: linux-x64-openvino
-            os: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Test universal CPU profile
-        if: matrix.profile == 'universal-cpu'
-        run: cargo test -p lumen-hub --no-default-features --features profile-universal-cpu
-      - name: Basic Windows DML smoke
-        if: matrix.profile == 'windows-x64-dml'
-        env:
-          RUSTFLAGS: -C target-feature=-crt-static
-          CFLAGS: /MD
-          CXXFLAGS: /MD
-        run: cargo test -p lumen-hub --no-default-features --features profile-windows-x64-dml
-      - name: Build dist profile
-        env:
-          RUSTFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
-          CFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
-          CXXFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
-        run: cargo xtask dist --profile ${{ matrix.profile }}
-      - name: Check dist layout
-        shell: pwsh
-        run: |
-          $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
-          if (!(Test-Path (Join-Path $artifact "README.md"))) { throw "missing README.md" }
-          if (!(Test-Path (Join-Path $artifact "checksums.txt"))) { throw "missing checksums.txt" }
-          if (!(Test-Path (Join-Path $artifact "bin"))) { throw "missing bin directory" }
-          if (!(Test-Path (Join-Path $artifact "lib"))) { throw "missing lib directory" }
-          if (!(Test-Path (Join-Path $artifact "licenses"))) { throw "missing licenses directory" }
-          if ($env:RUNNER_OS -eq "Windows") {
-            if (!(Test-Path (Join-Path $artifact "bin/lumen-hub.exe"))) { throw "missing bin/lumen-hub.exe" }
-          } else {
-            if (!(Test-Path (Join-Path $artifact "bin/lumen-hub"))) { throw "missing bin/lumen-hub" }
-          }
-      - name: Check OpenVINO dynamic runtime bundle
-        if: matrix.profile == 'linux-x64-openvino'
-        shell: pwsh
-        run: |
-          $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
-          if (!(Test-Path (Join-Path $artifact "bin/lumen-hub-bin"))) { throw "missing bin/lumen-hub-bin" }
-          if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime.so"))) { throw "missing lib/libonnxruntime.so" }
-          if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime_providers_openvino.so"))) { throw "missing OpenVINO provider library" }
-          if (!(Test-Path (Join-Path $artifact "licenses/openvino/README.md"))) { throw "missing OpenVINO notice" }
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.profile }}
-          path: dist/**
+    dist:
+        name: dist-${{ matrix.profile }}
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - profile: universal-cpu
+                      os: ubuntu-24.04
+                      archive: lumen-hub-universal-cpu.tar.gz
+                    - profile: darwin-arm64
+                      os: macos-15
+                      archive: lumen-hub-darwin-arm64.tar.gz
+                    - profile: linux-x64-cuda
+                      os: ubuntu-24.04
+                      archive: lumen-hub-linux-x64-cuda.tar.gz
+                    - profile: windows-x64-dml
+                      os: windows-2025
+                      archive: lumen-hub-windows-x64-dml.zip
+                    - profile: linux-x64-openvino
+                      os: ubuntu-24.04
+                      archive: lumen-hub-linux-x64-openvino.tar.gz
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - name: Test universal CPU profile
+              if: matrix.profile == 'universal-cpu'
+              run: cargo test -p lumen-hub --no-default-features --features profile-universal-cpu
+
+            - name: Basic Windows DML smoke
+              if: matrix.profile == 'windows-x64-dml'
+              env:
+                  RUSTFLAGS: -C target-feature=-crt-static
+                  CFLAGS: /MD
+                  CXXFLAGS: /MD
+              run: cargo test -p lumen-hub --no-default-features --features profile-windows-x64-dml
+
+            - name: Build dist profile
+              env:
+                  RUSTFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
+                  CFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
+                  CXXFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
+              run: cargo xtask dist --profile ${{ matrix.profile }}
+
+            - name: Check dist layout
+              shell: pwsh
+              run: |
+                  $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
+                  if (!(Test-Path (Join-Path $artifact "README.md"))) { throw "missing README.md" }
+                  if (!(Test-Path (Join-Path $artifact "checksums.txt"))) { throw "missing checksums.txt" }
+                  if (!(Test-Path (Join-Path $artifact "bin"))) { throw "missing bin directory" }
+                  if (!(Test-Path (Join-Path $artifact "lib"))) { throw "missing lib directory" }
+                  if (!(Test-Path (Join-Path $artifact "licenses"))) { throw "missing licenses directory" }
+
+                  if ($env:RUNNER_OS -eq "Windows") {
+                    if (!(Test-Path (Join-Path $artifact "bin/lumen-hub.exe"))) { throw "missing bin/lumen-hub.exe" }
+                  } else {
+                    if (!(Test-Path (Join-Path $artifact "bin/lumen-hub"))) { throw "missing bin/lumen-hub" }
+                  }
+
+            - name: Check OpenVINO dynamic runtime bundle
+              if: matrix.profile == 'linux-x64-openvino'
+              shell: pwsh
+              run: |
+                  $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
+                  if (!(Test-Path (Join-Path $artifact "bin/lumen-hub-bin"))) { throw "missing bin/lumen-hub-bin" }
+                  if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime.so"))) { throw "missing lib/libonnxruntime.so" }
+                  if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime_providers_openvino.so"))) { throw "missing OpenVINO provider library" }
+                  if (!(Test-Path (Join-Path $artifact "licenses/openvino/README.md"))) { throw "missing OpenVINO notice" }
+
+            - name: Package archive
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+
+                  $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
+                  $archive = Join-Path "release-assets" "${{ matrix.archive }}"
+
+                  if ($env:RUNNER_OS -eq "Windows") {
+                    Compress-Archive -Path (Join-Path $artifact "*") -DestinationPath $archive -Force
+                  } else {
+                    tar -czf $archive -C dist "lumen-hub-${{ matrix.profile }}"
+                  }
+
+                  if (!(Test-Path $archive)) {
+                    throw "missing archive $archive"
+                  }
+
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ matrix.profile }}
+                  path: release-assets/${{ matrix.archive }}
+                  if-no-files-found: error
+
+    release:
+        name: Create GitHub Release
+        runs-on: ubuntu-24.04
+        needs: dist
+        if: startsWith(github.ref, 'refs/tags/')
+
+        steps:
+            - name: Download release assets
+              uses: actions/download-artifact@v4
+              with:
+                  path: release-assets
+                  merge-multiple: true
+
+            - name: Check release assets
+              run: |
+                  set -euo pipefail
+
+                  test -f release-assets/lumen-hub-universal-cpu.tar.gz
+                  test -f release-assets/lumen-hub-darwin-arm64.tar.gz
+                  test -f release-assets/lumen-hub-linux-x64-cuda.tar.gz
+                  test -f release-assets/lumen-hub-windows-x64-dml.zip
+                  test -f release-assets/lumen-hub-linux-x64-openvino.tar.gz
+
+                  ls -lah release-assets
+
+            - name: Create release
+              uses: softprops/action-gh-release@v2
+              with:
+                  prerelease: true
+                  fail_on_unmatched_files: true
+                  body: |
+                      # v0.1.0-beta.1
+
+                      ## Artifacts Matrix
+
+                      | Profile | Archive | Target | Runtime (Feature) |
+                      |---|---|---|---|
+                      | `universal-cpu` | `lumen-hub-universal-cpu.tar.gz` | `x86_64-unknown-linux-gnu` | `ort` |
+                      | `darwin-arm64` | `lumen-hub-darwin-arm64.tar.gz` | `aarch64-apple-darwin` | `ort-xnnpack`, `mnn-metal` |
+                      | `linux-x64-cuda` | `lumen-hub-linux-x64-cuda.tar.gz` | `x86_64-unknown-linux-gnu` | `ort-cuda` |
+                      | `windows-x64-dml` | `lumen-hub-windows-x64-dml.zip` | `x86_64-pc-windows-msvc` | `ort-directml` |
+                      | `linux-x64-openvino` | `lumen-hub-linux-x64-openvino.tar.gz` | `x86_64-unknown-linux-gnu` | `ort-openvino (via ort-load-dynamic)` |
+
+                      ## Notes
+
+                      - `linux-x64-openvino` contains OpenVINO runtime libraries
+                      - Run `lumen-cli init` to initialize your service
+                  files: |
+                      release-assets/lumen-hub-universal-cpu.tar.gz
+                      release-assets/lumen-hub-darwin-arm64.tar.gz
+                      release-assets/lumen-hub-linux-x64-cuda.tar.gz
+                      release-assets/lumen-hub-windows-x64-dml.zip
+                      release-assets/lumen-hub-linux-x64-openvino.tar.gz
