@@ -30,7 +30,7 @@ embeddings (vision + prompt) → decode (autoregressive generation).
 | `onnx/embed.{precision}.onnx` | yes | Prompt embedding model |
 | `onnx/decoder.{precision}.onnx` | yes | Declared package component required by runtime validation |
 
-Complete example: [`crates/lumen-hub/tools/fastvlm/model_info.example.json`](https://github.com/lumen-rs/lumen-rs/blob/main/crates/lumen-hub/tools/fastvlm/model_info.example.json)
+Complete example: [`crates/lumen-hub/tools/fastvlm/model_info.example.json`](https://github.com/EdwinZhanCN/Lumen-Hub/blob/main/crates/lumen-hub/tools/fastvlm/model_info.example.json)
 
 ## Runtime Metadata
 

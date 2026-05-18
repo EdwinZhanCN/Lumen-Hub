@@ -50,14 +50,14 @@ jobs:
                   CXXFLAGS: /MD
               run: cargo test -p lumen-hub --no-default-features --features profile-windows-x64-dml
 
-            - name: Build dist profile
+            - name: Build hub dist profile
               env:
                   RUSTFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
                   CFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
                   CXXFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
               run: cargo xtask dist --profile ${{ matrix.profile }}
 
-            - name: Check dist layout
+            - name: Check hub dist layout
               shell: pwsh
               run: |
                   $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
@@ -83,34 +83,100 @@ jobs:
                   if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime_providers_openvino.so"))) { throw "missing OpenVINO provider library" }
                   if (!(Test-Path (Join-Path $artifact "licenses/openvino/README.md"))) { throw "missing OpenVINO notice" }
 
-            - name: Package archive
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: hub-${{ matrix.profile }}
+                  path: dist/${{ matrix.archive }}
+                  if-no-files-found: error
+
+    cli:
+        name: cli-${{ matrix.target }}
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - target: darwin-arm64
+                      os: macos-15
+                      archive: lumen-cli-darwin-arm64.tar.gz
+                    - target: linux-x64
+                      os: ubuntu-24.04
+                      archive: lumen-cli-linux-x64.tar.gz
+                    - target: windows-x64
+                      os: windows-2025
+                      archive: lumen-cli-windows-x64.zip
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - name: Build CLI dist
+              env:
+                  RUSTFLAGS: ${{ matrix.target == 'windows-x64' && '-C target-feature=-crt-static' || '' }}
+                  CFLAGS: ${{ matrix.target == 'windows-x64' && '/MD' || '' }}
+                  CXXFLAGS: ${{ matrix.target == 'windows-x64' && '/MD' || '' }}
+              run: cargo xtask cli-dist --target ${{ matrix.target }}
+
+            - name: Check CLI dist layout
               shell: pwsh
               run: |
-                  New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-
-                  $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
-                  $archive = Join-Path "release-assets" "${{ matrix.archive }}"
-
+                  $artifact = Join-Path "dist" "lumen-cli-${{ matrix.target }}"
+                  if (!(Test-Path (Join-Path $artifact "README.md"))) { throw "missing README.md" }
+                  if (!(Test-Path (Join-Path $artifact "licenses"))) { throw "missing licenses directory" }
                   if ($env:RUNNER_OS -eq "Windows") {
-                    Compress-Archive -Path (Join-Path $artifact "*") -DestinationPath $archive -Force
+                    if (!(Test-Path (Join-Path $artifact "bin/lumen-cli.exe"))) { throw "missing bin/lumen-cli.exe" }
                   } else {
-                    tar -czf $archive -C dist "lumen-hub-${{ matrix.profile }}"
-                  }
-
-                  if (!(Test-Path $archive)) {
-                    throw "missing archive $archive"
+                    if (!(Test-Path (Join-Path $artifact "bin/lumen-cli"))) { throw "missing bin/lumen-cli" }
                   }
 
             - uses: actions/upload-artifact@v4
               with:
-                  name: ${{ matrix.profile }}
-                  path: release-assets/${{ matrix.archive }}
+                  name: cli-${{ matrix.target }}
+                  path: dist/${{ matrix.archive }}
+                  if-no-files-found: error
+
+    metadata:
+        name: metadata
+        runs-on: ubuntu-24.04
+        needs:
+            - dist
+            - cli
+
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - name: Download archives
+              uses: actions/download-artifact@v4
+              with:
+                  path: release-assets
+                  merge-multiple: true
+
+            - name: Generate manifest, checksums, and installers
+              env:
+                  LUMEN_RELEASE_VERSION: ${{ github.ref_name }}
+                  LUMEN_RELEASE_BASE_URL: https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/${{ github.ref_name }}
+              run: cargo xtask release-metadata --assets-dir release-assets
+
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: metadata
+                  path: |
+                      release-assets/manifest.json
+                      release-assets/checksums.txt
+                      release-assets/install.sh
+                      release-assets/install.ps1
                   if-no-files-found: error
 
     release:
         name: Create GitHub Release
         runs-on: ubuntu-24.04
-        needs: dist
+        needs:
+            - dist
+            - cli
+            - metadata
         if: startsWith(github.ref, 'refs/tags/')
 
         steps:
@@ -129,34 +195,79 @@ jobs:
                   test -f release-assets/lumen-hub-linux-x64-cuda.tar.gz
                   test -f release-assets/lumen-hub-windows-x64-dml.zip
                   test -f release-assets/lumen-hub-linux-x64-openvino.tar.gz
+                  test -f release-assets/lumen-cli-darwin-arm64.tar.gz
+                  test -f release-assets/lumen-cli-linux-x64.tar.gz
+                  test -f release-assets/lumen-cli-windows-x64.zip
+                  test -f release-assets/manifest.json
+                  test -f release-assets/checksums.txt
+                  test -f release-assets/install.sh
+                  test -f release-assets/install.ps1
 
                   ls -lah release-assets
+
+            - name: Build release body
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  TAG: ${{ github.ref_name }}
+              run: |
+                  set -euo pipefail
+
+                  gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+                    -f tag_name="$TAG" \
+                    --jq .body > generated-notes.md
+
+                  cat > release-body.md <<EOF
+                  # ${TAG}
+
+                  ## Install
+
+                  macOS/Linux:
+                  \`\`\`bash
+                  curl -fsSL https://lumilio.org/lumen/install.sh | sh
+                  lumen-cli init
+                  lumen-cli start
+                  \`\`\`
+
+                  Windows:
+                  \`\`\`powershell
+                  irm https://lumilio.org/lumen/install.ps1 | iex
+                  lumen-cli init
+                  lumen-cli start
+                  \`\`\`
+
+                  ## Artifact Matrix
+
+                  | Kind | Profile / Target | Archive |
+                  |---|---|---|
+                  | Hub | \`universal-cpu\` | \`lumen-hub-universal-cpu.tar.gz\` |
+                  | Hub | \`darwin-arm64\` | \`lumen-hub-darwin-arm64.tar.gz\` |
+                  | Hub | \`linux-x64-cuda\` | \`lumen-hub-linux-x64-cuda.tar.gz\` |
+                  | Hub | \`windows-x64-dml\` | \`lumen-hub-windows-x64-dml.zip\` |
+                  | Hub | \`linux-x64-openvino\` | \`lumen-hub-linux-x64-openvino.tar.gz\` |
+                  | CLI | \`darwin-arm64\` | \`lumen-cli-darwin-arm64.tar.gz\` |
+                  | CLI | \`linux-x64\` | \`lumen-cli-linux-x64.tar.gz\` |
+                  | CLI | \`windows-x64\` | \`lumen-cli-windows-x64.zip\` |
+
+                  ## Generated Notes
+                  EOF
+                  cat generated-notes.md >> release-body.md
 
             - name: Create release
               uses: softprops/action-gh-release@v2
               with:
                   prerelease: true
                   fail_on_unmatched_files: true
-                  body: |
-                      # v0.1.0-beta.1
-
-                      ## Artifacts Matrix
-
-                      | Profile | Archive | Target | Runtime (Feature) |
-                      |---|---|---|---|
-                      | `universal-cpu` | `lumen-hub-universal-cpu.tar.gz` | `x86_64-unknown-linux-gnu` | `ort` |
-                      | `darwin-arm64` | `lumen-hub-darwin-arm64.tar.gz` | `aarch64-apple-darwin` | `ort-xnnpack`, `mnn-metal` |
-                      | `linux-x64-cuda` | `lumen-hub-linux-x64-cuda.tar.gz` | `x86_64-unknown-linux-gnu` | `ort-cuda` |
-                      | `windows-x64-dml` | `lumen-hub-windows-x64-dml.zip` | `x86_64-pc-windows-msvc` | `ort-directml` |
-                      | `linux-x64-openvino` | `lumen-hub-linux-x64-openvino.tar.gz` | `x86_64-unknown-linux-gnu` | `ort-openvino (via ort-load-dynamic)` |
-
-                      ## Notes
-
-                      - `linux-x64-openvino` contains OpenVINO runtime libraries
-                      - Run `lumen-cli init` to initialize your service
+                  body_path: release-body.md
                   files: |
                       release-assets/lumen-hub-universal-cpu.tar.gz
                       release-assets/lumen-hub-darwin-arm64.tar.gz
                       release-assets/lumen-hub-linux-x64-cuda.tar.gz
                       release-assets/lumen-hub-windows-x64-dml.zip
                       release-assets/lumen-hub-linux-x64-openvino.tar.gz
+                      release-assets/lumen-cli-darwin-arm64.tar.gz
+                      release-assets/lumen-cli-linux-x64.tar.gz
+                      release-assets/lumen-cli-windows-x64.zip
+                      release-assets/manifest.json
+                      release-assets/checksums.txt
+                      release-assets/install.sh
+                      release-assets/install.ps1

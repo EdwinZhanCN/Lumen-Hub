@@ -25,7 +25,7 @@ SigLIP dual-encoder service for text and image embeddings.
 | `tokenizer.json` | text task only | Tokenizer artifact |
 | `{runtime}/{component}.{precision}.{ext}` | yes | Model artifact |
 
-Complete example: [`crates/lumen-hub/tools/siglip/model_info.example.json`](https://github.com/lumen-rs/lumen-rs/blob/main/crates/lumen-hub/tools/siglip/model_info.example.json)
+Complete example: [`crates/lumen-hub/tools/siglip/model_info.example.json`](https://github.com/EdwinZhanCN/Lumen-Hub/blob/main/crates/lumen-hub/tools/siglip/model_info.example.json)
 
 ## Runtime Metadata
 

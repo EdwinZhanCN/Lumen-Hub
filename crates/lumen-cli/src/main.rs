@@ -13,7 +13,7 @@ use thiserror::Error;
 
 const VERSION: &str = "0.1.0-beta.1";
 const DEFAULT_MANIFEST_URL: &str =
-    "https://github.com/Lumilio-Photos/lumen-rs/releases/download/v0.1.0-beta.1/manifest.json";
+    "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/manifest.json";
 
 fn main() -> ExitCode {
     match run(env::args().collect()) {
@@ -42,7 +42,7 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
 
 fn init() -> Result<(), CliError> {
     intro(format!(" lumen-cli {VERSION} "))?;
-    log::info("Create a Lumilio-Photos preset config for Lumen Hub.")?;
+    log::info("Create a Lumen preset config for Lumen Hub.")?;
 
     let home = home_dir().ok_or(CliError::HomeDirUnavailable)?;
     let lumen_dir = home.join(".lumen");
@@ -1025,7 +1025,7 @@ fn home_dir() -> Option<PathBuf> {
 
 fn print_help() {
     println!(
-        "Usage:\n  lumen-cli init\n  lumen-cli start [--config <path>] [--profile <profile>] [--manifest-url <url>]\n\nCommands:\n  init     Create a Lumilio-Photos preset config for lumen-hub\n  start    Ensure the matching lumen-hub dist is installed, then run it"
+        "Usage:\n  lumen-cli init\n  lumen-cli start [--config <path>] [--profile <profile>] [--manifest-url <url>]\n\nCommands:\n  init     Create a Lumen preset config for lumen-hub\n  start    Ensure the matching lumen-hub dist is installed, then run it"
     );
 }
 

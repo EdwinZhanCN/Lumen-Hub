@@ -1,0 +1,16 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "lumen-install",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-05-18",
+  "routes": [
+    {
+      "pattern": "lumilio.org/lumen/install.sh",
+      "zone_name": "lumilio.org"
+    },
+    {
+      "pattern": "lumilio.org/lumen/install.ps1",
+      "zone_name": "lumilio.org"
+    }
+  ]
+}

@@ -24,7 +24,7 @@ PP-OCR service for end-to-end text detection and recognition.
 | `onnx/detection.{precision}.onnx` | yes | Detection model |
 | `onnx/recognition.{precision}.onnx` | yes | Recognition model |
 
-Complete example: [`crates/lumen-hub/tools/ppocr/model_info.example.json`](https://github.com/lumen-rs/lumen-rs/blob/main/crates/lumen-hub/tools/ppocr/model_info.example.json)
+Complete example: [`crates/lumen-hub/tools/ppocr/model_info.example.json`](https://github.com/EdwinZhanCN/Lumen-Hub/blob/main/crates/lumen-hub/tools/ppocr/model_info.example.json)
 
 ## Runtime Metadata
 

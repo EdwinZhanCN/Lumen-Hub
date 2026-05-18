@@ -11,11 +11,11 @@ const config: Config = {
     v4: true,
   },
 
-  url: "https://lumen-rs.dev",
+  url: "https://lumilio.org",
   baseUrl: "/hub/",
 
-  organizationName: "lumen-rs",
-  projectName: "lumen-rs",
+  organizationName: "EdwinZhanCN",
+  projectName: "Lumen-Hub",
 
   onBrokenLinks: "throw",
 
@@ -35,7 +35,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: "./sidebars.ts",
-          editUrl: "https://github.com/lumen-rs/lumen-rs/tree/main/docs/",
+          editUrl: "https://github.com/EdwinZhanCN/Lumen-Hub/tree/main/docs/",
           routeBasePath: "/",
         },
         blog: false,
@@ -65,7 +65,7 @@ const config: Config = {
           label: "Docs",
         },
         {
-          href: "https://github.com/lumen-rs/lumen-rs",
+          href: "https://github.com/EdwinZhanCN/Lumen-Hub",
           label: "GitHub",
           position: "right",
         },
@@ -101,7 +101,7 @@ const config: Config = {
           items: [
             {
               label: "GitHub",
-              href: "https://github.com/lumen-rs/lumen-rs",
+              href: "https://github.com/EdwinZhanCN/Lumen-Hub",
             },
           ],
         },

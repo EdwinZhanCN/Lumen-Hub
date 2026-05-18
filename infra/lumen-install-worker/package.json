@@ -1,0 +1,14 @@
+{
+  "name": "lumen-install-worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "*",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.50.0"
+  }
+}
