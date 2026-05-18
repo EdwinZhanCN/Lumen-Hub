@@ -389,9 +389,20 @@ fn build_service_hub_from_config(
     Ok(hub)
 }
 
+fn home_dir() -> Option<String> {
+    env::var("HOME")
+        .ok()
+        .or_else(|| env::var("USERPROFILE").ok())
+        .or_else(|| {
+            let drive = env::var("HOMEDRIVE").ok()?;
+            let path = env::var("HOMEPATH").ok()?;
+            Some(format!("{drive}{path}"))
+        })
+}
+
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix('~')
-        && let Ok(home) = env::var("HOME")
+        && let Some(home) = home_dir()
     {
         let mut expanded = home;
         expanded.push_str(rest);
@@ -777,7 +788,7 @@ mod tests {
 
     #[test]
     fn expand_tilde_replaces_home() {
-        let home = env::var("HOME").unwrap();
+        let home = home_dir().expect("home directory should be available in tests");
         let expanded = expand_tilde("~/.lumen/models");
         assert_eq!(expanded, format!("{home}/.lumen/models"));
     }
