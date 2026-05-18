@@ -12,7 +12,7 @@ const OPENVINO_WHEEL_SHA256: &str =
     "3007c803634cc69c6d52af1dea7ce729d9bb62b9a11070fd2f959119199007a8";
 const OPENVINO_WHEEL_FILE: &str =
     "onnxruntime_openvino-1.24.1-cp311-cp311-manylinux_2_28_x86_64.whl";
-const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.2";
+const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.3";
 const DEFAULT_RELEASE_BASE_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download";
 
@@ -30,7 +30,6 @@ fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("dist") => dist(args.collect()),
-        Some("cli-dist") => cli_dist(args.collect()),
         Some("release-metadata") => release_metadata(args.collect()),
         Some("--help" | "-h") | None => {
             print_help();
@@ -42,15 +41,10 @@ fn run() -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "Usage:\n  cargo xtask dist --profile <profile>\n  cargo xtask cli-dist --target <target>\n  cargo xtask release-metadata [--assets-dir <dir>]\n\nProfiles:\n  {}\n\nCLI targets:\n  {}",
+        "Usage:\n  cargo xtask dist --profile <profile>\n  cargo xtask release-metadata [--assets-dir <dir>]\n\nProfiles:\n  {}",
         PROFILES
             .iter()
             .map(|profile| profile.name)
-            .collect::<Vec<_>>()
-            .join("\n  "),
-        CLI_TARGETS
-            .iter()
-            .map(|target| target.name)
             .collect::<Vec<_>>()
             .join("\n  ")
     );
@@ -113,49 +107,6 @@ fn dist(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-fn cli_dist(args: Vec<String>) -> Result<(), String> {
-    let target_name = parse_target_name(args)?;
-    let cli_target = CLI_TARGETS
-        .iter()
-        .find(|target| target.name == target_name)
-        .ok_or_else(|| {
-            format!(
-                "unknown CLI target `{target_name}`; expected one of: {}",
-                CLI_TARGETS
-                    .iter()
-                    .map(|target| target.name)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })?;
-    let root = workspace_root()?;
-    let archive_dir = root.join("dist").join(cli_target.archive_name);
-
-    if archive_dir.exists() {
-        fs::remove_dir_all(&archive_dir).map_err(|err| {
-            format!(
-                "failed to remove existing CLI dist directory `{}`: {err}",
-                archive_dir.display()
-            )
-        })?;
-    }
-    fs::create_dir_all(archive_dir.join("bin")).map_err(|err| {
-        format!(
-            "failed to create CLI dist bin directory `{}`: {err}",
-            archive_dir.join("bin").display()
-        )
-    })?;
-
-    build_cli_target(cli_target, &root)?;
-    copy_cli_target_binary(cli_target, &root, &archive_dir)?;
-    prepare_licenses(&root, &archive_dir)?;
-    write_cli_readme(cli_target, &archive_dir)?;
-    let archive_path = package_cli_archive(cli_target, &root, &archive_dir)?;
-    println!("CLI dist artifact prepared at {}", archive_dir.display());
-    println!("CLI release archive prepared at {}", archive_path.display());
-    Ok(())
-}
-
 fn release_metadata(args: Vec<String>) -> Result<(), String> {
     let root = workspace_root()?;
     let assets_dir = parse_assets_dir(args, &root)?;
@@ -168,8 +119,6 @@ fn release_metadata(args: Vec<String>) -> Result<(), String> {
 
     let base_url = release_base_url();
     write_release_manifest(&assets_dir, &base_url)?;
-    write_install_sh(&assets_dir, &base_url)?;
-    write_install_ps1(&assets_dir, &base_url)?;
     write_top_level_checksums(&assets_dir)?;
     println!("release metadata prepared at {}", assets_dir.display());
     Ok(())
@@ -180,14 +129,6 @@ fn parse_profile_name(args: Vec<String>) -> Result<String, String> {
         [flag, value] if flag == "--profile" => Ok(value.clone()),
         [value] => Ok(value.clone()),
         _ => Err("expected `dist --profile <profile>`".to_owned()),
-    }
-}
-
-fn parse_target_name(args: Vec<String>) -> Result<String, String> {
-    match args.as_slice() {
-        [flag, value] if flag == "--target" => Ok(value.clone()),
-        [value] => Ok(value.clone()),
-        _ => Err("expected `cli-dist --target <target>`".to_owned()),
     }
 }
 
@@ -265,33 +206,6 @@ fn build_profile(profile: &DistProfile, root: &Path) -> Result<(), String> {
         ));
     }
 
-    Ok(())
-}
-
-fn build_cli_target(cli_target: &CliTarget, root: &Path) -> Result<(), String> {
-    let mut command = Command::new("cargo");
-    command.current_dir(root).args([
-        "build",
-        "-p",
-        "lumen-cli",
-        "--release",
-        "--target",
-        cli_target.rust_target,
-    ]);
-    if cli_target.rust_target.contains("windows") {
-        command.env("RUSTFLAGS", rustflags_without_static_crt());
-        command.env("CFLAGS", "/MD");
-        command.env("CXXFLAGS", "/MD");
-    }
-    let status = command
-        .status()
-        .map_err(|err| format!("failed to spawn lumen-cli cargo build: {err}"))?;
-    if !status.success() {
-        return Err(format!(
-            "lumen-cli cargo build failed for target `{}` with status {status}",
-            cli_target.name
-        ));
-    }
     Ok(())
 }
 
@@ -374,29 +288,6 @@ fn copy_cli_binary(profile: &DistProfile, root: &Path, archive_dir: &Path) -> Re
         .join("release")
         .join(exe_name);
     let dst = archive_dir.join("bin").join(exe_name);
-
-    fs::copy(&src, &dst).map_err(|err| {
-        format!(
-            "failed to copy CLI binary `{}` to `{}`: {err}",
-            src.display(),
-            dst.display()
-        )
-    })?;
-    make_executable(&dst)?;
-    Ok(())
-}
-
-fn copy_cli_target_binary(
-    cli_target: &CliTarget,
-    root: &Path,
-    archive_dir: &Path,
-) -> Result<(), String> {
-    let src = root
-        .join("target")
-        .join(cli_target.rust_target)
-        .join("release")
-        .join(cli_target.exe_name);
-    let dst = archive_dir.join("bin").join(cli_target.exe_name);
 
     fs::copy(&src, &dst).map_err(|err| {
         format!(
@@ -616,15 +507,6 @@ fn write_readme(profile: &DistProfile, archive_dir: &Path) -> Result<(), String>
         .map_err(|err| format!("failed to write README.md: {err}"))
 }
 
-fn write_cli_readme(cli_target: &CliTarget, archive_dir: &Path) -> Result<(), String> {
-    let body = format!(
-        "# {}\n\nTarget: `{}`\nRust target: `{}`\n\nLayout:\n- `bin/`: lumen-cli executable\n- `licenses/`: license and third-party notices\n\nStart with:\n\n```bash\nlumen-cli init\nlumen-cli start\n```\n",
-        cli_target.archive_name, cli_target.name, cli_target.rust_target
-    );
-    fs::write(archive_dir.join("README.md"), body)
-        .map_err(|err| format!("failed to write CLI README.md: {err}"))
-}
-
 fn prepare_licenses(root: &Path, archive_dir: &Path) -> Result<(), String> {
     let licenses_dir = archive_dir.join("licenses");
     fs::create_dir_all(&licenses_dir)
@@ -713,42 +595,6 @@ fn package_archive(
     Ok(archive_file)
 }
 
-fn package_cli_archive(
-    cli_target: &CliTarget,
-    root: &Path,
-    archive_dir: &Path,
-) -> Result<PathBuf, String> {
-    let dist_dir = root.join("dist");
-    let archive_file = dist_dir.join(cli_target.file_name());
-    if archive_file.exists() {
-        fs::remove_file(&archive_file).map_err(|err| {
-            format!(
-                "failed to remove existing CLI archive `{}`: {err}",
-                archive_file.display()
-            )
-        })?;
-    }
-
-    if cli_target.zip {
-        zip_directory(archive_dir, &archive_file)?;
-    } else {
-        let status = Command::new("tar")
-            .current_dir(&dist_dir)
-            .args(["-czf"])
-            .arg(&archive_file)
-            .arg(cli_target.archive_name)
-            .status()
-            .map_err(|err| format!("failed to spawn `tar`: {err}"))?;
-        if !status.success() {
-            return Err(format!(
-                "failed to create `{}` with tar",
-                archive_file.display()
-            ));
-        }
-    }
-    Ok(archive_file)
-}
-
 fn zip_directory(src_dir: &Path, zip_path: &Path) -> Result<(), String> {
     let file = fs::File::create(zip_path)
         .map_err(|err| format!("failed to create `{}`: {err}", zip_path.display()))?;
@@ -763,15 +609,9 @@ fn zip_directory(src_dir: &Path, zip_path: &Path) -> Result<(), String> {
 
     for relative in files {
         let path = src_dir.join(&relative);
-        let archive_name = Path::new(
-            src_dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| format!("invalid archive directory `{}`", src_dir.display()))?,
-        )
-        .join(&relative);
+        let archive_name = zip_archive_name(src_dir, &relative)?;
         writer
-            .start_file(archive_name.to_string_lossy(), options)
+            .start_file(&archive_name, options)
             .map_err(|err| format!("failed to add `{}` to zip: {err}", relative.display()))?;
         let mut input = fs::File::open(&path)
             .map_err(|err| format!("failed to open `{}`: {err}", path.display()))?;
@@ -782,6 +622,27 @@ fn zip_directory(src_dir: &Path, zip_path: &Path) -> Result<(), String> {
         .finish()
         .map_err(|err| format!("failed to finish `{}`: {err}", zip_path.display()))?;
     Ok(())
+}
+
+fn zip_archive_name(src_dir: &Path, relative: &Path) -> Result<String, String> {
+    let root = src_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("invalid archive directory `{}`", src_dir.display()))?;
+    let mut parts = vec![root.to_owned()];
+    for component in relative.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(format!("invalid zip path `{}`", relative.display()));
+        };
+        let part = part
+            .to_str()
+            .ok_or_else(|| format!("non-UTF-8 zip path `{}`", relative.display()))?;
+        if part.contains('/') || part.contains('\\') {
+            return Err(format!("invalid zip path component `{part}`"));
+        }
+        parts.push(part.to_owned());
+    }
+    Ok(parts.join("/"))
 }
 
 fn write_release_manifest(assets_dir: &Path, base_url: &str) -> Result<(), String> {
@@ -807,299 +668,14 @@ fn write_release_manifest(assets_dir: &Path, base_url: &str) -> Result<(), Strin
         }));
     }
 
-    let mut cli = Vec::new();
-    for target in CLI_TARGETS {
-        let file_name = target.file_name();
-        let path = assets_dir.join(&file_name);
-        if !path.is_file() {
-            continue;
-        }
-        let sha256 = sha256_file(&path)?;
-        cli.push(serde_json::json!({
-            "target": target.name,
-            "file_name": file_name,
-            "url": format!("{}/{}", base_url.trim_end_matches('/'), file_name),
-            "sha256": sha256,
-        }));
-    }
-
     let manifest = serde_json::json!({
         "version": version,
         "hub": hub,
-        "cli": cli,
     });
     let body = serde_json::to_string_pretty(&manifest)
         .map_err(|err| format!("failed to render release manifest: {err}"))?;
     fs::write(assets_dir.join("manifest.json"), body + "\n")
         .map_err(|err| format!("failed to write release manifest: {err}"))
-}
-
-fn write_install_sh(assets_dir: &Path, base_url: &str) -> Result<(), String> {
-    let darwin = cli_installer_artifact(assets_dir, "darwin-arm64")?;
-    let linux = cli_installer_artifact(assets_dir, "linux-x64")?;
-    let body = r#"#!/usr/bin/env sh
-set -eu
-
-RELEASE_BASE_URL="${LUMEN_RELEASE_BASE_URL:-__RELEASE_BASE_URL__}"
-INSTALL_DIR="${LUMEN_INSTALL_DIR:-$HOME/.lumen/bin}"
-
-need() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "error: required command '$1' was not found" >&2
-    exit 1
-  fi
-}
-
-validate_release_base_url() {
-  case "$1" in
-    https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/*/*)
-      echo "error: release base URL must end at the release tag, not an asset path: $1" >&2
-      exit 1
-      ;;
-    https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/*|https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download)
-      ;;
-    *)
-      if [ "${LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS:-}" != "1" ]; then
-        echo "error: refusing untrusted release base URL: $1" >&2
-        echo "set LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS=1 only if you control that mirror" >&2
-        exit 1
-      fi
-      ;;
-  esac
-}
-
-validate_sha256() {
-  if [ "${#1}" -ne 64 ]; then
-    echo "error: invalid sha256 length for $2" >&2
-    exit 1
-  fi
-  case "$1" in
-    *[!0123456789abcdefABCDEF]*)
-      echo "error: invalid sha256 characters for $2" >&2
-      exit 1
-      ;;
-  esac
-}
-
-validate_tar_archive() {
-  archive_path="$1"
-  tar -tzf "$archive_path" >/dev/null
-  tar -tzf "$archive_path" | while IFS= read -r entry; do
-    case "$entry" in
-      ""|..|*/..|/*|../*|*/../*|*\\*)
-        echo "error: unsafe archive entry: $entry" >&2
-        exit 1
-        ;;
-    esac
-  done
-  tar -tvzf "$archive_path" | while IFS= read -r line; do
-    case "$line" in
-      l*|h*)
-        echo "error: archive contains link entry: $line" >&2
-        exit 1
-        ;;
-    esac
-  done
-}
-
-sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{print $1}'
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{print $1}'
-  else
-    echo "error: sha256sum or shasum is required" >&2
-    exit 1
-  fi
-}
-
-need curl
-need awk
-need tar
-need find
-need head
-
-os="$(uname -s)"
-arch="$(uname -m)"
-case "$os:$arch" in
-  Darwin:arm64|Darwin:aarch64)
-    target="darwin-arm64"
-    file_name="__DARWIN_FILE__"
-    expected="__DARWIN_SHA256__"
-    ;;
-  Linux:x86_64|Linux:amd64)
-    target="linux-x64"
-    file_name="__LINUX_FILE__"
-    expected="__LINUX_SHA256__"
-    ;;
-  *)
-    echo "error: unsupported platform $os/$arch; supported: macOS arm64, Linux x64" >&2
-    exit 1
-    ;;
-esac
-
-validate_release_base_url "$RELEASE_BASE_URL"
-validate_sha256 "$expected" "$file_name"
-
-tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT INT TERM
-
-archive="$tmp_dir/$file_name"
-url="${RELEASE_BASE_URL%/}/$file_name"
-
-curl -fsSL "$url" -o "$archive"
-actual="$(sha256_of "$archive")"
-if [ "$actual" != "$expected" ]; then
-  echo "error: checksum mismatch for $file_name" >&2
-  echo "expected: $expected" >&2
-  echo "actual:   $actual" >&2
-  exit 1
-fi
-
-extract_dir="$tmp_dir/extract"
-mkdir -p "$extract_dir" "$INSTALL_DIR"
-validate_tar_archive "$archive"
-tar -xzf "$archive" -C "$extract_dir"
-cli_count="$(find "$extract_dir" -path '*/bin/lumen-cli' -type f | wc -l | awk '{print $1}')"
-if [ "$cli_count" != "1" ]; then
-  echo "error: archive must contain exactly one bin/lumen-cli, found $cli_count" >&2
-  exit 1
-fi
-cli_path="$(find "$extract_dir" -path '*/bin/lumen-cli' -type f | head -n 1)"
-
-cp "$cli_path" "$INSTALL_DIR/lumen-cli"
-chmod 755 "$INSTALL_DIR/lumen-cli"
-
-echo "lumen-cli installed to $INSTALL_DIR/lumen-cli"
-case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
-  *)
-    echo "Add this to your PATH:"
-    echo "  export PATH=\"$INSTALL_DIR:\$PATH\""
-    ;;
-esac
-echo "Next:"
-echo "  lumen-cli init"
-echo "  lumen-cli start"
-"#
-    .replace("__RELEASE_BASE_URL__", base_url)
-    .replace("__DARWIN_FILE__", &darwin.file_name)
-    .replace("__DARWIN_SHA256__", &darwin.sha256)
-    .replace("__LINUX_FILE__", &linux.file_name)
-    .replace("__LINUX_SHA256__", &linux.sha256);
-    fs::write(assets_dir.join("install.sh"), body)
-        .map_err(|err| format!("failed to write install.sh: {err}"))?;
-    make_executable(&assets_dir.join("install.sh"))
-}
-
-fn write_install_ps1(assets_dir: &Path, base_url: &str) -> Result<(), String> {
-    let windows = cli_installer_artifact(assets_dir, "windows-x64")?;
-    let body = r#"$ErrorActionPreference = "Stop"
-
-$ReleaseBaseUrl = if ($env:LUMEN_RELEASE_BASE_URL) { $env:LUMEN_RELEASE_BASE_URL } else { "__RELEASE_BASE_URL__" }
-$InstallDir = if ($env:LUMEN_INSTALL_DIR) { $env:LUMEN_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Lumen\bin" }
-$FileName = "__WINDOWS_FILE__"
-$Expected = "__WINDOWS_SHA256__"
-
-function Assert-TrustedReleaseBaseUrl {
-    param([string]$Value)
-    $Uri = [Uri]$Value
-    $Official =
-        $Uri.Scheme -eq "https" -and
-        $Uri.Host -eq "github.com" -and
-        ($Uri.AbsolutePath -match "^/EdwinZhanCN/Lumen-Hub/releases/download/[^/]+$" -or
-         $Uri.AbsolutePath -eq "/EdwinZhanCN/Lumen-Hub/releases/latest/download")
-    if (-not $Official -and $env:LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS -ne "1") {
-        throw "refusing untrusted release base URL: $Value; set LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS=1 only if you control that mirror"
-    }
-}
-
-function Assert-Sha256 {
-    param([string]$Value, [string]$Name)
-    if ($Value -notmatch "^[0-9a-fA-F]{64}$") {
-        throw "invalid sha256 for $Name"
-    }
-}
-
-function Test-SafeZipEntryName {
-    param([string]$Name)
-    $Normalized = $Name.Replace('\', '/')
-    if ($Normalized -eq "") { return $true }
-    if ($Normalized.StartsWith("/") -or $Normalized -match "^[A-Za-z]:") { return $false }
-    return @(($Normalized -split "/") | Where-Object { $_ -eq ".." }).Count -eq 0
-}
-
-function Assert-SafeZipArchive {
-    param([string]$Path)
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $Zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
-    try {
-        foreach ($Entry in $Zip.Entries) {
-            if (-not (Test-SafeZipEntryName $Entry.FullName)) {
-                throw "unsafe archive entry: $($Entry.FullName)"
-            }
-        }
-    } finally {
-        $Zip.Dispose()
-    }
-}
-
-if (-not [Environment]::Is64BitOperatingSystem) {
-    throw "unsupported platform: Windows x64 is required"
-}
-
-$TempDir = Join-Path ([IO.Path]::GetTempPath()) ("lumen-install-" + [Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
-
-try {
-    Assert-TrustedReleaseBaseUrl $ReleaseBaseUrl
-    Assert-Sha256 $Expected $FileName
-
-    $ArchivePath = Join-Path $TempDir $FileName
-    $ArchiveUrl = $ReleaseBaseUrl.TrimEnd([char]'/') + "/" + $FileName
-    Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ArchivePath -UseBasicParsing
-    $Actual = (Get-FileHash -Algorithm SHA256 -Path $ArchivePath).Hash.ToLowerInvariant()
-    if ($Actual -ne $Expected.ToLowerInvariant()) {
-        throw "checksum mismatch for $($FileName): expected $Expected, got $Actual"
-    }
-
-    $ExtractDir = Join-Path $TempDir "extract"
-    Assert-SafeZipArchive $ArchivePath
-    Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir -Force
-    $CliMatches = @(Get-ChildItem -Path $ExtractDir -Recurse -File -Filter "lumen-cli.exe" |
-        Where-Object { $_.FullName -match "\\bin\\lumen-cli\.exe$" })
-    if ($CliMatches.Count -ne 1) {
-        throw "archive must contain exactly one bin\lumen-cli.exe, found $($CliMatches.Count)"
-    }
-    $CliPath = $CliMatches[0]
-
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item -Path $CliPath.FullName -Destination (Join-Path $InstallDir "lumen-cli.exe") -Force
-
-    $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $PathParts = @()
-    if ($UserPath) { $PathParts = $UserPath -split ";" | Where-Object { $_ } }
-    if ($PathParts -notcontains $InstallDir) {
-        $NewPath = if ($UserPath) { "$UserPath;$InstallDir" } else { $InstallDir }
-        [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
-    }
-    if (($env:Path -split ";") -notcontains $InstallDir) {
-        $env:Path = "$env:Path;$InstallDir"
-    }
-
-    Write-Host "lumen-cli installed to $(Join-Path $InstallDir "lumen-cli.exe")"
-    Write-Host "Next:"
-    Write-Host "  lumen-cli init"
-    Write-Host "  lumen-cli start"
-} finally {
-    Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
-}
-"#
-    .replace("__RELEASE_BASE_URL__", base_url)
-    .replace("__WINDOWS_FILE__", &windows.file_name)
-    .replace("__WINDOWS_SHA256__", &windows.sha256);
-    fs::write(assets_dir.join("install.ps1"), body)
-        .map_err(|err| format!("failed to write install.ps1: {err}"))
 }
 
 fn write_top_level_checksums(assets_dir: &Path) -> Result<(), String> {
@@ -1116,7 +692,7 @@ fn write_top_level_checksums(assets_dir: &Path) -> Result<(), String> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == "checksums.txt" {
+        if is_internal_release_metadata(&name) {
             continue;
         }
         names.push(name);
@@ -1133,6 +709,14 @@ fn write_top_level_checksums(assets_dir: &Path) -> Result<(), String> {
         .map_err(|err| format!("failed to write top-level checksums.txt: {err}"))
 }
 
+fn is_internal_release_metadata(name: &str) -> bool {
+    name == "checksums.txt"
+        || name == "dist-manifest.json"
+        || name == "global-dist-manifest.json"
+        || name == "plan-dist-manifest.json"
+        || name.ends_with("-dist-manifest.json")
+}
+
 fn release_version() -> String {
     env::var("LUMEN_RELEASE_VERSION")
         .unwrap_or_else(|_| DEFAULT_RELEASE_VERSION.to_owned())
@@ -1145,31 +729,6 @@ fn release_base_url() -> String {
         .unwrap_or_else(|_| DEFAULT_RELEASE_BASE_URL.to_owned())
         .trim_end_matches('/')
         .to_owned()
-}
-
-struct InstallerArtifact {
-    file_name: String,
-    sha256: String,
-}
-
-fn cli_installer_artifact(
-    assets_dir: &Path,
-    target_name: &str,
-) -> Result<InstallerArtifact, String> {
-    let target = CLI_TARGETS
-        .iter()
-        .find(|target| target.name == target_name)
-        .ok_or_else(|| format!("unknown CLI installer target `{target_name}`"))?;
-    let file_name = target.file_name();
-    let path = assets_dir.join(&file_name);
-    if !path.is_file() {
-        return Err(format!(
-            "missing CLI installer artifact `{}`",
-            path.display()
-        ));
-    }
-    let sha256 = sha256_file(&path)?;
-    Ok(InstallerArtifact { file_name, sha256 })
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -1259,24 +818,6 @@ struct DistProfile {
     openvino_bundle: bool,
 }
 
-struct CliTarget {
-    name: &'static str,
-    archive_name: &'static str,
-    rust_target: &'static str,
-    exe_name: &'static str,
-    zip: bool,
-}
-
-impl CliTarget {
-    fn file_name(&self) -> String {
-        if self.zip {
-            format!("{}.zip", self.archive_name)
-        } else {
-            format!("{}.tar.gz", self.archive_name)
-        }
-    }
-}
-
 const PROFILES: &[DistProfile] = &[
     DistProfile {
         name: "universal-cpu",
@@ -1315,26 +856,47 @@ const PROFILES: &[DistProfile] = &[
     },
 ];
 
-const CLI_TARGETS: &[CliTarget] = &[
-    CliTarget {
-        name: "darwin-arm64",
-        archive_name: "lumen-cli-darwin-arm64",
-        rust_target: "aarch64-apple-darwin",
-        exe_name: "lumen-cli",
-        zip: false,
-    },
-    CliTarget {
-        name: "linux-x64",
-        archive_name: "lumen-cli-linux-x64",
-        rust_target: "x86_64-unknown-linux-gnu",
-        exe_name: "lumen-cli",
-        zip: false,
-    },
-    CliTarget {
-        name: "windows-x64",
-        archive_name: "lumen-cli-windows-x64",
-        rust_target: "x86_64-pc-windows-msvc",
-        exe_name: "lumen-cli.exe",
-        zip: true,
-    },
-];
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zip_archive_names_use_forward_slashes() {
+        let src_dir = Path::new("dist").join("lumen-cli-windows-x64");
+        let relative = Path::new("bin").join("lumen-cli.exe");
+        assert_eq!(
+            zip_archive_name(&src_dir, &relative).unwrap(),
+            "lumen-cli-windows-x64/bin/lumen-cli.exe"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn zip_archive_names_reject_backslash_components() {
+        let src_dir = Path::new("dist").join("lumen-cli-windows-x64");
+        assert!(zip_archive_name(&src_dir, Path::new(r"bin\lumen-cli.exe")).is_err());
+    }
+
+    #[test]
+    fn top_level_checksums_ignore_cargo_dist_manifests() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = env::temp_dir().join(format!(
+            "lumen-xtask-checksums-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("lumen-cli-installer.sh"), "installer").unwrap();
+        fs::write(dir.join("aarch64-apple-darwin-dist-manifest.json"), "{}").unwrap();
+        fs::write(dir.join("global-dist-manifest.json"), "{}").unwrap();
+
+        write_top_level_checksums(&dir).unwrap();
+        let checksums = fs::read_to_string(dir.join("checksums.txt")).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(checksums.contains("lumen-cli-installer.sh"));
+        assert!(!checksums.contains("dist-manifest"));
+    }
+}

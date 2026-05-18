@@ -11,7 +11,7 @@ permissions:
 
 jobs:
     dist:
-        name: dist-${{ matrix.profile }}
+        name: hub-${{ matrix.profile }}
         runs-on: ${{ matrix.os }}
         strategy:
             fail-fast: false
@@ -91,22 +91,22 @@ jobs:
                   path: dist/${{ matrix.archive }}
                   if-no-files-found: error
 
-    cli:
+    cli-local:
         name: cli-${{ matrix.target }}
         runs-on: ${{ matrix.os }}
         strategy:
             fail-fast: false
             matrix:
                 include:
-                    - target: darwin-arm64
-                      os: macos-15
-                      archive: lumen-cli-darwin-arm64.tar.gz
-                    - target: linux-x64
-                      os: ubuntu-24.04
-                      archive: lumen-cli-linux-x64.tar.gz
-                    - target: windows-x64
-                      os: windows-2025
-                      archive: lumen-cli-windows-x64.zip
+                    - target: aarch64-apple-darwin
+                      os: macos-14
+                      archive: lumen-cli-aarch64-apple-darwin.tar.xz
+                    - target: x86_64-unknown-linux-gnu
+                      os: ubuntu-22.04
+                      archive: lumen-cli-x86_64-unknown-linux-gnu.tar.xz
+                    - target: x86_64-pc-windows-msvc
+                      os: windows-2022
+                      archive: lumen-cli-x86_64-pc-windows-msvc.zip
 
         steps:
             - uses: actions/checkout@v4
@@ -115,29 +115,79 @@ jobs:
 
             - uses: dtolnay/rust-toolchain@stable
 
-            - name: Build CLI dist
-              env:
-                  RUSTFLAGS: ${{ matrix.target == 'windows-x64' && '-C target-feature=-crt-static' || '' }}
-                  CFLAGS: ${{ matrix.target == 'windows-x64' && '/MD' || '' }}
-                  CXXFLAGS: ${{ matrix.target == 'windows-x64' && '/MD' || '' }}
-              run: cargo xtask cli-dist --target ${{ matrix.target }}
+            - name: Install cargo-dist
+              if: runner.os != 'Windows'
+              run: |
+                  curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh
+                  echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-            - name: Check CLI dist layout
+            - name: Install cargo-dist
+              if: runner.os == 'Windows'
               shell: pwsh
               run: |
-                  $artifact = Join-Path "dist" "lumen-cli-${{ matrix.target }}"
-                  if (!(Test-Path (Join-Path $artifact "README.md"))) { throw "missing README.md" }
-                  if (!(Test-Path (Join-Path $artifact "licenses"))) { throw "missing licenses directory" }
-                  if ($env:RUNNER_OS -eq "Windows") {
-                    if (!(Test-Path (Join-Path $artifact "bin/lumen-cli.exe"))) { throw "missing bin/lumen-cli.exe" }
-                  } else {
-                    if (!(Test-Path (Join-Path $artifact "bin/lumen-cli"))) { throw "missing bin/lumen-cli" }
-                  }
+                  irm https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.ps1 | iex
+                  "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+            - name: Build lumen-cli with cargo-dist
+              shell: bash
+              run: |
+                  dist build --artifacts=local --target=${{ matrix.target }} --tag=${{ github.ref_name }} --allow-dirty --output-format=json > dist-manifest.json
+                  cp dist-manifest.json "target/distrib/${{ matrix.target }}-dist-manifest.json"
 
             - uses: actions/upload-artifact@v4
               with:
                   name: cli-${{ matrix.target }}
-                  path: dist/${{ matrix.archive }}
+                  path: |
+                      target/distrib/${{ matrix.archive }}
+                      target/distrib/${{ matrix.archive }}.sha256
+                      target/distrib/${{ matrix.target }}-dist-manifest.json
+                  if-no-files-found: error
+
+    cli-global:
+        name: cli-installers
+        runs-on: ubuntu-22.04
+        needs:
+            - cli-local
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - uses: dtolnay/rust-toolchain@stable
+
+            - name: Download CLI archives
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: cli-*
+                  path: target/distrib
+                  merge-multiple: true
+
+            - name: Install cargo-dist
+              run: |
+                  curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh
+                  echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+            - name: Build lumen-cli installers with cargo-dist
+              run: dist build --artifacts=global --tag=${{ github.ref_name }} --allow-dirty
+
+            - name: Check cargo-dist installer metadata
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  test -s target/distrib/sha256.sum
+                  grep -Fq "lumen-cli-aarch64-apple-darwin.tar.xz" target/distrib/sha256.sum
+                  grep -Fq "lumen-cli-x86_64-unknown-linux-gnu.tar.xz" target/distrib/sha256.sum
+                  grep -Fq "lumen-cli-x86_64-pc-windows-msvc.zip" target/distrib/sha256.sum
+                  grep -Fq '_checksum_value=' target/distrib/lumen-cli-installer.sh
+
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: cli-installers
+                  path: |
+                      target/distrib/lumen-cli-installer.sh
+                      target/distrib/lumen-cli-installer.ps1
+                      target/distrib/sha256.sum
                   if-no-files-found: error
 
     metadata:
@@ -145,7 +195,8 @@ jobs:
         runs-on: ubuntu-24.04
         needs:
             - dist
-            - cli
+            - cli-local
+            - cli-global
 
         steps:
             - uses: actions/checkout@v4
@@ -160,7 +211,7 @@ jobs:
                   path: release-assets
                   merge-multiple: true
 
-            - name: Generate manifest, checksums, and installers
+            - name: Generate hub manifest and top-level checksums
               env:
                   LUMEN_RELEASE_VERSION: ${{ github.ref_name }}
                   LUMEN_RELEASE_BASE_URL: https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/${{ github.ref_name }}
@@ -172,8 +223,6 @@ jobs:
                   path: |
                       release-assets/manifest.json
                       release-assets/checksums.txt
-                      release-assets/install.sh
-                      release-assets/install.ps1
                   if-no-files-found: error
 
     release:
@@ -183,7 +232,8 @@ jobs:
             contents: write
         needs:
             - dist
-            - cli
+            - cli-local
+            - cli-global
             - metadata
         if: startsWith(github.ref, 'refs/tags/')
 
@@ -203,13 +253,17 @@ jobs:
                   test -f release-assets/lumen-hub-linux-x64-cuda.tar.gz
                   test -f release-assets/lumen-hub-windows-x64-dml.zip
                   test -f release-assets/lumen-hub-linux-x64-openvino.tar.gz
-                  test -f release-assets/lumen-cli-darwin-arm64.tar.gz
-                  test -f release-assets/lumen-cli-linux-x64.tar.gz
-                  test -f release-assets/lumen-cli-windows-x64.zip
+                  test -f release-assets/lumen-cli-aarch64-apple-darwin.tar.xz
+                  test -f release-assets/lumen-cli-aarch64-apple-darwin.tar.xz.sha256
+                  test -f release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz
+                  test -f release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz.sha256
+                  test -f release-assets/lumen-cli-x86_64-pc-windows-msvc.zip
+                  test -f release-assets/lumen-cli-x86_64-pc-windows-msvc.zip.sha256
+                  test -f release-assets/lumen-cli-installer.sh
+                  test -f release-assets/lumen-cli-installer.ps1
+                  test -f release-assets/sha256.sum
                   test -f release-assets/manifest.json
                   test -f release-assets/checksums.txt
-                  test -f release-assets/install.sh
-                  test -f release-assets/install.ps1
 
                   ls -lah release-assets
 
@@ -231,14 +285,14 @@ jobs:
 
                   macOS/Linux:
                   \`\`\`bash
-                  curl -fsSL https://lumilio.org/lumen/install.sh | sh
+                  curl --proto '=https' --tlsv1.2 -LsSf https://lumilio.org/lumen/install.sh | sh
                   lumen-cli init
                   lumen-cli start
                   \`\`\`
 
                   Windows:
                   \`\`\`powershell
-                  irm https://lumilio.org/lumen/install.ps1 | iex
+                  powershell -ExecutionPolicy Bypass -c "irm https://lumilio.org/lumen/install.ps1 | iex"
                   lumen-cli init
                   lumen-cli start
                   \`\`\`
@@ -252,9 +306,11 @@ jobs:
                   | Hub | \`linux-x64-cuda\` | \`lumen-hub-linux-x64-cuda.tar.gz\` |
                   | Hub | \`windows-x64-dml\` | \`lumen-hub-windows-x64-dml.zip\` |
                   | Hub | \`linux-x64-openvino\` | \`lumen-hub-linux-x64-openvino.tar.gz\` |
-                  | CLI | \`darwin-arm64\` | \`lumen-cli-darwin-arm64.tar.gz\` |
-                  | CLI | \`linux-x64\` | \`lumen-cli-linux-x64.tar.gz\` |
-                  | CLI | \`windows-x64\` | \`lumen-cli-windows-x64.zip\` |
+                  | CLI | \`aarch64-apple-darwin\` | \`lumen-cli-aarch64-apple-darwin.tar.xz\` |
+                  | CLI | \`x86_64-unknown-linux-gnu\` | \`lumen-cli-x86_64-unknown-linux-gnu.tar.xz\` |
+                  | CLI | \`x86_64-pc-windows-msvc\` | \`lumen-cli-x86_64-pc-windows-msvc.zip\` |
+                  | CLI installer | macOS/Linux | \`lumen-cli-installer.sh\` |
+                  | CLI installer | Windows | \`lumen-cli-installer.ps1\` |
 
                   ## Generated Notes
                   EOF
@@ -263,7 +319,7 @@ jobs:
             - name: Create release
               uses: softprops/action-gh-release@v2
               with:
-                  prerelease: false
+                  prerelease: ${{ contains(github.ref_name, '-') }}
                   fail_on_unmatched_files: true
                   body_path: release-body.md
                   files: |
@@ -272,10 +328,14 @@ jobs:
                       release-assets/lumen-hub-linux-x64-cuda.tar.gz
                       release-assets/lumen-hub-windows-x64-dml.zip
                       release-assets/lumen-hub-linux-x64-openvino.tar.gz
-                      release-assets/lumen-cli-darwin-arm64.tar.gz
-                      release-assets/lumen-cli-linux-x64.tar.gz
-                      release-assets/lumen-cli-windows-x64.zip
+                      release-assets/lumen-cli-aarch64-apple-darwin.tar.xz
+                      release-assets/lumen-cli-aarch64-apple-darwin.tar.xz.sha256
+                      release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz
+                      release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz.sha256
+                      release-assets/lumen-cli-x86_64-pc-windows-msvc.zip
+                      release-assets/lumen-cli-x86_64-pc-windows-msvc.zip.sha256
+                      release-assets/lumen-cli-installer.sh
+                      release-assets/lumen-cli-installer.ps1
+                      release-assets/sha256.sum
                       release-assets/manifest.json
                       release-assets/checksums.txt
-                      release-assets/install.sh
-                      release-assets/install.ps1

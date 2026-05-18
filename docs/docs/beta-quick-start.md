@@ -9,7 +9,7 @@ Install the CLI, initialize a config, then let `lumen-cli start` download the ma
 ## macOS / Linux
 
 ```bash
-curl -fsSL https://lumilio.org/lumen/install.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://lumilio.org/lumen/install.sh | sh
 lumen-cli init
 lumen-cli start
 ```
@@ -17,7 +17,7 @@ lumen-cli start
 ## Windows
 
 ```powershell
-irm https://lumilio.org/lumen/install.ps1 | iex
+powershell -ExecutionPolicy Bypass -c "irm https://lumilio.org/lumen/install.ps1 | iex"
 lumen-cli init
 lumen-cli start
 ```

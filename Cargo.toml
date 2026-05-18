@@ -3,3 +3,22 @@ members = [
     "crates/*",
 ]
 resolver = "2"  # 推荐使用 resolver 2
+
+[workspace.metadata.dist]
+cargo-dist-version = "0.31.0"
+ci = ["github"]
+installers = ["shell", "powershell"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+packages = ["lumen-cli"]
+install-path = "~/.lumen/bin"
+install-success-msg = "lumen-cli installed.\n\nNext:\n  lumen-cli init\n  lumen-cli start"
+msvc-crt-static = true
+precise-builds = true
+source-tarball = false
+
+[profile.dist]
+inherits = "release"

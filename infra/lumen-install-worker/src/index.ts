@@ -3,11 +3,11 @@ const GITHUB_RELEASE_BASE =
 
 const INSTALLERS: Record<string, { fileName: string; contentType: string }> = {
   "/lumen/install.sh": {
-    fileName: "install.sh",
+    fileName: "lumen-cli-installer.sh",
     contentType: "application/x-sh; charset=utf-8",
   },
   "/lumen/install.ps1": {
-    fileName: "install.ps1",
+    fileName: "lumen-cli-installer.ps1",
     contentType: "text/plain; charset=utf-8",
   },
 };

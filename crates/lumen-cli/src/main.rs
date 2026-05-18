@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const VERSION: &str = "0.1.0-beta.1";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_MANIFEST_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/manifest.json";
 const OFFICIAL_RELEASE_DOWNLOAD_PREFIX: &str =
@@ -484,13 +484,10 @@ fn extract_zip(archive_path: &Path, install_dir: &Path) -> Result<(), CliError> 
     let mut archive = zip::ZipArchive::new(file)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
+        let path = normalize_zip_archive_path(entry.name())?;
         if entry.is_dir() {
             continue;
         }
-        let Some(path) = entry.enclosed_name() else {
-            continue;
-        };
-        validate_archive_path(&path)?;
         let relative = strip_archive_root(&path);
         if relative.as_os_str().is_empty() {
             continue;
@@ -691,19 +688,30 @@ fn validate_sha256_text(value: &str, file_name: &str) -> Result<(), CliError> {
 
 fn validate_archive_path(path: &Path) -> Result<(), CliError> {
     let path_text = path.to_string_lossy();
-    if path_text.is_empty()
-        || path_text.starts_with('/')
-        || path_text.starts_with('\\')
-        || path_text.contains('\\')
-        || path_text.contains(':')
-        || path_text.split('/').any(|part| part == "..")
-    {
+    if path_text.contains('\\') || is_unsafe_normalized_archive_name(&path_text) {
         return Err(CliError::InvalidArgument(format!(
             "unsafe archive entry `{}`",
             path.display()
         )));
     }
     Ok(())
+}
+
+fn normalize_zip_archive_path(name: &str) -> Result<PathBuf, CliError> {
+    let normalized = name.replace('\\', "/");
+    if is_unsafe_normalized_archive_name(&normalized) {
+        return Err(CliError::InvalidArgument(format!(
+            "unsafe archive entry `{name}`"
+        )));
+    }
+    Ok(PathBuf::from(normalized))
+}
+
+fn is_unsafe_normalized_archive_name(name: &str) -> bool {
+    name.is_empty()
+        || name.starts_with('/')
+        || name.contains(':')
+        || name.split('/').any(|part| part == "..")
 }
 
 fn sha256_file(path: &Path) -> Result<String, CliError> {
@@ -1649,5 +1657,18 @@ mod tests {
         assert!(validate_archive_path(Path::new("lumen-hub/../bin/lumen-hub")).is_err());
         assert!(validate_archive_path(Path::new("/tmp/lumen-hub")).is_err());
         assert!(validate_archive_path(Path::new(r"lumen-hub\bin\lumen-hub")).is_err());
+    }
+
+    #[test]
+    fn normalizes_legacy_windows_zip_entry_paths() {
+        assert_eq!(
+            normalize_zip_archive_path(r"lumen-hub-windows-x64-dml\README.md")
+                .unwrap()
+                .to_string_lossy(),
+            "lumen-hub-windows-x64-dml/README.md"
+        );
+        assert!(normalize_zip_archive_path(r"..\lumen-hub.exe").is_err());
+        assert!(normalize_zip_archive_path(r"C:\tmp\lumen-hub.exe").is_err());
+        assert!(normalize_zip_archive_path(r"\\server\share\lumen-hub.exe").is_err());
     }
 }

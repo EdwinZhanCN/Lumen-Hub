@@ -1,7 +1,8 @@
 [package]
 name = "lumen-cli"
-version = "0.1.0"
+version = "0.1.0-beta.3"
 edition = "2024"
+repository = "https://github.com/EdwinZhanCN/Lumen-Hub"
 
 [dependencies]
 cliclack = "0.5.4"

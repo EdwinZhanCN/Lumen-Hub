@@ -2,9 +2,9 @@
 sidebar_position: 2
 ---
 
-# Beta Local Dist
+# Beta Dist
 
-The first Lumen Hub beta ships as local dist directories, not GitHub Release tags.
+Hub runtime profiles are built with `cargo xtask dist`. The public `lumen-cli` release archives and shell/PowerShell installers are built with `cargo-dist`.
 
 ## Profiles
 
@@ -26,6 +26,13 @@ cargo xtask dist --profile darwin-arm64
 cargo xtask dist --profile linux-x64-cuda
 cargo xtask dist --profile windows-x64-dml
 cargo xtask dist --profile linux-x64-openvino
+```
+
+CLI release assets are produced by the release workflow with:
+
+```bash
+dist build --artifacts=local --target <target> --tag <tag>
+dist build --artifacts=global --tag <tag>
 ```
 
 Each artifact is written under `dist/lumen-hub-<profile>/` with this layout:
