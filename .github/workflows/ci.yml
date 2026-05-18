@@ -42,4 +42,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Check profile
+        env:
+          RUSTFLAGS: ${{ matrix.name == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
+          CFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
+          CXXFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
         run: cargo check -p lumen-hub --no-default-features --features ${{ matrix.features }}

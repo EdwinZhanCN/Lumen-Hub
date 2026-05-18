@@ -29,8 +29,16 @@ jobs:
         run: cargo test -p lumen-hub --no-default-features --features profile-universal-cpu
       - name: Basic Windows DML smoke
         if: matrix.profile == 'windows-x64-dml'
+        env:
+          RUSTFLAGS: -C target-feature=-crt-static
+          CFLAGS: /MD
+          CXXFLAGS: /MD
         run: cargo test -p lumen-hub --no-default-features --features profile-windows-x64-dml
       - name: Build dist profile
+        env:
+          RUSTFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
+          CFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
+          CXXFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
         run: cargo xtask dist --profile ${{ matrix.profile }}
       - name: Check dist layout
         shell: pwsh

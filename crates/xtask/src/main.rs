@@ -137,19 +137,20 @@ fn workspace_root() -> Result<PathBuf, String> {
 
 fn build_profile(profile: &DistProfile, root: &Path) -> Result<(), String> {
     let features = profile.features.join(",");
-    let hub_status = Command::new("cargo")
-        .current_dir(root)
-        .args([
-            "build",
-            "-p",
-            "lumen-hub",
-            "--release",
-            "--no-default-features",
-            "--target",
-            profile.target,
-            "--features",
-            &features,
-        ])
+    let mut hub_command = Command::new("cargo");
+    hub_command.current_dir(root).args([
+        "build",
+        "-p",
+        "lumen-hub",
+        "--release",
+        "--no-default-features",
+        "--target",
+        profile.target,
+        "--features",
+        &features,
+    ]);
+    configure_profile_build_env(profile, &mut hub_command);
+    let hub_status = hub_command
         .status()
         .map_err(|err| format!("failed to spawn lumen-hub cargo build: {err}"))?;
     if !hub_status.success() {
@@ -159,16 +160,17 @@ fn build_profile(profile: &DistProfile, root: &Path) -> Result<(), String> {
         ));
     }
 
-    let cli_status = Command::new("cargo")
-        .current_dir(root)
-        .args([
-            "build",
-            "-p",
-            "lumen-cli",
-            "--release",
-            "--target",
-            profile.target,
-        ])
+    let mut cli_command = Command::new("cargo");
+    cli_command.current_dir(root).args([
+        "build",
+        "-p",
+        "lumen-cli",
+        "--release",
+        "--target",
+        profile.target,
+    ]);
+    configure_profile_build_env(profile, &mut cli_command);
+    let cli_status = cli_command
         .status()
         .map_err(|err| format!("failed to spawn lumen-cli cargo build: {err}"))?;
     if !cli_status.success() {
@@ -179,6 +181,35 @@ fn build_profile(profile: &DistProfile, root: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn configure_profile_build_env(profile: &DistProfile, command: &mut Command) {
+    if profile.target.contains("windows") {
+        command.env("RUSTFLAGS", rustflags_without_static_crt());
+        command.env("CFLAGS", "/MD");
+        command.env("CXXFLAGS", "/MD");
+    }
+}
+
+fn rustflags_without_static_crt() -> String {
+    let mut flags = env::var("RUSTFLAGS").unwrap_or_default();
+    if !flags
+        .split_whitespace()
+        .any(|flag| flag == "-C" || flag.contains("target-feature=-crt-static"))
+    {
+        if !flags.is_empty() {
+            flags.push(' ');
+        }
+        flags.push_str("-C target-feature=-crt-static");
+        return flags;
+    }
+    if !flags.contains("target-feature=-crt-static") {
+        if !flags.is_empty() {
+            flags.push(' ');
+        }
+        flags.push_str("-C target-feature=-crt-static");
+    }
+    flags
 }
 
 fn copy_binary(profile: &DistProfile, root: &Path, archive_dir: &Path) -> Result<(), String> {
