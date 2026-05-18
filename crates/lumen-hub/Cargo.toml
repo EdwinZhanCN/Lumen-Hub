@@ -58,7 +58,6 @@ profile-linux-x64-cuda = [
   "siglip",
   "ort-download-binaries",
   "ort-cuda",
-  "mnn-cuda",
 ]
 profile-windows-x64-dml = [
   "clip",

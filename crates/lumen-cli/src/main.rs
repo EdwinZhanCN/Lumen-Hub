@@ -803,11 +803,6 @@ fn backend_choices(platform: PlatformProfile) -> Vec<BackendChoice> {
                 "NVIDIA runtime was not detected",
             ),
             BackendChoice::new(
-                Backend::mnn_cuda(),
-                detect_nvidia().then_some(()),
-                "NVIDIA runtime was not detected",
-            ),
-            BackendChoice::new(
                 Backend::ort_openvino(),
                 glibc_meets(2, 28).then_some(()),
                 "requires Linux x64 with glibc 2.28+",
@@ -1135,16 +1130,6 @@ impl Backend {
             release_profile: "linux-x64-cuda",
             cv_runtime: "onnx",
             semantic_runtime: "onnx",
-            semantic_precision: "fp16",
-        }
-    }
-
-    fn mnn_cuda() -> Self {
-        Self {
-            name: "mnn-cuda",
-            release_profile: "linux-x64-cuda",
-            cv_runtime: "mnn",
-            semantic_runtime: "mnn",
             semantic_precision: "fp16",
         }
     }

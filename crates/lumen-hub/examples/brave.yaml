@@ -1,8 +1,8 @@
 # Lumen Hub brave beta config.
 #
 # Includes: OCR, SigLIP, InsightFace, FastVLM, BioCLIP.
-# Target packages: darwin-arm64 or linux-x64-cuda beta builds.
-# For universal-cpu/windows-dml builds, change `runtime: mnn` to `runtime: onnx`.
+# Target package: darwin-arm64 beta build with MNN Metal.
+# For universal-cpu/linux-cuda/windows-dml/openvino builds, change `runtime: mnn` to `runtime: onnx`.
 #
 # Total minimum requirement:
 #   RAM: 32 GB

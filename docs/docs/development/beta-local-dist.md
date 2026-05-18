@@ -12,7 +12,7 @@ The first Lumen Hub beta ships as local dist directories, not GitHub Release tag
 | --- | --- | --- |
 | `universal-cpu` | ORT CPU | Portable CPU baseline. |
 | `darwin-arm64` | ORT CPU/XNNPACK + MNN Metal | No CoreML, no Candle. |
-| `linux-x64-cuda` | ORT CUDA + MNN CUDA | Requires CUDA runtime libraries on the target machine. |
+| `linux-x64-cuda` | ORT CUDA | CUDA package is ORT-only for beta. MNN CUDA is not bundled. |
 | `windows-x64-dml` | ORT DirectML + ORT CPU | No MNN. |
 | `linux-x64-openvino` | ORT OpenVINO + dynamic ORT loading | Bundles OpenVINO-enabled ONNX Runtime libraries. |
 
