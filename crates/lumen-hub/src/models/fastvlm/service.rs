@@ -33,13 +33,14 @@ impl FastVlmService {
         let mut model_ids = Vec::new();
         let mut runtime_str = String::new();
 
-        for (alias, model_config) in &service_config.models {
+        for (_alias, model_config) in &service_config.models {
             let model_name = &model_config.model;
             let precision = model_config.precision.as_deref().unwrap_or("fp32");
             let model_info = factory.load_model_info(model_name)?;
             let runtime_key = match model_config.runtime {
                 lumen_schema::Runtime::Onnx | lumen_schema::Runtime::CandleOnnx => "onnx",
                 lumen_schema::Runtime::Rknn => "rknn",
+                lumen_schema::Runtime::Mnn => "mnn",
             };
             let runtime_spec = model_info
                 .runtimes

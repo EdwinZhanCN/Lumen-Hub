@@ -90,6 +90,18 @@ impl SiglipService {
                             precision,
                             &context,
                         )?;
+                        let input_descriptors = task_config
+                            .input_names
+                            .iter()
+                            .map(|input_name| {
+                                forward_node.input_descriptors().get(input_name).cloned().ok_or_else(|| {
+                                    ServiceError::InvalidArgument(format!(
+                                        "model `{model_name}` text task `{task_key}` references \
+                                         unknown model input `{input_name}`"
+                                    ))
+                                })
+                            })
+                            .collect::<ServiceResult<Vec<_>>>()?;
                         let tokenizer = factory.load_tokenizer(model_name)?;
                         let pipeline = build_embedding_pipeline(
                             format!("{}_{}_{}", service_name, alias, task_key),
@@ -105,6 +117,7 @@ impl SiglipService {
                             Arc::clone(&context),
                             model_name,
                             task_config.input_names.clone(),
+                            input_descriptors,
                             "embedding",
                             tokenizer,
                         )?;

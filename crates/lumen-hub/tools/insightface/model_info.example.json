@@ -1,0 +1,49 @@
+{
+  "name": "antelopev2",
+  "version": "1.0.0",
+  "description": "InsightFace antelopev2 SCRFD detection and ArcFace recognition package.",
+  "model_type": "face",
+  "source": {
+    "format": "custom",
+    "repo_id": "insightface/antelopev2"
+  },
+  "runtimes": {
+    "onnx": {
+      "available": true,
+      "components": ["detection", "recognition"],
+      "precisions": ["fp32"]
+    }
+  },
+  "task_metadata": {
+    "tasks": {
+      "face_recognition": {
+        "pack": "antelopev2",
+        "detection": {
+          "component": "detection",
+          "input_name": "input.1",
+          "output_names": [
+            "448",
+            "471",
+            "494",
+            "451",
+            "474",
+            "497",
+            "454",
+            "477",
+            "500"
+          ]
+        },
+        "recognition": {
+          "component": "recognition",
+          "input_name": "input.1",
+          "output_name": "1333"
+        }
+      }
+    }
+  },
+  "metadata": {
+    "license": "unknown",
+    "author": "InsightFace",
+    "tags": ["insightface", "face", "scrfd", "arcface", "onnx"]
+  }
+}

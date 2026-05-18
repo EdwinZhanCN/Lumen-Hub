@@ -168,7 +168,7 @@ fn accelerated_execution_providers() -> Result<ExecutionProviderPlan, OrtEnvInit
                     ort::ep::coreml::SpecializationStrategy::FastPrediction,
                 )
                 .with_low_precision_accumulation_on_gpu(false)
-                .with_model_cache_directory(coreml_cache.clone())
+                .with_model_cache_dir(coreml_cache.clone())
                 .build(),
         );
         provider_names.push(format!("CoreML(MLProgram,ALL,cache={coreml_cache})"));

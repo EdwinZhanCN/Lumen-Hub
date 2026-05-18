@@ -10,22 +10,28 @@ use std::{
     },
 };
 
+use console::style;
 #[cfg(feature = "clip")]
 use lumen_hub::models::clip::ClipService;
 #[cfg(feature = "fastvlm")]
 use lumen_hub::models::fastvlm::FastVlmService;
+#[cfg(feature = "insightface")]
+use lumen_hub::models::insightface::InsightFaceService;
 #[cfg(feature = "ppocr")]
 use lumen_hub::models::ppocr::PpocrService;
 #[cfg(feature = "siglip")]
 use lumen_hub::models::siglip::SiglipService;
 use lumen_hub::{
     daemon::{DaemonError, bind_addr, serve_grpc_with_shutdown},
+    model_download::{ModelDownloadError, ensure_models_for_config},
     service::ServiceHub,
+    warmup::{WarmupError, default_warmup_dir, run_startup_warmup},
 };
 use lumen_schema::{ConfigValidationError, LumenConfig, Mode, ServerConfig};
 #[cfg(any(
     feature = "clip",
     feature = "fastvlm",
+    feature = "insightface",
     feature = "ppocr",
     feature = "siglip"
 ))]
@@ -34,6 +40,7 @@ use thiserror::Error;
 use tracing::{
     Event, Level, Metadata, Subscriber,
     field::{Field, Visit},
+    info,
     level_filters::LevelFilter,
     span::{Attributes, Id, Record},
     subscriber::{Interest, SetGlobalDefaultError, set_global_default},
@@ -59,6 +66,8 @@ where
 {
     let cli = parse_args(args)?;
     init_logging(cli.log_level)?;
+    info!("lumen-hub starting");
+    info!(config = %cli.config_path.display(), "loading config");
     let config = load_config(&cli.config_path)?;
 
     if config.deployment.mode != Mode::Hub {
@@ -67,14 +76,25 @@ where
         });
     }
 
-    let hub = build_service_hub_from_config(&config)?;
+    let cache_dir = expand_tilde(&config.metadata.cache_dir);
+    info!(
+        region = ?config.metadata.region,
+        cache = %cache_dir,
+        services = %config.deployment_service_names().join(", "),
+        "startup plan"
+    );
+    info!("ensuring model cache");
+    ensure_models_for_config(&config, &cache_dir)?;
+
+    info!("building service hub");
+    let hub = build_service_hub_from_config(&config, &cache_dir)?;
+    info!("running mandatory warmup");
+    run_startup_warmup(&hub, &default_warmup_dir()).await?;
+
     let server_config = server_config_with_override(&config.server, cli.port_override);
     let addr = bind_addr(&server_config)?;
 
-    println!(
-        "Lumen Hub service listening on {addr} with {} service(s)",
-        hub.len()
-    );
+    info!(addr = %addr, services = hub.len(), "lumen-hub ready");
 
     serve_grpc_with_shutdown(Arc::new(hub), &server_config, shutdown_signal()).await?;
     Ok(())
@@ -167,25 +187,38 @@ fn load_config(path: &PathBuf) -> StartupResult<LumenConfig> {
         path: path.clone(),
         source,
     })?;
-    Ok(LumenConfig::from_json_str(&contents)?)
+    if is_yaml_path(path) {
+        let config = serde_yaml::from_str::<LumenConfig>(&contents).map_err(|source| {
+            StartupError::YamlConfig {
+                path: path.clone(),
+                source,
+            }
+        })?;
+        config.validate_config()?;
+        Ok(config)
+    } else {
+        Ok(LumenConfig::from_json_str(&contents)?)
+    }
 }
 
-fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceHub> {
+fn is_yaml_path(path: &PathBuf) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "yaml" | "yml"))
+}
+
+fn build_service_hub_from_config(
+    config: &LumenConfig,
+    cache_dir: &str,
+) -> StartupResult<ServiceHub> {
     #[cfg(any(
         feature = "clip",
         feature = "fastvlm",
+        feature = "insightface",
         feature = "ppocr",
         feature = "siglip"
     ))]
     let context = MLContext::new(MLContextOptions::default()).map_err(StartupError::ContextInit)?;
-
-    #[cfg(any(
-        feature = "clip",
-        feature = "fastvlm",
-        feature = "ppocr",
-        feature = "siglip"
-    ))]
-    let cache_dir = expand_tilde(&config.metadata.cache_dir);
 
     let requested_services = config
         .deployment_service_names()
@@ -197,6 +230,7 @@ fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceH
         not(any(
             feature = "clip",
             feature = "fastvlm",
+            feature = "insightface",
             feature = "ppocr",
             feature = "siglip"
         )),
@@ -210,6 +244,12 @@ fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceH
                 "deployment references unknown service `{service_name}`"
             ))
         })?;
+        info!(
+            service = %service_name,
+            package = %svc_config.package,
+            models = svc_config.models.len(),
+            "loading service"
+        );
 
         match svc_config.package.as_str() {
             #[cfg(feature = "clip")]
@@ -260,6 +300,31 @@ fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceH
                 return Err(StartupError::PackageDisabled {
                     package: svc_config.package.clone(),
                     feature: "fastvlm",
+                });
+            }
+            #[cfg(feature = "insightface")]
+            "insightface" | "lumen_insightface" => {
+                let service = InsightFaceService::from_config(
+                    service_name,
+                    svc_config,
+                    &cache_dir,
+                    Arc::clone(&context),
+                )
+                .map_err(|e| StartupError::ServiceConstruction {
+                    service: service_name.to_owned(),
+                    message: e.to_string(),
+                })?;
+                hub.register(service)
+                    .map_err(|e| StartupError::ServiceConstruction {
+                        service: service_name.to_owned(),
+                        message: e.to_string(),
+                    })?;
+            }
+            #[cfg(not(feature = "insightface"))]
+            "insightface" | "lumen_insightface" => {
+                return Err(StartupError::PackageDisabled {
+                    package: svc_config.package.clone(),
+                    feature: "insightface",
                 });
             }
             #[cfg(feature = "siglip")]
@@ -318,12 +383,12 @@ fn build_service_hub_from_config(config: &LumenConfig) -> StartupResult<ServiceH
                 });
             }
         }
+        info!(service = %service_name, "service ready");
     }
 
     Ok(hub)
 }
 
-#[cfg(any(feature = "clip", feature = "fastvlm", feature = "siglip", test))]
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix('~')
         && let Ok(home) = env::var("HOME")
@@ -373,7 +438,7 @@ async fn shutdown_signal() {
         }
     }
 
-    println!("shutdown signal received");
+    info!("shutdown signal received");
 }
 
 fn print_usage() {
@@ -499,25 +564,22 @@ impl Subscriber for SimpleSubscriber {
 
         let mut fields = LogFields::default();
         event.record(&mut fields);
+        let level = styled_level(metadata.level());
+        let target = style(metadata.target()).dim();
 
         if let Some(message) = fields.message {
             if fields.fields.is_empty() {
-                eprintln!("{} [{}] {}", metadata.level(), metadata.target(), message);
+                eprintln!("{level} [{target}] {message}");
             } else {
                 eprintln!(
-                    "{} [{}] {} {}",
-                    metadata.level(),
-                    metadata.target(),
-                    message,
-                    fields.fields.join(" ")
+                    "{level} [{target}] {message} {}",
+                    style(fields.fields.join(" ")).dim()
                 );
             }
         } else {
             eprintln!(
-                "{} [{}] {}",
-                metadata.level(),
-                metadata.target(),
-                fields.fields.join(" ")
+                "{level} [{target}] {}",
+                style(fields.fields.join(" ")).dim()
             );
         }
     }
@@ -553,6 +615,16 @@ impl Visit for LogFields {
     }
 }
 
+fn styled_level(level: &Level) -> console::StyledObject<&'static str> {
+    match *level {
+        Level::ERROR => style("ERROR").red().bold(),
+        Level::WARN => style("WARN ").yellow().bold(),
+        Level::INFO => style("INFO ").green(),
+        Level::DEBUG => style("DEBUG").blue(),
+        Level::TRACE => style("TRACE").dim(),
+    }
+}
+
 fn level_rank(level: &Level) -> u8 {
     match *level {
         Level::ERROR => 1,
@@ -579,8 +651,20 @@ enum StartupError {
         source: std::io::Error,
     },
 
+    #[error("failed to parse YAML config `{}`: {source}", path.display())]
+    YamlConfig {
+        path: PathBuf,
+        source: serde_yaml::Error,
+    },
+
     #[error("invalid config: {0}")]
     Config(#[from] ConfigValidationError),
+
+    #[error("model download failed: {0}")]
+    ModelDownload(#[from] ModelDownloadError),
+
+    #[error("startup warmup failed: {0}")]
+    Warmup(#[from] WarmupError),
 
     #[error("failed to initialize logging: {0}")]
     Logging(#[from] SetGlobalDefaultError),
@@ -588,6 +672,7 @@ enum StartupError {
     #[cfg(any(
         feature = "clip",
         feature = "fastvlm",
+        feature = "insightface",
         feature = "ppocr",
         feature = "siglip"
     ))]
@@ -603,6 +688,7 @@ enum StartupError {
     #[cfg(any(
         not(feature = "clip"),
         not(feature = "fastvlm"),
+        not(feature = "insightface"),
         not(feature = "ppocr"),
         not(feature = "siglip")
     ))]
@@ -617,6 +703,7 @@ enum StartupError {
     #[cfg(any(
         feature = "clip",
         feature = "fastvlm",
+        feature = "insightface",
         feature = "ppocr",
         feature = "siglip"
     ))]
@@ -675,6 +762,17 @@ mod tests {
 
         assert_eq!(overridden.port, 50_052);
         assert_eq!(overridden.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn load_config_accepts_yaml_examples() {
+        for name in ["minimal.yaml", "basic.yaml", "brave.yaml"] {
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("examples")
+                .join(name);
+            load_config(&path)
+                .unwrap_or_else(|error| panic!("expected `{}` to parse: {error}", path.display()));
+        }
     }
 
     #[test]

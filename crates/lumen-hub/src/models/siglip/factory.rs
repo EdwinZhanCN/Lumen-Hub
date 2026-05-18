@@ -1,8 +1,11 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
 use lumen_schema::{ModelInfo, Runtime};
+#[cfg(feature = "candle")]
+use lumnn::candle::node::CandleOnnxNode;
+#[cfg(feature = "mnn")]
+use lumnn::mnn::MnnNode;
 use lumnn::{
-    candle::node::CandleOnnxNode,
     core::{context::MLContext, node::MLNode},
     ort::node::OrtNode,
 };
@@ -61,10 +64,12 @@ impl SiglipModelFactory {
         let runtime_dir = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
+            Runtime::Mnn => "mnn",
         };
         let ext = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
+            Runtime::Mnn => "mnn",
         };
         self.model_dir(model_name)
             .join(runtime_dir)
@@ -91,11 +96,25 @@ impl SiglipModelFactory {
             Runtime::Onnx => OrtNode::new(context.as_ref(), path_str, name)
                 .map(|node| Box::new(node) as Box<dyn MLNode>)
                 .map_err(ServiceError::Internal),
+            #[cfg(feature = "candle")]
             Runtime::CandleOnnx => CandleOnnxNode::new(context.as_ref(), path_str, name)
                 .map(|node| Box::new(node) as Box<dyn MLNode>)
                 .map_err(ServiceError::Internal),
+            #[cfg(not(feature = "candle"))]
+            Runtime::CandleOnnx => Err(ServiceError::InvalidArgument(
+                "SigLIP Candle ONNX runtime is not enabled in this lumen-hub build; use runtime=onnx"
+                    .to_owned(),
+            )),
             Runtime::Rknn => Err(ServiceError::InvalidArgument(
                 "SigLIP RKNN runtime is not implemented yet".to_owned(),
+            )),
+            #[cfg(feature = "mnn")]
+            Runtime::Mnn => MnnNode::new(context.as_ref(), path_str, name)
+                .map(|node| Box::new(node) as Box<dyn MLNode>)
+                .map_err(ServiceError::Internal),
+            #[cfg(not(feature = "mnn"))]
+            Runtime::Mnn => Err(ServiceError::InvalidArgument(
+                "SigLIP MNN runtime is not enabled in this lumen-hub build".to_owned(),
             )),
         }
     }

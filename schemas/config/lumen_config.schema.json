@@ -201,7 +201,8 @@
       "enum": [
         "onnx",
         "candle_onnx",
-        "rknn"
+        "rknn",
+        "mnn"
       ]
     },
     "ServerConfig": {

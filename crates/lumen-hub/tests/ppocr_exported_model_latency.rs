@@ -49,6 +49,16 @@ async fn exported_ppocr_model_latency() {
     let accelerated =
         env_bool("LUMEN_PPOCR_LATENCY_ACCELERATED") || env_bool("LUMEN_PPOCR_E2E_ACCELERATED");
 
+    let runtime = env::var("LUMEN_PPOCR_LATENCY_RUNTIME")
+        .or_else(|_| env::var("LUMEN_PPOCR_RUNTIME"))
+        .ok()
+        .map(|v| match v.as_str() {
+            "onnx" => Runtime::Onnx,
+            "mnn" => Runtime::Mnn,
+            other => panic!("unsupported runtime `{other}`; expected onnx or mnn"),
+        })
+        .unwrap_or(Runtime::Onnx);
+
     let context = MLContext::new(MLContextOptions { accelerated }).expect("ML context initializes");
     let service_config = ServiceConfig {
         enabled: true,
@@ -57,7 +67,7 @@ async fn exported_ppocr_model_latency() {
             PPOCR_TASK_ALIAS.to_owned(),
             ModelConfig {
                 model: model_name.clone(),
-                runtime: Runtime::Onnx,
+                runtime,
                 rknn_device: None,
                 dataset: None,
                 precision: Some(precision.clone()),

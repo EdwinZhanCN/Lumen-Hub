@@ -23,18 +23,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: apple-arm64
+          - name: universal-cpu
+            os: ubuntu-24.04
+            features: profile-universal-cpu
+          - name: darwin-arm64
             os: macos-15
-            features: profile-apple-arm64
-          - name: windows-dml
+            features: profile-darwin-arm64
+          - name: linux-x64-cuda
+            os: ubuntu-24.04
+            features: profile-linux-x64-cuda
+          - name: windows-x64-dml
             os: windows-2025
             features: profile-windows-x64-dml
-          - name: linux-openvino
+          - name: linux-x64-openvino
             os: ubuntu-24.04
             features: profile-linux-x64-openvino
-          - name: linux-cpu-optimized
-            os: ubuntu-24.04
-            features: profile-linux-x64-cpu-optimized
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

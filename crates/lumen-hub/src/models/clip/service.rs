@@ -1,12 +1,14 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use lumen_schema::ServiceConfig;
-use lumnn::core::context::MLContext;
+use lumnn::core::{context::MLContext, node::MLNode, packet::MLPacketDataType};
 use serde::Deserialize;
 
-use super::factory::ClipModelFactory;
+use super::factory::{BioClipModelFactory, ClipModelFactory};
 use super::pipeline::build_embedding_pipeline;
-use super::task::{ClipImageEmbedTask, ClipImagePreprocessConfig, ClipTextEmbedTask};
+use super::task::{
+    BioClipClassifyTask, ClipImageEmbedTask, ClipImagePreprocessConfig, ClipTextEmbedTask,
+};
 use crate::service::{
     InferenceService, ServiceCapability, ServiceError, ServiceResult, TaskRegistry,
 };
@@ -54,6 +56,7 @@ impl ClipService {
         context: Arc<MLContext>,
     ) -> ServiceResult<Self> {
         let factory = ClipModelFactory::new(cache_dir);
+        let bioclip_factory = BioClipModelFactory::new(cache_dir);
         let mut tasks = TaskRegistry::new();
         let mut model_ids = Vec::new();
         let mut runtime_str = String::new();
@@ -66,25 +69,57 @@ impl ClipService {
             let model_info = factory.load_model_info(model_name)?;
 
             // 2. Parse CLIP-specific task_metadata
-            // Wrap BTreeMap in a Value before deserializing.
-            let raw_meta =
-                serde_json::to_value(model_info.task_metadata.clone().unwrap_or_default())
-                    .map_err(|e| {
-                        ServiceError::InvalidArgument(format!(
-                            "model `{model_name}` task_metadata serialization failed: {e}"
-                        ))
-                    })?;
-
-            let clip_meta: ClipTaskMetadata = serde_json::from_value(raw_meta).map_err(|e| {
-                ServiceError::InvalidArgument(format!(
-                    "model `{model_name}` task_metadata is not valid CLIP metadata: {e}"
-                ))
-            })?;
+            let clip_meta = parse_clip_metadata(model_name, &model_info)?;
 
             // 3. Record model info
             model_ids.push(model_name.to_owned());
             if runtime_str.is_empty() {
                 runtime_str = model_config.runtime.as_str().to_owned();
+            }
+
+            if let Some(dataset) = &model_config.dataset {
+                let (task_key, task_config) = clip_meta
+                    .tasks
+                    .iter()
+                    .find(|(_, task_config)| task_config.component == "vision")
+                    .ok_or_else(|| {
+                        ServiceError::InvalidArgument(format!(
+                            "BioCLIP model `{model_name}` requires a vision task in task_metadata"
+                        ))
+                    })?;
+                let forward_node = bioclip_factory.create_vision_component(
+                    model_name,
+                    model_config.runtime,
+                    precision,
+                    &context,
+                )?;
+                let (input_dtype, preprocess) =
+                    validate_vision_task(model_name, task_key, task_config, forward_node.as_ref())?;
+                let pipeline = build_embedding_pipeline(
+                    format!("{}_{}_{}", service_name, alias, task_key),
+                    Arc::clone(&context),
+                    forward_node,
+                    &task_config.output_name,
+                    "embedding",
+                )
+                .map_err(ServiceError::Internal)?;
+                let dataset_paths = bioclip_factory.resolve_dataset_paths(model_name, dataset)?;
+                let task = BioClipClassifyTask::new(
+                    "bioclip_classify",
+                    pipeline,
+                    Arc::clone(&context),
+                    model_name,
+                    task_config.input_names.clone(),
+                    input_dtype,
+                    "embedding",
+                    preprocess,
+                    dataset,
+                    dataset_paths.embeddings_path,
+                    dataset_paths.labels_path,
+                    dataset_paths.index_path,
+                )?;
+                tasks.register(task)?;
+                continue;
             }
 
             // 4. For each task declared in task_metadata, build pipeline + handler
@@ -130,52 +165,12 @@ impl ClipService {
                             &context,
                         )?;
 
-                        let input_name = task_config.input_names.first().ok_or_else(|| {
-                            ServiceError::InvalidArgument(format!(
-                                "model `{model_name}` image task `{task_key}` has no input names"
-                            ))
-                        })?;
-                        let input_desc = forward_node
-                            .input_descriptors()
-                            .get(input_name)
-                            .ok_or_else(|| {
-                                ServiceError::InvalidArgument(format!(
-                                    "model `{model_name}` image task `{task_key}` references \
-                                     unknown ONNX input `{input_name}`"
-                                ))
-                            })?;
-                        let input_dtype = input_desc.dtype;
-                        let preprocess = task_config.preprocess.clone().ok_or_else(|| {
-                            ServiceError::InvalidArgument(format!(
-                                "model `{model_name}` image task `{task_key}` requires \
-                                 `task_metadata.tasks.{task_key}.preprocess`"
-                            ))
-                        })?;
-                        let expected_shape = preprocess.output_shape();
-                        if input_desc.shape.len() != expected_shape.len() {
-                            return Err(ServiceError::InvalidArgument(format!(
-                                "model `{model_name}` image task `{task_key}` preprocess rank \
-                                 {} does not match ONNX input `{input_name}` rank {}",
-                                expected_shape.len(),
-                                input_desc.shape.len()
-                            )));
-                        }
-                        if !input_desc.dynamic_batch && input_desc.shape != expected_shape {
-                            return Err(ServiceError::InvalidArgument(format!(
-                                "model `{model_name}` image task `{task_key}` preprocess shape \
-                                 {:?} does not match ONNX input `{input_name}` shape {:?}",
-                                expected_shape, input_desc.shape
-                            )));
-                        }
-                        if input_desc.dynamic_batch && input_desc.shape[1..] != expected_shape[1..]
-                        {
-                            return Err(ServiceError::InvalidArgument(format!(
-                                "model `{model_name}` image task `{task_key}` preprocess shape \
-                                 {:?} does not match ONNX dynamic-batch input `{input_name}` \
-                                 shape {:?}",
-                                expected_shape, input_desc.shape
-                            )));
-                        }
+                        let (input_dtype, preprocess) = validate_vision_task(
+                            model_name,
+                            task_key,
+                            task_config,
+                            forward_node.as_ref(),
+                        )?;
 
                         let pipeline = build_embedding_pipeline(
                             format!("{}_{}_{}", service_name, alias, task_key),
@@ -215,6 +210,73 @@ impl ClipService {
             runtime: runtime_str,
         })
     }
+}
+
+fn parse_clip_metadata(
+    model_name: &str,
+    model_info: &lumen_schema::ModelInfo,
+) -> ServiceResult<ClipTaskMetadata> {
+    let raw_meta = serde_json::to_value(model_info.task_metadata.clone().unwrap_or_default())
+        .map_err(|e| {
+            ServiceError::InvalidArgument(format!(
+                "model `{model_name}` task_metadata serialization failed: {e}"
+            ))
+        })?;
+
+    serde_json::from_value(raw_meta).map_err(|e| {
+        ServiceError::InvalidArgument(format!(
+            "model `{model_name}` task_metadata is not valid CLIP metadata: {e}"
+        ))
+    })
+}
+
+fn validate_vision_task(
+    model_name: &str,
+    task_key: &str,
+    task_config: &ClipTaskConfig,
+    forward_node: &dyn MLNode,
+) -> ServiceResult<(MLPacketDataType, ClipImagePreprocessConfig)> {
+    let input_name = task_config.input_names.first().ok_or_else(|| {
+        ServiceError::InvalidArgument(format!(
+            "model `{model_name}` image task `{task_key}` has no input names"
+        ))
+    })?;
+    let input_desc = forward_node
+        .input_descriptors()
+        .get(input_name)
+        .ok_or_else(|| {
+            ServiceError::InvalidArgument(format!(
+                "model `{model_name}` image task `{task_key}` references unknown input `{input_name}`"
+            ))
+        })?;
+    let input_dtype = input_desc.dtype;
+    let preprocess = task_config.preprocess.clone().ok_or_else(|| {
+        ServiceError::InvalidArgument(format!(
+            "model `{model_name}` image task `{task_key}` requires `task_metadata.tasks.{task_key}.preprocess`"
+        ))
+    })?;
+    let expected_shape = preprocess.output_shape();
+    if input_desc.shape.len() != expected_shape.len() {
+        return Err(ServiceError::InvalidArgument(format!(
+            "model `{model_name}` image task `{task_key}` preprocess rank {} does not match input `{input_name}` rank {}",
+            expected_shape.len(),
+            input_desc.shape.len()
+        )));
+    }
+    if !input_desc.dynamic_batch && input_desc.shape != expected_shape {
+        return Err(ServiceError::InvalidArgument(format!(
+            "model `{model_name}` image task `{task_key}` preprocess shape {:?} does not match input `{input_name}` shape {:?}",
+            expected_shape, input_desc.shape
+        )));
+    }
+    if input_desc.dynamic_batch && input_desc.shape[1..] != expected_shape[1..] {
+        return Err(ServiceError::InvalidArgument(format!(
+            "model `{model_name}` image task `{task_key}` preprocess shape {:?} does not match dynamic-batch input `{input_name}` shape {:?}",
+            expected_shape, input_desc.shape
+        )));
+    }
+
+    Ok((input_dtype, preprocess))
 }
 
 impl InferenceService for ClipService {

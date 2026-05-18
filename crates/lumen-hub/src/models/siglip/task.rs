@@ -281,6 +281,7 @@ pub struct SiglipTextEmbedTask {
     context: Arc<MLContext>,
     model_id: String,
     input_names: Vec<String>,
+    input_descriptors: Vec<MLPacketDescriptor>,
     output_name: String,
     tokenizer: tokenizers::Tokenizer,
 }
@@ -292,6 +293,7 @@ impl SiglipTextEmbedTask {
         context: Arc<MLContext>,
         model_id: impl Into<String>,
         input_names: Vec<String>,
+        input_descriptors: Vec<MLPacketDescriptor>,
         output_name: impl Into<String>,
         tokenizer: tokenizers::Tokenizer,
     ) -> ServiceResult<Self> {
@@ -299,6 +301,13 @@ impl SiglipTextEmbedTask {
             return Err(ServiceError::InvalidArgument(
                 "SigLIP text task requires at least one ONNX input name".to_owned(),
             ));
+        }
+        if input_names.len() != input_descriptors.len() {
+            return Err(ServiceError::InvalidArgument(format!(
+                "SigLIP text task input name count {} does not match descriptor count {}",
+                input_names.len(),
+                input_descriptors.len()
+            )));
         }
         Ok(Self {
             spec: TaskSpec::new(task_name, "SigLIP text encoder -> L2-normalized embedding")
@@ -308,6 +317,7 @@ impl SiglipTextEmbedTask {
             context,
             model_id: model_id.into(),
             input_names,
+            input_descriptors,
             output_name: output_name.into(),
             tokenizer,
         })
@@ -319,40 +329,57 @@ impl SiglipTextEmbedTask {
             .encode(text, true)
             .map_err(|e| ServiceError::Internal(format!("tokenization failed: {e}")))?;
 
-        let ids = encoding
-            .get_ids()
-            .iter()
-            .map(|&id| id as i64)
-            .collect::<Vec<_>>();
-        let seq_len = ids.len();
+        let seq_len = encoding.get_ids().len();
         let mut packets = HashMap::new();
 
-        let input_ids_packet = self
-            .context
-            .packet_from_host_tensor(
-                MLPacketDescriptor::new(MLPacketDataType::Int64, vec![1, seq_len]),
-                HostTensor::Int64(ids),
-            )
-            .map_err(ServiceError::Internal)?;
+        let input_ids_packet = token_ids_packet(
+            &self.context,
+            &self.input_descriptors[0],
+            encoding.get_ids(),
+            seq_len,
+            &self.input_names[0],
+        )?;
         packets.insert(self.input_names[0].clone(), input_ids_packet);
 
         if self.input_names.len() > 1 {
-            let attention_mask = encoding
-                .get_attention_mask()
-                .iter()
-                .map(|&mask| mask as i64)
-                .collect::<Vec<_>>();
-            let attention_mask_packet = self
-                .context
-                .packet_from_host_tensor(
-                    MLPacketDescriptor::new(MLPacketDataType::Int64, vec![1, seq_len]),
-                    HostTensor::Int64(attention_mask),
-                )
-                .map_err(ServiceError::Internal)?;
+            let attention_mask_packet = token_ids_packet(
+                &self.context,
+                &self.input_descriptors[1],
+                encoding.get_attention_mask(),
+                seq_len,
+                &self.input_names[1],
+            )?;
             packets.insert(self.input_names[1].clone(), attention_mask_packet);
         }
 
         Ok(packets)
+    }
+}
+
+fn token_ids_packet(
+    context: &Arc<MLContext>,
+    descriptor: &MLPacketDescriptor,
+    values: &[u32],
+    seq_len: usize,
+    input_name: &str,
+) -> ServiceResult<MLPacket> {
+    let shape = vec![1, seq_len];
+    match descriptor.dtype {
+        MLPacketDataType::Int32 => context
+            .packet_from_host_tensor(
+                MLPacketDescriptor::new(MLPacketDataType::Int32, shape),
+                HostTensor::Int32(values.iter().map(|&value| value as i32).collect()),
+            )
+            .map_err(ServiceError::Internal),
+        MLPacketDataType::Int64 => context
+            .packet_from_host_tensor(
+                MLPacketDescriptor::new(MLPacketDataType::Int64, shape),
+                HostTensor::Int64(values.iter().map(|&value| value as i64).collect()),
+            )
+            .map_err(ServiceError::Internal),
+        other => Err(ServiceError::Internal(format!(
+            "SigLIP text input `{input_name}` has unsupported dtype {other:?}"
+        ))),
     }
 }
 
