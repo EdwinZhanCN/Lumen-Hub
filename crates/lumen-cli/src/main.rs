@@ -693,7 +693,10 @@ fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: &Pat
     yaml.push_str("metadata:\n");
     yaml.push_str("  version: \"0.1.0\"\n");
     yaml.push_str(&format!("  region: {region}\n"));
-    yaml.push_str(&format!("  cache_dir: \"{}\"\n\n", cache_dir.display()));
+    yaml.push_str(&format!(
+        "  cache_dir: {}\n\n",
+        yaml_single_quoted(&cache_dir.display().to_string())
+    ));
     yaml.push_str("deployment:\n");
     yaml.push_str("  mode: hub\n");
     yaml.push_str("  services:\n");
@@ -783,6 +786,10 @@ fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: &Pat
     }
 
     yaml
+}
+
+fn yaml_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn backend_choices(platform: PlatformProfile) -> Vec<BackendChoice> {
@@ -1429,5 +1436,17 @@ mod tests {
             Path::new("/tmp/lumen"),
         );
         assert!(config.contains("dataset: TreeOfLife200MCore"));
+    }
+
+    #[test]
+    fn renders_windows_cache_paths_as_valid_yaml() {
+        let config = render_config(
+            Preset::all()[0],
+            "other",
+            Backend::ort_dml(),
+            Path::new(r"C:\Users\edwin\.lumen\models"),
+        );
+        validate_yaml_config(&config).unwrap();
+        assert!(config.contains(r"cache_dir: 'C:\Users\edwin\.lumen\models'"));
     }
 }
