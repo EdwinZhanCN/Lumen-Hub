@@ -6,6 +6,7 @@ use std::{
 };
 
 use cliclack::{confirm, input, intro, log, note, outro, progress_bar, select, spinner};
+use flate2::read::GzDecoder;
 use lumen_schema::LumenConfig;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,6 +15,10 @@ use thiserror::Error;
 const VERSION: &str = "0.1.0-beta.1";
 const DEFAULT_MANIFEST_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/manifest.json";
+const OFFICIAL_RELEASE_DOWNLOAD_PREFIX: &str =
+    "https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/";
+const OFFICIAL_RELEASE_LATEST_DOWNLOAD_PREFIX: &str =
+    "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/";
 
 fn main() -> ExitCode {
     match run(env::args().collect()) {
@@ -254,6 +259,7 @@ fn start(args: &[String]) -> Result<(), CliError> {
     )?;
 
     let manifest = fetch_manifest(&manifest_url)?;
+    validate_release_component(&manifest.version, "manifest version")?;
     let artifact = manifest
         .hub
         .iter()
@@ -264,6 +270,7 @@ fn start(args: &[String]) -> Result<(), CliError> {
                 manifest.version
             ))
         })?;
+    validate_hub_artifact(artifact)?;
     let install_dir = lumen_dir
         .join("hub")
         .join(&manifest.version)
@@ -298,6 +305,7 @@ fn read_bootstrap(path: &Path) -> Result<Bootstrap, CliError> {
 }
 
 fn fetch_manifest(url: &str) -> Result<ReleaseManifest, CliError> {
+    validate_manifest_url(url)?;
     let spinner = spinner();
     spinner.start(format!("fetching release manifest"));
     let mut response = ureq::get(url).call()?;
@@ -351,6 +359,7 @@ fn ensure_hub_installed(install_dir: &Path, artifact: &HubArtifact) -> Result<Pa
 }
 
 fn download_artifact(artifact: &HubArtifact, target: &Path) -> Result<(), CliError> {
+    validate_hub_artifact(artifact)?;
     if target.is_file() {
         if sha256_file(target)? == artifact.sha256 {
             log::success(format!("using cached {}", target.display()))?;
@@ -481,7 +490,12 @@ fn extract_zip(archive_path: &Path, install_dir: &Path) -> Result<(), CliError> 
         let Some(path) = entry.enclosed_name() else {
             continue;
         };
-        let target = install_dir.join(strip_archive_root(&path));
+        validate_archive_path(&path)?;
+        let relative = strip_archive_root(&path);
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let target = install_dir.join(relative);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|source| CliError::CreateDir {
                 path: parent.to_path_buf(),
@@ -508,16 +522,66 @@ fn extract_zip(archive_path: &Path, install_dir: &Path) -> Result<(), CliError> 
 }
 
 fn extract_tar_gz(archive_path: &Path, install_dir: &Path) -> Result<(), CliError> {
-    let status = Command::new("tar")
-        .args(["-xzf"])
-        .arg(archive_path)
-        .arg("--strip-components=1")
-        .arg("-C")
-        .arg(install_dir)
-        .status()
-        .map_err(|source| CliError::SpawnTar { source })?;
-    if !status.success() {
-        return Err(CliError::TarExited(status.code()));
+    let file = fs::File::open(archive_path).map_err(|source| CliError::ReadFile {
+        path: archive_path.to_path_buf(),
+        source,
+    })?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+
+    for entry in archive.entries().map_err(CliError::Io)? {
+        let mut entry = entry.map_err(CliError::Io)?;
+        let raw_path = entry.path().map_err(CliError::Io)?.into_owned();
+        validate_archive_path(&raw_path)?;
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(CliError::InvalidArgument(format!(
+                "archive contains link entry `{}`",
+                raw_path.display()
+            )));
+        }
+
+        let relative = strip_archive_root(&raw_path);
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let target = install_dir.join(relative);
+        if entry_type.is_dir() {
+            fs::create_dir_all(&target).map_err(|source| CliError::CreateDir {
+                path: target,
+                source,
+            })?;
+            continue;
+        }
+        if !entry_type.is_file() {
+            return Err(CliError::InvalidArgument(format!(
+                "archive contains unsupported entry `{}`",
+                raw_path.display()
+            )));
+        }
+
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|source| CliError::CreateDir {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let mut output = fs::File::create(&target).map_err(|source| CliError::WriteFile {
+            path: target.clone(),
+            source,
+        })?;
+        io::copy(&mut entry, &mut output).map_err(CliError::Io)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = entry.header().mode().map_err(CliError::Io)?;
+            fs::set_permissions(&target, fs::Permissions::from_mode(mode)).map_err(|source| {
+                CliError::WriteFile {
+                    path: target.clone(),
+                    source,
+                }
+            })?;
+        }
     }
     Ok(())
 }
@@ -526,6 +590,120 @@ fn strip_archive_root(path: &Path) -> PathBuf {
     let mut components = path.components();
     let _ = components.next();
     components.as_path().to_path_buf()
+}
+
+fn validate_manifest_url(url: &str) -> Result<(), CliError> {
+    validate_https_url(url, "manifest URL")?;
+    if untrusted_release_urls_allowed() {
+        return Ok(());
+    }
+    if url == DEFAULT_MANIFEST_URL || matches_official_release_asset_url(url, "manifest.json") {
+        return Ok(());
+    }
+    Err(CliError::InvalidArgument(format!(
+        "refusing untrusted manifest URL `{url}`; set LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS=1 only if you control that mirror"
+    )))
+}
+
+fn validate_hub_artifact(artifact: &HubArtifact) -> Result<(), CliError> {
+    validate_release_component(&artifact.profile, "release profile")?;
+    validate_artifact_file_name(&artifact.file_name)?;
+    validate_sha256_text(&artifact.sha256, &artifact.file_name)?;
+    validate_artifact_url(&artifact.url, &artifact.file_name)
+}
+
+fn validate_artifact_url(url: &str, file_name: &str) -> Result<(), CliError> {
+    validate_https_url(url, "artifact URL")?;
+    if untrusted_release_urls_allowed() || matches_official_release_asset_url(url, file_name) {
+        return Ok(());
+    }
+    Err(CliError::InvalidArgument(format!(
+        "refusing untrusted artifact URL `{url}` for `{file_name}`; set LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS=1 only if you control that mirror"
+    )))
+}
+
+fn validate_https_url(url: &str, label: &str) -> Result<(), CliError> {
+    if url.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
+        return Err(CliError::InvalidArgument(format!(
+            "{label} contains whitespace or control characters"
+        )));
+    }
+    if !url.starts_with("https://") {
+        return Err(CliError::InvalidArgument(format!("{label} must use https")));
+    }
+    Ok(())
+}
+
+fn matches_official_release_asset_url(url: &str, file_name: &str) -> bool {
+    if let Some(actual) = url.strip_prefix(OFFICIAL_RELEASE_LATEST_DOWNLOAD_PREFIX) {
+        return actual == file_name;
+    }
+    let Some(rest) = url.strip_prefix(OFFICIAL_RELEASE_DOWNLOAD_PREFIX) else {
+        return false;
+    };
+    let Some((tag, actual)) = rest.rsplit_once('/') else {
+        return false;
+    };
+    !tag.is_empty() && !tag.contains('/') && actual == file_name
+}
+
+fn untrusted_release_urls_allowed() -> bool {
+    env::var("LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS").is_ok_and(|value| value == "1")
+}
+
+fn validate_release_component(value: &str, label: &str) -> Result<(), CliError> {
+    if value.is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains('/')
+        || value.contains('\\')
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+    {
+        return Err(CliError::InvalidArgument(format!(
+            "invalid {label} `{value}`"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_artifact_file_name(file_name: &str) -> Result<(), CliError> {
+    validate_release_component(file_name, "artifact file name")?;
+    if file_name.ends_with(".zip") || file_name.ends_with(".tar.gz") || file_name.ends_with(".tgz")
+    {
+        Ok(())
+    } else {
+        Err(CliError::InvalidArgument(format!(
+            "unsupported artifact file name `{file_name}`"
+        )))
+    }
+}
+
+fn validate_sha256_text(value: &str, file_name: &str) -> Result<(), CliError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CliError::InvalidArgument(format!(
+            "invalid sha256 for `{file_name}`"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_archive_path(path: &Path) -> Result<(), CliError> {
+    let path_text = path.to_string_lossy();
+    if path_text.is_empty()
+        || path_text.starts_with('/')
+        || path_text.starts_with('\\')
+        || path_text.contains('\\')
+        || path_text.contains(':')
+        || path_text.split('/').any(|part| part == "..")
+    {
+        return Err(CliError::InvalidArgument(format!(
+            "unsafe archive entry `{}`",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> Result<String, CliError> {
@@ -1339,7 +1517,7 @@ struct ReleaseManifest {
     hub: Vec<HubArtifact>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct HubArtifact {
     profile: String,
     file_name: String,
@@ -1375,12 +1553,6 @@ enum CliError {
 
     #[error("lumen-hub exited with status {0:?}")]
     HubExited(Option<i32>),
-
-    #[error("failed to spawn `tar`: {source}")]
-    SpawnTar { source: io::Error },
-
-    #[error("tar extraction exited with status {0:?}")]
-    TarExited(Option<i32>),
 
     #[error("checksum mismatch for `{}`: expected {expected}, got {actual}", path.display())]
     ChecksumMismatch {
@@ -1448,5 +1620,34 @@ mod tests {
         );
         validate_yaml_config(&config).unwrap();
         assert!(config.contains(r"cache_dir: 'C:\Users\edwin\.lumen\models'"));
+    }
+
+    #[test]
+    fn validates_release_artifact_metadata() {
+        let sha256 = "a".repeat(64);
+        let artifact = HubArtifact {
+            profile: "linux-x64-cuda".to_owned(),
+            file_name: "lumen-hub-linux-x64-cuda.tar.gz".to_owned(),
+            url: "https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/v0.1.0/lumen-hub-linux-x64-cuda.tar.gz".to_owned(),
+            sha256,
+        };
+        validate_hub_artifact(&artifact).unwrap();
+
+        let mut bad_file = artifact.clone();
+        bad_file.file_name = "../lumen-hub.tar.gz".to_owned();
+        assert!(validate_hub_artifact(&bad_file).is_err());
+
+        let mut bad_url = artifact.clone();
+        bad_url.url = "https://example.com/lumen-hub-linux-x64-cuda.tar.gz".to_owned();
+        assert!(validate_hub_artifact(&bad_url).is_err());
+    }
+
+    #[test]
+    fn validates_archive_entry_paths() {
+        assert!(validate_archive_path(Path::new("lumen-hub/bin/lumen-hub")).is_ok());
+        assert!(validate_archive_path(Path::new("../bin/lumen-hub")).is_err());
+        assert!(validate_archive_path(Path::new("lumen-hub/../bin/lumen-hub")).is_err());
+        assert!(validate_archive_path(Path::new("/tmp/lumen-hub")).is_err());
+        assert!(validate_archive_path(Path::new(r"lumen-hub\bin\lumen-hub")).is_err());
     }
 }

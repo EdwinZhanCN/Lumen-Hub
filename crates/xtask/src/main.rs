@@ -15,8 +15,6 @@ const OPENVINO_WHEEL_FILE: &str =
 const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.2";
 const DEFAULT_RELEASE_BASE_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download";
-const DEFAULT_MANIFEST_URL: &str =
-    "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/manifest.json";
 
 fn main() -> ExitCode {
     match run() {
@@ -168,9 +166,10 @@ fn release_metadata(args: Vec<String>) -> Result<(), String> {
         )
     })?;
 
-    write_release_manifest(&assets_dir)?;
-    write_install_sh(&assets_dir)?;
-    write_install_ps1(&assets_dir)?;
+    let base_url = release_base_url();
+    write_release_manifest(&assets_dir, &base_url)?;
+    write_install_sh(&assets_dir, &base_url)?;
+    write_install_ps1(&assets_dir, &base_url)?;
     write_top_level_checksums(&assets_dir)?;
     println!("release metadata prepared at {}", assets_dir.display());
     Ok(())
@@ -785,10 +784,8 @@ fn zip_directory(src_dir: &Path, zip_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn write_release_manifest(assets_dir: &Path) -> Result<(), String> {
+fn write_release_manifest(assets_dir: &Path, base_url: &str) -> Result<(), String> {
     let version = release_version();
-    let base_url =
-        env::var("LUMEN_RELEASE_BASE_URL").unwrap_or_else(|_| DEFAULT_RELEASE_BASE_URL.to_owned());
     let mut hub = Vec::new();
 
     for profile in PROFILES {
@@ -837,70 +834,103 @@ fn write_release_manifest(assets_dir: &Path) -> Result<(), String> {
         .map_err(|err| format!("failed to write release manifest: {err}"))
 }
 
-fn write_install_sh(assets_dir: &Path) -> Result<(), String> {
-    let body = format!(
-        r#"#!/usr/bin/env sh
+fn write_install_sh(assets_dir: &Path, base_url: &str) -> Result<(), String> {
+    let darwin = cli_installer_artifact(assets_dir, "darwin-arm64")?;
+    let linux = cli_installer_artifact(assets_dir, "linux-x64")?;
+    let body = r#"#!/usr/bin/env sh
 set -eu
 
-MANIFEST_URL="${{LUMEN_RELEASE_MANIFEST_URL:-{DEFAULT_MANIFEST_URL}}}"
-INSTALL_DIR="${{LUMEN_INSTALL_DIR:-$HOME/.lumen/bin}}"
+RELEASE_BASE_URL="${LUMEN_RELEASE_BASE_URL:-__RELEASE_BASE_URL__}"
+INSTALL_DIR="${LUMEN_INSTALL_DIR:-$HOME/.lumen/bin}"
 
-need() {{
+need() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "error: required command '$1' was not found" >&2
     exit 1
   fi
-}}
+}
 
-sha256_of() {{
+validate_release_base_url() {
+  case "$1" in
+    https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/*/*)
+      echo "error: release base URL must end at the release tag, not an asset path: $1" >&2
+      exit 1
+      ;;
+    https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/*|https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download)
+      ;;
+    *)
+      if [ "${LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS:-}" != "1" ]; then
+        echo "error: refusing untrusted release base URL: $1" >&2
+        echo "set LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS=1 only if you control that mirror" >&2
+        exit 1
+      fi
+      ;;
+  esac
+}
+
+validate_sha256() {
+  if [ "${#1}" -ne 64 ]; then
+    echo "error: invalid sha256 length for $2" >&2
+    exit 1
+  fi
+  case "$1" in
+    *[!0123456789abcdefABCDEF]*)
+      echo "error: invalid sha256 characters for $2" >&2
+      exit 1
+      ;;
+  esac
+}
+
+validate_tar_archive() {
+  archive_path="$1"
+  tar -tzf "$archive_path" >/dev/null
+  tar -tzf "$archive_path" | while IFS= read -r entry; do
+    case "$entry" in
+      ""|..|*/..|/*|../*|*/../*|*\\*)
+        echo "error: unsafe archive entry: $entry" >&2
+        exit 1
+        ;;
+    esac
+  done
+  tar -tvzf "$archive_path" | while IFS= read -r line; do
+    case "$line" in
+      l*|h*)
+        echo "error: archive contains link entry: $line" >&2
+        exit 1
+        ;;
+    esac
+  done
+}
+
+sha256_of() {
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | awk '{{print $1}}'
+    sha256sum "$1" | awk '{print $1}'
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | awk '{{print $1}}'
+    shasum -a 256 "$1" | awk '{print $1}'
   else
     echo "error: sha256sum or shasum is required" >&2
     exit 1
   fi
-}}
-
-json_field() {{
-  manifest_path="$1"
-  target="$2"
-  field="$3"
-  awk -v target="$target" -v field="$field" '
-    BEGIN {{
-      RS = "[{{}}]"
-    }}
-    index($0, "\"target\": \"" target "\"") > 0 {{
-      value = $0
-      pattern = "\"" field "\": \""
-      start = index(value, pattern)
-      if (!start) exit 1
-      value = substr(value, start + length(pattern))
-      sub(/".*$/, "", value)
-      sub(/^"/, "", value)
-      print value
-      found = 1
-      exit
-    }}
-    END {{
-      if (!found) exit 1
-    }}
-  ' "$manifest_path"
-}}
+}
 
 need curl
 need awk
 need tar
+need find
+need head
 
 os="$(uname -s)"
 arch="$(uname -m)"
 case "$os:$arch" in
   Darwin:arm64|Darwin:aarch64)
     target="darwin-arm64"
+    file_name="__DARWIN_FILE__"
+    expected="__DARWIN_SHA256__"
     ;;
   Linux:x86_64|Linux:amd64)
     target="linux-x64"
+    file_name="__LINUX_FILE__"
+    expected="__LINUX_SHA256__"
     ;;
   *)
     echo "error: unsupported platform $os/$arch; supported: macOS arm64, Linux x64" >&2
@@ -908,16 +938,14 @@ case "$os:$arch" in
     ;;
 esac
 
+validate_release_base_url "$RELEASE_BASE_URL"
+validate_sha256 "$expected" "$file_name"
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT INT TERM
 
-manifest="$tmp_dir/manifest.json"
-curl -fsSL "$MANIFEST_URL" -o "$manifest"
-
-file_name="$(json_field "$manifest" "$target" file_name)"
-url="$(json_field "$manifest" "$target" url)"
-expected="$(json_field "$manifest" "$target" sha256)"
 archive="$tmp_dir/$file_name"
+url="${RELEASE_BASE_URL%/}/$file_name"
 
 curl -fsSL "$url" -o "$archive"
 actual="$(sha256_of "$archive")"
@@ -930,12 +958,14 @@ fi
 
 extract_dir="$tmp_dir/extract"
 mkdir -p "$extract_dir" "$INSTALL_DIR"
+validate_tar_archive "$archive"
 tar -xzf "$archive" -C "$extract_dir"
-cli_path="$(find "$extract_dir" -path '*/bin/lumen-cli' -type f | head -n 1)"
-if [ -z "$cli_path" ]; then
-  echo "error: archive did not contain bin/lumen-cli" >&2
+cli_count="$(find "$extract_dir" -path '*/bin/lumen-cli' -type f | wc -l | awk '{print $1}')"
+if [ "$cli_count" != "1" ]; then
+  echo "error: archive must contain exactly one bin/lumen-cli, found $cli_count" >&2
   exit 1
 fi
+cli_path="$(find "$extract_dir" -path '*/bin/lumen-cli' -type f | head -n 1)"
 
 cp "$cli_path" "$INSTALL_DIR/lumen-cli"
 chmod 755 "$INSTALL_DIR/lumen-cli"
@@ -952,75 +982,122 @@ echo "Next:"
 echo "  lumen-cli init"
 echo "  lumen-cli start"
 "#
-    );
+    .replace("__RELEASE_BASE_URL__", base_url)
+    .replace("__DARWIN_FILE__", &darwin.file_name)
+    .replace("__DARWIN_SHA256__", &darwin.sha256)
+    .replace("__LINUX_FILE__", &linux.file_name)
+    .replace("__LINUX_SHA256__", &linux.sha256);
     fs::write(assets_dir.join("install.sh"), body)
         .map_err(|err| format!("failed to write install.sh: {err}"))?;
     make_executable(&assets_dir.join("install.sh"))
 }
 
-fn write_install_ps1(assets_dir: &Path) -> Result<(), String> {
-    let body = format!(
-        r#"$ErrorActionPreference = "Stop"
+fn write_install_ps1(assets_dir: &Path, base_url: &str) -> Result<(), String> {
+    let windows = cli_installer_artifact(assets_dir, "windows-x64")?;
+    let body = r#"$ErrorActionPreference = "Stop"
 
-$ManifestUrl = if ($env:LUMEN_RELEASE_MANIFEST_URL) {{ $env:LUMEN_RELEASE_MANIFEST_URL }} else {{ "{DEFAULT_MANIFEST_URL}" }}
-$InstallDir = if ($env:LUMEN_INSTALL_DIR) {{ $env:LUMEN_INSTALL_DIR }} else {{ Join-Path $env:LOCALAPPDATA "Lumen\bin" }}
+$ReleaseBaseUrl = if ($env:LUMEN_RELEASE_BASE_URL) { $env:LUMEN_RELEASE_BASE_URL } else { "__RELEASE_BASE_URL__" }
+$InstallDir = if ($env:LUMEN_INSTALL_DIR) { $env:LUMEN_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Lumen\bin" }
+$FileName = "__WINDOWS_FILE__"
+$Expected = "__WINDOWS_SHA256__"
 
-if (-not [Environment]::Is64BitOperatingSystem) {{
+function Assert-TrustedReleaseBaseUrl {
+    param([string]$Value)
+    $Uri = [Uri]$Value
+    $Official =
+        $Uri.Scheme -eq "https" -and
+        $Uri.Host -eq "github.com" -and
+        ($Uri.AbsolutePath -match "^/EdwinZhanCN/Lumen-Hub/releases/download/[^/]+$" -or
+         $Uri.AbsolutePath -eq "/EdwinZhanCN/Lumen-Hub/releases/latest/download")
+    if (-not $Official -and $env:LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS -ne "1") {
+        throw "refusing untrusted release base URL: $Value; set LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS=1 only if you control that mirror"
+    }
+}
+
+function Assert-Sha256 {
+    param([string]$Value, [string]$Name)
+    if ($Value -notmatch "^[0-9a-fA-F]{64}$") {
+        throw "invalid sha256 for $Name"
+    }
+}
+
+function Test-SafeZipEntryName {
+    param([string]$Name)
+    $Normalized = $Name.Replace('\', '/')
+    if ($Normalized -eq "") { return $true }
+    if ($Normalized.StartsWith("/") -or $Normalized -match "^[A-Za-z]:") { return $false }
+    return @(($Normalized -split "/") | Where-Object { $_ -eq ".." }).Count -eq 0
+}
+
+function Assert-SafeZipArchive {
+    param([string]$Path)
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $Zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        foreach ($Entry in $Zip.Entries) {
+            if (-not (Test-SafeZipEntryName $Entry.FullName)) {
+                throw "unsafe archive entry: $($Entry.FullName)"
+            }
+        }
+    } finally {
+        $Zip.Dispose()
+    }
+}
+
+if (-not [Environment]::Is64BitOperatingSystem) {
     throw "unsupported platform: Windows x64 is required"
-}}
+}
 
 $TempDir = Join-Path ([IO.Path]::GetTempPath()) ("lumen-install-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $TempDir | Out-Null
 
-try {{
-    $ManifestPath = Join-Path $TempDir "manifest.json"
-    Invoke-WebRequest -Uri $ManifestUrl -OutFile $ManifestPath -UseBasicParsing
-    $Manifest = Get-Content $ManifestPath -Raw | ConvertFrom-Json
-    $Artifact = $Manifest.cli | Where-Object {{ $_.target -eq "windows-x64" }} | Select-Object -First 1
-    if (-not $Artifact) {{
-        throw "manifest does not contain CLI artifact for windows-x64"
-    }}
+try {
+    Assert-TrustedReleaseBaseUrl $ReleaseBaseUrl
+    Assert-Sha256 $Expected $FileName
 
-    $ArchivePath = Join-Path $TempDir $Artifact.file_name
-    Invoke-WebRequest -Uri $Artifact.url -OutFile $ArchivePath -UseBasicParsing
+    $ArchivePath = Join-Path $TempDir $FileName
+    $ArchiveUrl = $ReleaseBaseUrl.TrimEnd([char]'/') + "/" + $FileName
+    Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ArchivePath -UseBasicParsing
     $Actual = (Get-FileHash -Algorithm SHA256 -Path $ArchivePath).Hash.ToLowerInvariant()
-    $Expected = [string]$Artifact.sha256
-    if ($Actual -ne $Expected.ToLowerInvariant()) {{
-        throw "checksum mismatch for $($Artifact.file_name): expected $Expected, got $Actual"
-    }}
+    if ($Actual -ne $Expected.ToLowerInvariant()) {
+        throw "checksum mismatch for $($FileName): expected $Expected, got $Actual"
+    }
 
     $ExtractDir = Join-Path $TempDir "extract"
+    Assert-SafeZipArchive $ArchivePath
     Expand-Archive -Path $ArchivePath -DestinationPath $ExtractDir -Force
-    $CliPath = Get-ChildItem -Path $ExtractDir -Recurse -File -Filter "lumen-cli.exe" |
-        Where-Object {{ $_.FullName -match "\\bin\\lumen-cli\.exe$" }} |
-        Select-Object -First 1
-    if (-not $CliPath) {{
-        throw "archive did not contain bin\lumen-cli.exe"
-    }}
+    $CliMatches = @(Get-ChildItem -Path $ExtractDir -Recurse -File -Filter "lumen-cli.exe" |
+        Where-Object { $_.FullName -match "\\bin\\lumen-cli\.exe$" })
+    if ($CliMatches.Count -ne 1) {
+        throw "archive must contain exactly one bin\lumen-cli.exe, found $($CliMatches.Count)"
+    }
+    $CliPath = $CliMatches[0]
 
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     Copy-Item -Path $CliPath.FullName -Destination (Join-Path $InstallDir "lumen-cli.exe") -Force
 
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $PathParts = @()
-    if ($UserPath) {{ $PathParts = $UserPath -split ";" | Where-Object {{ $_ }} }}
-    if ($PathParts -notcontains $InstallDir) {{
-        $NewPath = if ($UserPath) {{ "$UserPath;$InstallDir" }} else {{ $InstallDir }}
+    if ($UserPath) { $PathParts = $UserPath -split ";" | Where-Object { $_ } }
+    if ($PathParts -notcontains $InstallDir) {
+        $NewPath = if ($UserPath) { "$UserPath;$InstallDir" } else { $InstallDir }
         [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
-    }}
-    if (($env:Path -split ";") -notcontains $InstallDir) {{
+    }
+    if (($env:Path -split ";") -notcontains $InstallDir) {
         $env:Path = "$env:Path;$InstallDir"
-    }}
+    }
 
     Write-Host "lumen-cli installed to $(Join-Path $InstallDir "lumen-cli.exe")"
     Write-Host "Next:"
     Write-Host "  lumen-cli init"
     Write-Host "  lumen-cli start"
-}} finally {{
+} finally {
     Remove-Item -Recurse -Force $TempDir -ErrorAction SilentlyContinue
-}}
+}
 "#
-    );
+    .replace("__RELEASE_BASE_URL__", base_url)
+    .replace("__WINDOWS_FILE__", &windows.file_name)
+    .replace("__WINDOWS_SHA256__", &windows.sha256);
     fs::write(assets_dir.join("install.ps1"), body)
         .map_err(|err| format!("failed to write install.ps1: {err}"))
 }
@@ -1061,6 +1138,38 @@ fn release_version() -> String {
         .unwrap_or_else(|_| DEFAULT_RELEASE_VERSION.to_owned())
         .trim_start_matches('v')
         .to_owned()
+}
+
+fn release_base_url() -> String {
+    env::var("LUMEN_RELEASE_BASE_URL")
+        .unwrap_or_else(|_| DEFAULT_RELEASE_BASE_URL.to_owned())
+        .trim_end_matches('/')
+        .to_owned()
+}
+
+struct InstallerArtifact {
+    file_name: String,
+    sha256: String,
+}
+
+fn cli_installer_artifact(
+    assets_dir: &Path,
+    target_name: &str,
+) -> Result<InstallerArtifact, String> {
+    let target = CLI_TARGETS
+        .iter()
+        .find(|target| target.name == target_name)
+        .ok_or_else(|| format!("unknown CLI installer target `{target_name}`"))?;
+    let file_name = target.file_name();
+    let path = assets_dir.join(&file_name);
+    if !path.is_file() {
+        return Err(format!(
+            "missing CLI installer artifact `{}`",
+            path.display()
+        ));
+    }
+    let sha256 = sha256_file(&path)?;
+    Ok(InstallerArtifact { file_name, sha256 })
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {

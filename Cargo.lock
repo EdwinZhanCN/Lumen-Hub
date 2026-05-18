@@ -2323,11 +2323,13 @@ name = "lumen-cli"
 version = "0.1.0"
 dependencies = [
  "cliclack",
+ "flate2",
  "lumen-schema",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
+ "tar",
  "thiserror 2.0.18",
  "ureq 3.3.0",
  "zip 6.0.0",
