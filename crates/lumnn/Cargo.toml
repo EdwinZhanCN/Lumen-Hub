@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["ort-download-binaries", "candle", "mnn"]
+default = ["ort-download-binaries"]
 # ONNX Runtime features
 ort-download-binaries = ["ort/download-binaries", "ort/copy-dylibs"]
 ort-load-dynamic = ["ort/load-dynamic"]
@@ -53,3 +53,13 @@ tracing = "0.1.44"
 [dev-dependencies]
 prost = "0.14.3"
 tokio = { version = "1.51.1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
+
+[[test]]
+name = "test_candle_onnx_node"
+path = "tests/test_candle_onnx_node.rs"
+required-features = ["candle"]
+
+[[test]]
+name = "test_mnn_node"
+path = "tests/test_mnn_node.rs"
+required-features = ["mnn"]
