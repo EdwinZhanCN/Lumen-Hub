@@ -1,7 +1,15 @@
 # Model output
 out/
+dist/
 target/
 .DS_Store
+__pycache__/
+*.py[cod]
 tmp/
 .claude/
 .idea/
+
+# MNN build artifacts (auto-downloaded by lumnn-mnn-sys/build.rs)
+3rd_party/
+data/
+.cache/

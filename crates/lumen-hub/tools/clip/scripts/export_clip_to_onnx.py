@@ -1,24 +1,38 @@
+#!/usr/bin/env -S uv run
+# /// script
+# requires-python = ">=3.10,<3.14"
+# dependencies = [
+#   "torch>=2.2.0",
+#   "transformers>=4.40.0",
+#   "huggingface-hub>=0.23.0",
+#   "onnx>=1.16.0",
+#   "onnxconverter-common>=1.14.0",
+#   "onnxruntime>=1.18.0",
+#   "open_clip_torch>=2.24.0",
+#   "timm>=0.9.16",
+# ]
+# ///
+
 """Export CLIP assets into fixed-shape ONNX and generate repository metadata."""
 
 from __future__ import annotations
 
 import argparse
+import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import onnx
+import onnxruntime as ort
 import torch
-from onnxruntime.transformers.float16 import convert_float_to_float16
+from huggingface_hub import snapshot_download
+from onnx import TensorProto
+from onnxconverter_common import float16
 from torch import nn
 from transformers import CLIPModel
-
-from scripts.clip.validate_clip_assets import validate_clip_assets
-from scripts.common._shared import DEFAULT_ONNX_OPSET, parse_shape, read_json
-from scripts.common.generate_model_card import generate_model_card
-from scripts.common.hf_download import download_hf_artifacts
-from scripts.common.write_model_info import write_model_metadata
 
 try:
     import open_clip as _open_clip  # type: ignore[import-not-found]
@@ -44,6 +58,139 @@ CLIP_HF_ALLOW_PATTERNS = (
     "*.bin",
     "*.safetensors",
 )
+DEFAULT_ONNX_OPSET = 17
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    """Read a JSON object from disk."""
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return value
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    """Write a stable pretty-printed JSON object."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(value, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def parse_shape(value: str) -> tuple[int, ...]:
+    """Parse a comma-separated tensor shape."""
+    dims = tuple(int(part.strip()) for part in value.split(",") if part.strip())
+    if not dims or any(dim <= 0 for dim in dims):
+        raise argparse.ArgumentTypeError(
+            f"shape must be a comma-separated list of positive integers, got {value!r}"
+        )
+    return dims
+
+
+def download_hf_artifacts(
+        *,
+        repo_id: str,
+        revision: str,
+        output_dir: Path,
+        allow_patterns: list[str],
+) -> None:
+    """Download selected Hugging Face files into `output_dir/upstream`."""
+    snapshot = Path(
+        snapshot_download(
+            repo_id=repo_id,
+            revision=revision,
+            allow_patterns=allow_patterns,
+        )
+    )
+    upstream_dir = output_dir / "upstream"
+    upstream_dir.mkdir(parents=True, exist_ok=True)
+    for source in snapshot.rglob("*"):
+        if not source.is_file():
+            continue
+        target = upstream_dir / source.relative_to(snapshot)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def write_model_metadata(
+        *,
+        model_root: Path,
+        task: str,
+        model_name: str,
+        description: str,
+        source_format: str,
+        source_repo_id: str,
+        runtimes: dict[str, Any],
+        task_metadata: dict[str, Any],
+        version: str,
+) -> Path:
+    """Write the Lumen `model_info.json` metadata file."""
+    model_info = {
+        "name": model_name,
+        "version": version,
+        "description": description,
+        "model_type": task,
+        "source": {
+            "format": source_format,
+            "repo_id": source_repo_id,
+        },
+        "runtimes": runtimes,
+        "task_metadata": task_metadata,
+    }
+    path = model_root / "model_info.json"
+    write_json(path, model_info)
+    return path
+
+
+def validate_clip_assets(*, model_root: Path) -> dict[str, Any]:
+    """Validate the exported CLIP package enough to catch broken artifacts."""
+    required = [
+        model_root / "model_info.json",
+        model_root / "onnx" / "vision.fp32.onnx",
+        model_root / "onnx" / "vision.fp16.onnx",
+        model_root / "onnx" / "text.fp32.onnx",
+        model_root / "onnx" / "text.fp16.onnx",
+    ]
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"missing CLIP export artifacts: {missing}")
+
+    checked_models: list[str] = []
+    for path in required:
+        if path.suffix != ".onnx":
+            continue
+        model = onnx.load(str(path))
+        onnx.checker.check_model(model)
+        ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        checked_models.append(str(path))
+
+    return {
+        "ok": True,
+        "checked_models": checked_models,
+    }
+
+
+def generate_model_card(*, model_root: Path, template: str) -> Path:
+    """Generate a small README for the exported package."""
+    model_info = read_json(model_root / "model_info.json")
+    path = model_root / "README.md"
+    path.write_text(
+        "\n".join(
+            [
+                f"# {model_info['name']}",
+                "",
+                str(model_info.get("description", "")),
+                "",
+                f"- Type: `{template}`",
+                f"- Source: `{model_info['source']['repo_id']}`",
+                "- Runtime: `onnx`",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,11 +417,43 @@ def _export_text_model(
     )
 
 
+def _tensor_elem_types(model: onnx.ModelProto) -> dict[str, int]:
+    """Return tensor element types recorded in graph inputs, outputs, and values."""
+    elem_types: dict[str, int] = {}
+    values = (
+        list(model.graph.input)
+        + list(model.graph.output)
+        + list(model.graph.value_info)
+    )
+    for value in values:
+        tensor_type = value.type.tensor_type
+        if tensor_type.elem_type:
+            elem_types[value.name] = int(tensor_type.elem_type)
+    return elem_types
+
+
+def _fix_fp16_cast_targets(model: onnx.ModelProto) -> int:
+    """Retarget stale Cast-to-float nodes introduced by ONNX fp16 conversion."""
+    elem_types = _tensor_elem_types(model)
+    fixed = 0
+    for node in model.graph.node:
+        if node.op_type != "Cast" or len(node.output) != 1:
+            continue
+        if elem_types.get(node.output[0]) != TensorProto.FLOAT16:
+            continue
+        for attr in node.attribute:
+            if attr.name == "to" and attr.i == TensorProto.FLOAT:
+                attr.i = TensorProto.FLOAT16
+                fixed += 1
+    return fixed
+
+
 def _convert_to_fp16(src_path: Path, dst_path: Path) -> int:
     """Convert an FP32 ONNX file into FP16."""
-    model = onnx.load(str(src_path))
-    converted = convert_float_to_float16(model, keep_io_types=True)
-    onnx.save(converted, str(dst_path))
+    model = onnx.load(str(src_path), load_external_data=True)
+    converted = float16.convert_float_to_float16(model, keep_io_types=True)
+    _fix_fp16_cast_targets(converted)
+    onnx.save_model(converted, str(dst_path), save_as_external_data=False)
     return int(converted.ir_version)
 
 

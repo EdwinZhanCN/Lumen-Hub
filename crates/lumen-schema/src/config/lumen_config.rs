@@ -175,6 +175,7 @@ pub enum Runtime {
     Onnx,
     CandleOnnx,
     Rknn,
+    Mnn,
 }
 
 impl Runtime {
@@ -183,6 +184,7 @@ impl Runtime {
             Self::Onnx => "onnx",
             Self::CandleOnnx => "candle_onnx",
             Self::Rknn => "rknn",
+            Self::Mnn => "mnn",
         }
     }
 }

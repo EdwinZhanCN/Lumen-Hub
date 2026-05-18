@@ -70,7 +70,7 @@ async fn exported_siglip_model_latency() {
 
     let text = measure_task(
         &service,
-        "siglip_semantic_text_embed",
+        "semantic_text_embed",
         "text/plain",
         &text_payload,
         warmup,
@@ -79,7 +79,7 @@ async fn exported_siglip_model_latency() {
     .await;
     let image = measure_task(
         &service,
-        "siglip_semantic_image_embed",
+        "semantic_image_embed",
         "image/png",
         &image_payload,
         warmup,
@@ -208,7 +208,8 @@ fn parse_runtime(value: &str) -> Runtime {
     match value {
         "onnx" => Runtime::Onnx,
         "candle_onnx" | "candle-onnx" | "candle" => Runtime::CandleOnnx,
-        other => panic!("unsupported SigLIP runtime `{other}`; expected onnx or candle_onnx"),
+        "mnn" => Runtime::Mnn,
+        other => panic!("unsupported SigLIP runtime `{other}`; expected onnx, candle_onnx, or mnn"),
     }
 }
 
@@ -218,7 +219,7 @@ fn siglip_accelerated(runtime: Runtime) -> bool {
 
     #[cfg(target_vendor = "apple")]
     {
-        if runtime == Runtime::CandleOnnx {
+        if runtime == Runtime::CandleOnnx || runtime == Runtime::Mnn {
             return requested;
         }
         if requested {

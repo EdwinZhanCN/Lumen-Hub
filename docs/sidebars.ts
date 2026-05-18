@@ -26,7 +26,12 @@ const sidebars: SidebarsConfig = {
     {
       type: "category",
       label: "Development",
-      items: ["development/adding-a-model"],
+      items: [
+        "development/adding-a-model",
+        "development/beta-local-dist",
+        "development/model-repository",
+        "development/openvino-package",
+      ],
     },
   ],
 };

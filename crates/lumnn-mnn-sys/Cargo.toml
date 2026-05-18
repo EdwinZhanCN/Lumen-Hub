@@ -1,0 +1,30 @@
+[package]
+name = "lumnn-mnn-sys"
+version = "0.1.0"
+edition = "2021"
+description = "Low-level FFI bindings to MNN (Mobile Neural Network) inference framework"
+license = "Apache-2.0"
+
+[features]
+default = []
+# GPU backends
+vulkan = []
+metal = []
+cuda = []
+opencl = []
+opengl = []
+coreml = []
+# Linking modes
+mnn-dynamic = []
+mnn-static = []
+build-mnn-from-source = []
+# Docs.rs stub
+docsrs = []
+
+[dependencies]
+ndarray = "0.17"
+
+[build-dependencies]
+bindgen = "0.70"
+cc = { version = "1", features = ["parallel"] }
+cmake = "0.1"

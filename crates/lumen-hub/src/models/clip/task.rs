@@ -1,4 +1,10 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap},
+    fs::File,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use half::f16;
@@ -6,7 +12,7 @@ use image::{
     RgbImage,
     imageops::{self, FilterType},
 };
-use lumen_schema::EmbeddingV1;
+use lumen_schema::{EmbeddingV1, Label, LabelsV1};
 use lumnn::core::{
     context::MLContext,
     packet::{HostTensor, MLPacket, MLPacketDataType, MLPacketDescriptor},
@@ -21,6 +27,9 @@ use crate::service::{
     validate_tensor_request,
 };
 
+const BIOCLIP_DEFAULT_TOP_K: usize = 5;
+const BIOCLIP_HNSW_RERANK_K: usize = 200;
+const BIOCLIP_TOP_K_META_KEYS: [&str; 5] = ["TopK", "topK", "top_k", "top-k", "lumen.top_k"];
 const SUPPORTED_IMAGE_INPUT_MIMES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/avif"];
 const IMAGE_TENSOR_LAYOUT: &str = "NCHW";
@@ -303,6 +312,1145 @@ pub struct ClipImageEmbedTask {
     input_dtype: MLPacketDataType,
     output_name: String,
     preprocess: ClipImagePreprocessConfig,
+}
+
+/// Task handler for BioCLIP zero-shot classification.
+///
+/// BioCLIP does not load a text encoder at inference time. It runs the CLIP
+/// vision encoder, then compares the normalized image feature with a memory
+/// mapped matrix of precomputed text embeddings for the configured dataset.
+pub struct BioClipClassifyTask {
+    spec: TaskSpec,
+    pipeline: Arc<MLPipeline>,
+    context: Arc<MLContext>,
+    model_id: String,
+    input_name: String,
+    input_dtype: MLPacketDataType,
+    output_name: String,
+    preprocess: ClipImagePreprocessConfig,
+    dataset: Arc<BioClipDataset>,
+}
+
+impl BioClipClassifyTask {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        task_name: impl Into<String>,
+        pipeline: MLPipeline,
+        context: Arc<MLContext>,
+        model_id: impl Into<String>,
+        input_names: Vec<String>,
+        input_dtype: MLPacketDataType,
+        output_name: impl Into<String>,
+        preprocess: ClipImagePreprocessConfig,
+        dataset_name: impl Into<String>,
+        embeddings_path: impl Into<PathBuf>,
+        labels_path: impl Into<PathBuf>,
+        index_path: Option<PathBuf>,
+    ) -> ServiceResult<Self> {
+        let input_name = input_names.into_iter().next().ok_or_else(|| {
+            ServiceError::InvalidArgument(
+                "BioCLIP classify task requires one vision input name".to_owned(),
+            )
+        })?;
+        let dataset_name = dataset_name.into();
+        let dataset = BioClipDataset::open(
+            dataset_name.clone(),
+            embeddings_path.into(),
+            labels_path.into(),
+            index_path,
+        )?;
+        let output_name = output_name.into();
+        Ok(Self {
+            spec: TaskSpec::new(
+                task_name,
+                "BioCLIP image classification with dataset text embeddings",
+            )
+            .with_input_mimes(image_input_mimes_with_tensor())
+            .with_output_mime(lumen_schema::mime::LABELS_V1_JSON)
+            .with_metadata("dataset", dataset_name),
+            pipeline: Arc::new(pipeline),
+            context,
+            model_id: model_id.into(),
+            input_name,
+            input_dtype,
+            output_name,
+            preprocess,
+            dataset: Arc::new(dataset),
+        })
+    }
+
+    fn preprocess_image(&self, bytes: &[u8]) -> ServiceResult<HashMap<String, MLPacket>> {
+        let pixel_values = self.preprocess.preprocess_image_bytes(bytes)?;
+        let tensor = match self.input_dtype {
+            MLPacketDataType::Float32 => HostTensor::Float32(pixel_values),
+            MLPacketDataType::Float16 => {
+                HostTensor::Float16(pixel_values.into_iter().map(f16::from_f32).collect())
+            }
+            other => {
+                return Err(ServiceError::Internal(format!(
+                    "BioCLIP image input `{}` has unsupported dtype {:?}",
+                    self.input_name, other
+                )));
+            }
+        };
+        let packet = self
+            .context
+            .packet_from_host_tensor(
+                MLPacketDescriptor::new(self.input_dtype, self.preprocess.output_shape()),
+                tensor,
+            )
+            .map_err(ServiceError::Internal)?;
+
+        Ok(HashMap::from([(self.input_name.clone(), packet)]))
+    }
+
+    fn tensor_input_descriptor(&self, request: &TaskRequest) -> ServiceResult<TensorDescriptor> {
+        let descriptor = validate_tensor_request(
+            request,
+            TensorValidationOptions {
+                dtype: ml_dtype_to_tensor_dtype(self.input_dtype)?,
+                layout: IMAGE_TENSOR_LAYOUT,
+                preprocess_id: CLIP_IMAGE_PREPROCESS_ID,
+            },
+        )?;
+        let expected_shape = self.preprocess.output_shape();
+        if descriptor.shape != expected_shape {
+            return Err(ServiceError::InvalidArgument(format!(
+                "BioCLIP image tensor shape must be {:?}, got {:?}",
+                expected_shape, descriptor.shape
+            )));
+        }
+        Ok(descriptor)
+    }
+
+    fn tensor_request_to_packets(
+        &self,
+        request: &TaskRequest,
+    ) -> ServiceResult<HashMap<String, MLPacket>> {
+        let descriptor = self.tensor_input_descriptor(request)?;
+        let tensor = tensor_payload_to_host_tensor(&request.payload, self.input_dtype)?;
+        let packet = self
+            .context
+            .packet_from_host_tensor(
+                MLPacketDescriptor::new(self.input_dtype, descriptor.shape),
+                tensor,
+            )
+            .map_err(ServiceError::Internal)?;
+        Ok(HashMap::from([(self.input_name.clone(), packet)]))
+    }
+
+    async fn run_pipeline(
+        &self,
+        input_packets: HashMap<String, MLPacket>,
+    ) -> ServiceResult<MLPacket> {
+        let mut outputs = self
+            .pipeline
+            .run(input_packets)
+            .await
+            .map_err(ServiceError::Internal)?;
+
+        outputs.remove(&self.output_name).ok_or_else(|| {
+            ServiceError::Internal(format!(
+                "pipeline output missing key `{}`",
+                self.output_name
+            ))
+        })
+    }
+
+    async fn labels_result_from_packet(
+        &self,
+        packet: MLPacket,
+        top_k: usize,
+    ) -> ServiceResult<TaskResult> {
+        let (values, _) = float32_values_and_shape(packet).await?;
+        let labels = self.dataset.top_k(&values, top_k)?;
+        labels_json_result(LabelsV1::new(labels, &self.model_id))
+    }
+}
+
+#[async_trait]
+impl TaskHandler for BioClipClassifyTask {
+    fn spec(&self) -> &TaskSpec {
+        &self.spec
+    }
+
+    async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
+        let top_k = top_k_from_request(&request, self.dataset.len())?;
+        let packet = if normalized_meta(request.meta.get(META_INPUT_KIND)).as_deref()
+            == Some(INPUT_KIND_TENSOR)
+        {
+            self.run_pipeline(self.tensor_request_to_packets(&request)?)
+                .await?
+        } else {
+            if !is_supported_image_input_mime(&request.payload_mime) {
+                return Err(ServiceError::InvalidArgument(format!(
+                    "unsupported BioCLIP image input MIME `{}`; supported MIME types: {}",
+                    request.payload_mime,
+                    SUPPORTED_IMAGE_INPUT_MIMES.join(", ")
+                )));
+            }
+            self.run_pipeline(self.preprocess_image(&request.payload)?)
+                .await?
+        };
+
+        self.labels_result_from_packet(packet, top_k).await
+    }
+}
+
+struct BioClipDataset {
+    name: String,
+    embeddings: MmapNpyMatrix,
+    labels: Vec<String>,
+    layout: BioClipEmbeddingLayout,
+    index: Option<HnswIndex>,
+}
+
+impl BioClipDataset {
+    fn open(
+        name: String,
+        embeddings_path: PathBuf,
+        labels_path: PathBuf,
+        index_path: Option<PathBuf>,
+    ) -> ServiceResult<Self> {
+        let embeddings = MmapNpyMatrix::open(&embeddings_path)?;
+        let labels = load_bioclip_labels(&labels_path)?;
+        let layout = BioClipEmbeddingLayout::from_shape(labels.len(), &embeddings).ok_or_else(|| {
+            ServiceError::InvalidArgument(format!(
+                "BioCLIP dataset `{name}` label count {} from {} does not match embedding matrix shape [{}, {}] from {}",
+                labels.len(),
+                labels_path.display(),
+                embeddings.rows(),
+                embeddings.cols(),
+                embeddings_path.display()
+            ))
+        })?;
+        if layout.embedding_dim(&embeddings) == 0 {
+            return Err(ServiceError::InvalidArgument(format!(
+                "BioCLIP dataset `{name}` embedding dimension must be greater than zero"
+            )));
+        }
+        let index = index_path
+            .map(|path| HnswIndex::open(&path, layout.embedding_dim(&embeddings), labels.len()))
+            .transpose()?;
+
+        Ok(Self {
+            name,
+            embeddings,
+            labels,
+            layout,
+            index,
+        })
+    }
+
+    fn len(&self) -> usize {
+        self.labels.len()
+    }
+
+    fn top_k(&self, query: &[f32], top_k: usize) -> ServiceResult<Vec<Label>> {
+        let embedding_dim = self.layout.embedding_dim(&self.embeddings);
+        if query.len() != embedding_dim {
+            return Err(ServiceError::Internal(format!(
+                "BioCLIP image embedding dimension {} does not match dataset `{}` dimension {}",
+                query.len(),
+                self.name,
+                embedding_dim
+            )));
+        }
+        let query_norm = l2_norm(query);
+        if query_norm == 0.0 {
+            return Err(ServiceError::Internal(
+                "BioCLIP image embedding has zero norm".to_owned(),
+            ));
+        }
+
+        let limit = top_k.min(self.labels.len());
+        let best = if let Some(index) = &self.index {
+            let candidates = index.search(query, BIOCLIP_HNSW_RERANK_K.min(self.labels.len()))?;
+            self.rerank_candidates(query, query_norm, limit, candidates.iter().copied())?
+        } else {
+            match self.layout {
+                BioClipEmbeddingLayout::LabelRows => {
+                    self.top_k_label_rows(query, query_norm, limit)?
+                }
+                BioClipEmbeddingLayout::LabelColumns => {
+                    self.top_k_label_columns(query, query_norm, limit)?
+                }
+            }
+        };
+
+        Ok(best
+            .into_iter()
+            .map(|(index, score)| Label {
+                label: self.labels[index].clone(),
+                score,
+            })
+            .collect())
+    }
+
+    fn top_k_label_rows(
+        &self,
+        query: &[f32],
+        query_norm: f32,
+        limit: usize,
+    ) -> ServiceResult<Vec<(usize, f32)>> {
+        let mut best: Vec<(usize, f32)> = Vec::with_capacity(limit);
+        for label_index in 0..self.embeddings.rows() {
+            let score = self
+                .embeddings
+                .row_cosine_similarity(label_index, query, query_norm)?;
+            push_top_k(&mut best, limit, label_index, score);
+        }
+        Ok(best)
+    }
+
+    fn rerank_candidates<I>(
+        &self,
+        query: &[f32],
+        query_norm: f32,
+        limit: usize,
+        candidates: I,
+    ) -> ServiceResult<Vec<(usize, f32)>>
+    where
+        I: IntoIterator<Item = usize>,
+    {
+        let mut best: Vec<(usize, f32)> = Vec::with_capacity(limit);
+        for label_index in candidates {
+            if label_index >= self.labels.len() {
+                continue;
+            }
+            let score = match self.layout {
+                BioClipEmbeddingLayout::LabelRows => {
+                    self.embeddings
+                        .row_cosine_similarity(label_index, query, query_norm)?
+                }
+                BioClipEmbeddingLayout::LabelColumns => {
+                    self.embeddings
+                        .column_cosine_similarity(label_index, query, query_norm)?
+                }
+            };
+            push_top_k(&mut best, limit, label_index, score);
+        }
+        Ok(best)
+    }
+
+    fn top_k_label_columns(
+        &self,
+        query: &[f32],
+        query_norm: f32,
+        limit: usize,
+    ) -> ServiceResult<Vec<(usize, f32)>> {
+        let label_count = self.labels.len();
+        let mut dots = vec![0.0f32; label_count];
+        let mut norms_sq = vec![0.0f32; label_count];
+
+        for (dim, query_value) in query.iter().copied().enumerate() {
+            match self.embeddings.element_type {
+                NpyElementType::Float32 => {
+                    for (label_index, chunk) in
+                        self.embeddings.row_bytes(dim).chunks_exact(4).enumerate()
+                    {
+                        let value = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                        dots[label_index] += value * query_value;
+                        norms_sq[label_index] += value * value;
+                    }
+                }
+                NpyElementType::Float16 => {
+                    for (label_index, chunk) in
+                        self.embeddings.row_bytes(dim).chunks_exact(2).enumerate()
+                    {
+                        let value = f16::from_le_bytes([chunk[0], chunk[1]]).to_f32();
+                        dots[label_index] += value * query_value;
+                        norms_sq[label_index] += value * value;
+                    }
+                }
+            }
+        }
+
+        let mut best: Vec<(usize, f32)> = Vec::with_capacity(limit);
+        for label_index in 0..label_count {
+            let norm_sq = norms_sq[label_index];
+            if norm_sq == 0.0 {
+                continue;
+            }
+            push_top_k(
+                &mut best,
+                limit,
+                label_index,
+                dots[label_index] / (norm_sq.sqrt() * query_norm),
+            );
+        }
+        Ok(best)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BioClipEmbeddingLayout {
+    /// Matrix shape is `[label_count, embedding_dim]`.
+    LabelRows,
+    /// Matrix shape is `[embedding_dim, label_count]`.
+    LabelColumns,
+}
+
+impl BioClipEmbeddingLayout {
+    fn from_shape(label_count: usize, embeddings: &MmapNpyMatrix) -> Option<Self> {
+        if embeddings.rows() == label_count {
+            Some(Self::LabelRows)
+        } else if embeddings.cols() == label_count {
+            Some(Self::LabelColumns)
+        } else {
+            None
+        }
+    }
+
+    fn embedding_dim(self, embeddings: &MmapNpyMatrix) -> usize {
+        match self {
+            Self::LabelRows => embeddings.cols(),
+            Self::LabelColumns => embeddings.rows(),
+        }
+    }
+}
+
+struct MmapNpyMatrix {
+    mmap: memmap2::Mmap,
+    data_offset: usize,
+    rows: usize,
+    cols: usize,
+    element_type: NpyElementType,
+}
+
+impl MmapNpyMatrix {
+    fn open(path: &Path) -> ServiceResult<Self> {
+        let file = File::open(path).map_err(|err| {
+            ServiceError::InvalidArgument(format!(
+                "failed to open BioCLIP embeddings at {}: {err}",
+                path.display()
+            ))
+        })?;
+        // The mapping is read-only and the file handle is not mutated while the
+        // task is alive; this is the intended memmap2 usage for immutable model
+        // assets.
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|err| {
+            ServiceError::InvalidArgument(format!(
+                "failed to mmap BioCLIP embeddings at {}: {err}",
+                path.display()
+            ))
+        })?;
+        let header = parse_npy_header(&mmap, path)?;
+        let expected_bytes = header
+            .rows
+            .checked_mul(header.cols)
+            .and_then(|count| count.checked_mul(header.element_type.size_bytes()))
+            .and_then(|bytes| bytes.checked_add(header.data_offset))
+            .ok_or_else(|| {
+                ServiceError::InvalidArgument(format!(
+                    "BioCLIP embeddings at {} are too large to address",
+                    path.display()
+                ))
+            })?;
+        if mmap.len() < expected_bytes {
+            return Err(ServiceError::InvalidArgument(format!(
+                "BioCLIP embeddings at {} are truncated: expected at least {expected_bytes} bytes, got {}",
+                path.display(),
+                mmap.len()
+            )));
+        }
+
+        Ok(Self {
+            mmap,
+            data_offset: header.data_offset,
+            rows: header.rows,
+            cols: header.cols,
+            element_type: header.element_type,
+        })
+    }
+
+    fn rows(&self) -> usize {
+        self.rows
+    }
+
+    fn cols(&self) -> usize {
+        self.cols
+    }
+
+    fn value(&self, row: usize, col: usize) -> f32 {
+        let offset = self.data_offset + (row * self.cols + col) * self.element_type.size_bytes();
+        match self.element_type {
+            NpyElementType::Float32 => f32::from_le_bytes([
+                self.mmap[offset],
+                self.mmap[offset + 1],
+                self.mmap[offset + 2],
+                self.mmap[offset + 3],
+            ]),
+            NpyElementType::Float16 => {
+                f16::from_le_bytes([self.mmap[offset], self.mmap[offset + 1]]).to_f32()
+            }
+        }
+    }
+
+    fn row_bytes(&self, row: usize) -> &[u8] {
+        let row_size = self.cols * self.element_type.size_bytes();
+        let offset = self.data_offset + row * row_size;
+        &self.mmap[offset..offset + row_size]
+    }
+
+    fn row_cosine_similarity(
+        &self,
+        row: usize,
+        query: &[f32],
+        query_norm: f32,
+    ) -> ServiceResult<f32> {
+        let mut dot = 0.0;
+        let mut row_norm_sq = 0.0;
+        for (col, query_value) in query.iter().enumerate() {
+            let value = self.value(row, col);
+            dot += value * query_value;
+            row_norm_sq += value * value;
+        }
+        if row_norm_sq == 0.0 {
+            return Ok(f32::NAN);
+        }
+        Ok(dot / (row_norm_sq.sqrt() * query_norm))
+    }
+
+    fn column_cosine_similarity(
+        &self,
+        col: usize,
+        query: &[f32],
+        query_norm: f32,
+    ) -> ServiceResult<f32> {
+        let mut dot = 0.0;
+        let mut col_norm_sq = 0.0;
+        for (row, query_value) in query.iter().enumerate() {
+            let value = self.value(row, col);
+            dot += value * query_value;
+            col_norm_sq += value * value;
+        }
+        if col_norm_sq == 0.0 {
+            return Ok(f32::NAN);
+        }
+        Ok(dot / (col_norm_sq.sqrt() * query_norm))
+    }
+}
+
+struct HnswIndex {
+    mmap: memmap2::Mmap,
+    cur_element_count: usize,
+    size_data_per_element: usize,
+    label_offset: usize,
+    offset_data: usize,
+    max_level: i32,
+    enterpoint_node: usize,
+    max_m: usize,
+    max_m0: usize,
+    size_links_per_element: usize,
+    data_level0_offset: usize,
+    upper_link_offsets: Vec<Option<(usize, usize)>>,
+    dim: usize,
+}
+
+impl HnswIndex {
+    fn open(path: &Path, dim: usize, expected_labels: usize) -> ServiceResult<Self> {
+        let file = File::open(path).map_err(|err| {
+            ServiceError::InvalidArgument(format!(
+                "failed to open BioCLIP HNSW index at {}: {err}",
+                path.display()
+            ))
+        })?;
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|err| {
+            ServiceError::InvalidArgument(format!(
+                "failed to mmap BioCLIP HNSW index at {}: {err}",
+                path.display()
+            ))
+        })?;
+        let header = HnswHeader::parse(&mmap, path)?;
+        if header.cur_element_count != expected_labels {
+            return Err(ServiceError::InvalidArgument(format!(
+                "BioCLIP HNSW index at {} has {} elements, but labels contain {}",
+                path.display(),
+                header.cur_element_count,
+                expected_labels
+            )));
+        }
+        if header.offset_data + dim * std::mem::size_of::<f32>() > header.label_offset {
+            return Err(ServiceError::InvalidArgument(format!(
+                "BioCLIP HNSW index at {} cannot hold dim={dim} float32 vectors",
+                path.display()
+            )));
+        }
+        let upper_links_offset = HnswHeader::BYTE_LEN
+            .checked_add(
+                header
+                    .cur_element_count
+                    .checked_mul(header.size_data_per_element)
+                    .ok_or_else(|| {
+                        ServiceError::InvalidArgument(format!(
+                            "BioCLIP HNSW index at {} level0 block is too large",
+                            path.display()
+                        ))
+                    })?,
+            )
+            .ok_or_else(|| {
+                ServiceError::InvalidArgument(format!(
+                    "BioCLIP HNSW index at {} level0 block overflows",
+                    path.display()
+                ))
+            })?;
+        if mmap.len() < upper_links_offset {
+            return Err(ServiceError::InvalidArgument(format!(
+                "BioCLIP HNSW index at {} is truncated",
+                path.display()
+            )));
+        }
+        let upper_link_offsets =
+            parse_hnsw_upper_link_offsets(&mmap, upper_links_offset, header.cur_element_count)?;
+
+        Ok(Self {
+            mmap,
+            cur_element_count: header.cur_element_count,
+            size_data_per_element: header.size_data_per_element,
+            label_offset: header.label_offset,
+            offset_data: header.offset_data,
+            max_level: header.max_level,
+            enterpoint_node: header.enterpoint_node,
+            max_m: header.max_m,
+            max_m0: header.max_m0,
+            size_links_per_element: header.max_m * std::mem::size_of::<u32>()
+                + std::mem::size_of::<u32>(),
+            data_level0_offset: HnswHeader::BYTE_LEN,
+            upper_link_offsets,
+            dim,
+        })
+    }
+
+    fn search(&self, query: &[f32], k: usize) -> ServiceResult<Vec<usize>> {
+        if query.len() != self.dim {
+            return Err(ServiceError::Internal(format!(
+                "BioCLIP HNSW query dimension {} does not match index dimension {}",
+                query.len(),
+                self.dim
+            )));
+        }
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut current = self.enterpoint_node;
+        let mut current_score = self.score(current, query);
+        for level in (1..=self.max_level).rev() {
+            let mut changed = true;
+            while changed {
+                changed = false;
+                for neighbor in self.neighbors(current, level)? {
+                    let score = self.score(neighbor, query);
+                    if score > current_score {
+                        current = neighbor;
+                        current_score = score;
+                        changed = true;
+                    }
+                }
+            }
+        }
+
+        let ef = BIOCLIP_HNSW_RERANK_K.max(k).min(self.cur_element_count);
+        let mut visited = vec![false; self.cur_element_count];
+        let mut candidates = BinaryHeap::new();
+        let mut top = BinaryHeap::new();
+        visited[current] = true;
+        candidates.push(ScoredNode {
+            score: current_score,
+            node: current,
+        });
+        top.push(WorstScoredNode {
+            score: current_score,
+            node: current,
+        });
+
+        while let Some(candidate) = candidates.pop() {
+            let worst_score = top
+                .peek()
+                .map(|node| node.score)
+                .unwrap_or(f32::NEG_INFINITY);
+            if top.len() >= ef && candidate.score < worst_score {
+                break;
+            }
+
+            for neighbor in self.neighbors(candidate.node, 0)? {
+                if visited[neighbor] {
+                    continue;
+                }
+                visited[neighbor] = true;
+                let score = self.score(neighbor, query);
+                let worst_score = top
+                    .peek()
+                    .map(|node| node.score)
+                    .unwrap_or(f32::NEG_INFINITY);
+                if top.len() < ef || score > worst_score {
+                    candidates.push(ScoredNode {
+                        score,
+                        node: neighbor,
+                    });
+                    top.push(WorstScoredNode {
+                        score,
+                        node: neighbor,
+                    });
+                    if top.len() > ef {
+                        top.pop();
+                    }
+                }
+            }
+        }
+
+        let mut scored = top
+            .into_iter()
+            .map(|node| (self.label(node.node), node.score))
+            .collect::<Vec<_>>();
+        scored.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
+        scored.truncate(k);
+        Ok(scored.into_iter().map(|(label, _)| label).collect())
+    }
+
+    fn score(&self, node: usize, query: &[f32]) -> f32 {
+        let vector = self.vector(node);
+        vector
+            .chunks_exact(4)
+            .zip(query.iter())
+            .map(|(chunk, query_value)| {
+                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) * query_value
+            })
+            .sum()
+    }
+
+    fn label(&self, node: usize) -> usize {
+        let offset = self.element_offset(node) + self.label_offset;
+        u64::from_le_bytes(self.mmap[offset..offset + 8].try_into().unwrap()) as usize
+    }
+
+    fn vector(&self, node: usize) -> &[u8] {
+        let offset = self.element_offset(node) + self.offset_data;
+        &self.mmap[offset..offset + self.dim * std::mem::size_of::<f32>()]
+    }
+
+    fn neighbors(&self, node: usize, level: i32) -> ServiceResult<Vec<usize>> {
+        let (offset, max_links) = if level == 0 {
+            (self.element_offset(node), self.max_m0)
+        } else {
+            let Some(upper) = self.upper_link_offset(node, level)? else {
+                return Ok(Vec::new());
+            };
+            (upper, self.max_m)
+        };
+        let count = u32::from_le_bytes(self.mmap[offset..offset + 4].try_into().unwrap()) as usize;
+        if count > max_links {
+            return Err(ServiceError::Internal(format!(
+                "BioCLIP HNSW node {node} level {level} has {count} links, max {max_links}"
+            )));
+        }
+        let mut neighbors = Vec::with_capacity(count);
+        for index in 0..count {
+            let start = offset + 4 + index * 4;
+            let neighbor =
+                u32::from_le_bytes(self.mmap[start..start + 4].try_into().unwrap()) as usize;
+            if neighbor < self.cur_element_count {
+                neighbors.push(neighbor);
+            }
+        }
+        Ok(neighbors)
+    }
+
+    fn element_offset(&self, node: usize) -> usize {
+        self.data_level0_offset + node * self.size_data_per_element
+    }
+
+    fn upper_link_offset(&self, node: usize, level: i32) -> ServiceResult<Option<usize>> {
+        if level <= 0 {
+            return Ok(Some(self.element_offset(node)));
+        }
+        let Some((data_start, byte_len)) = self.upper_link_offsets.get(node).copied().flatten()
+        else {
+            return Ok(None);
+        };
+        let level_offset = (level as usize - 1) * self.size_links_per_element;
+        if level_offset + self.size_links_per_element > byte_len {
+            return Ok(None);
+        }
+        Ok(Some(data_start + level_offset))
+    }
+}
+
+fn parse_hnsw_upper_link_offsets(
+    bytes: &[u8],
+    mut cursor: usize,
+    count: usize,
+) -> ServiceResult<Vec<Option<(usize, usize)>>> {
+    let mut offsets = Vec::with_capacity(count);
+    for _ in 0..count {
+        if cursor + 4 > bytes.len() {
+            return Err(ServiceError::InvalidArgument(
+                "BioCLIP HNSW upper link section is truncated".to_owned(),
+            ));
+        }
+        let byte_len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+        let data_start = cursor + 4;
+        let data_end = data_start + byte_len;
+        if data_end > bytes.len() {
+            return Err(ServiceError::InvalidArgument(
+                "BioCLIP HNSW upper link payload is truncated".to_owned(),
+            ));
+        }
+        offsets.push((byte_len > 0).then_some((data_start, byte_len)));
+        cursor = data_end;
+    }
+    Ok(offsets)
+}
+
+struct HnswHeader {
+    cur_element_count: usize,
+    size_data_per_element: usize,
+    label_offset: usize,
+    offset_data: usize,
+    max_level: i32,
+    enterpoint_node: usize,
+    max_m: usize,
+    max_m0: usize,
+}
+
+impl HnswHeader {
+    const BYTE_LEN: usize = 96;
+
+    fn parse(bytes: &[u8], path: &Path) -> ServiceResult<Self> {
+        if bytes.len() < Self::BYTE_LEN {
+            return Err(ServiceError::InvalidArgument(format!(
+                "BioCLIP HNSW index at {} is too small",
+                path.display()
+            )));
+        }
+        let read_u64 = |offset: usize| -> usize {
+            u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize
+        };
+        let read_i32 = |offset: usize| -> i32 {
+            i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        let read_u32 = |offset: usize| -> usize {
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize
+        };
+
+        Ok(Self {
+            cur_element_count: read_u64(16),
+            size_data_per_element: read_u64(24),
+            label_offset: read_u64(32),
+            offset_data: read_u64(40),
+            max_level: read_i32(48),
+            enterpoint_node: read_u32(52),
+            max_m: read_u64(56),
+            max_m0: read_u64(64),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScoredNode {
+    score: f32,
+    node: usize,
+}
+
+impl PartialEq for ScoredNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score && self.node == other.node
+    }
+}
+
+impl Eq for ScoredNode {}
+
+impl PartialOrd for ScoredNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ScoredNode {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score
+            .partial_cmp(&other.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| self.node.cmp(&other.node))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct WorstScoredNode {
+    score: f32,
+    node: usize,
+}
+
+impl PartialEq for WorstScoredNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score && self.node == other.node
+    }
+}
+
+impl Eq for WorstScoredNode {}
+
+impl PartialOrd for WorstScoredNode {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for WorstScoredNode {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other
+            .score
+            .partial_cmp(&self.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| other.node.cmp(&self.node))
+    }
+}
+
+struct NpyHeader {
+    data_offset: usize,
+    rows: usize,
+    cols: usize,
+    element_type: NpyElementType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NpyElementType {
+    Float16,
+    Float32,
+}
+
+impl NpyElementType {
+    fn size_bytes(self) -> usize {
+        match self {
+            Self::Float16 => std::mem::size_of::<f16>(),
+            Self::Float32 => std::mem::size_of::<f32>(),
+        }
+    }
+}
+
+fn parse_npy_header(bytes: &[u8], path: &Path) -> ServiceResult<NpyHeader> {
+    const MAGIC: &[u8] = b"\x93NUMPY";
+    if bytes.len() < 10 || &bytes[..6] != MAGIC {
+        return Err(ServiceError::InvalidArgument(format!(
+            "BioCLIP embeddings at {} are not a .npy file",
+            path.display()
+        )));
+    }
+
+    let major = bytes[6];
+    let header_len_size = match major {
+        1 => 2,
+        2 | 3 => 4,
+        other => {
+            return Err(ServiceError::InvalidArgument(format!(
+                "unsupported .npy major version {other} in {}",
+                path.display()
+            )));
+        }
+    };
+    let header_len_offset = 8;
+    let header_offset = header_len_offset + header_len_size;
+    if bytes.len() < header_offset {
+        return Err(ServiceError::InvalidArgument(format!(
+            "BioCLIP embeddings at {} have an incomplete .npy header",
+            path.display()
+        )));
+    }
+    let header_len = match header_len_size {
+        2 => u16::from_le_bytes([bytes[8], bytes[9]]) as usize,
+        4 => u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize,
+        _ => unreachable!(),
+    };
+    let data_offset = header_offset + header_len;
+    if bytes.len() < data_offset {
+        return Err(ServiceError::InvalidArgument(format!(
+            "BioCLIP embeddings at {} have a truncated .npy header",
+            path.display()
+        )));
+    }
+    let header = std::str::from_utf8(&bytes[header_offset..data_offset]).map_err(|err| {
+        ServiceError::InvalidArgument(format!(
+            "BioCLIP embeddings at {} have a non-UTF8 .npy header: {err}",
+            path.display()
+        ))
+    })?;
+
+    let element_type = if header.contains("'descr': '<f4'")
+        || header.contains("\"descr\": \"<f4\"")
+        || header.contains("'descr': '|f4'")
+        || header.contains("\"descr\": \"|f4\"")
+    {
+        NpyElementType::Float32
+    } else if header.contains("'descr': '<f2'")
+        || header.contains("\"descr\": \"<f2\"")
+        || header.contains("'descr': '|f2'")
+        || header.contains("\"descr\": \"|f2\"")
+    {
+        NpyElementType::Float16
+    } else {
+        return Err(ServiceError::InvalidArgument(format!(
+            "BioCLIP embeddings at {} must be little-endian float16 or float32 .npy",
+            path.display()
+        )));
+    };
+    if !(header.contains("'fortran_order': False")
+        || header.contains("\"fortran_order\": False")
+        || header.contains("\"fortran_order\": false"))
+    {
+        return Err(ServiceError::InvalidArgument(format!(
+            "BioCLIP embeddings at {} must be C-contiguous, not Fortran order",
+            path.display()
+        )));
+    }
+
+    let shape_start = header.find('(').ok_or_else(|| {
+        ServiceError::InvalidArgument(format!("missing .npy shape in {}", path.display()))
+    })?;
+    let shape_end = header[shape_start..]
+        .find(')')
+        .map(|index| shape_start + index)
+        .ok_or_else(|| {
+            ServiceError::InvalidArgument(format!("missing .npy shape in {}", path.display()))
+        })?;
+    let shape: Vec<usize> = header[shape_start + 1..shape_end]
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<usize>().map_err(|err| {
+                ServiceError::InvalidArgument(format!(
+                    "invalid .npy shape dimension `{value}` in {}: {err}",
+                    path.display()
+                ))
+            })
+        })
+        .collect::<ServiceResult<_>>()?;
+    if shape.len() != 2 {
+        return Err(ServiceError::InvalidArgument(format!(
+            "BioCLIP embeddings at {} must be a 2D matrix, got shape {:?}",
+            path.display(),
+            shape
+        )));
+    }
+
+    Ok(NpyHeader {
+        data_offset,
+        rows: shape[0],
+        cols: shape[1],
+        element_type,
+    })
+}
+
+fn load_bioclip_labels(path: &Path) -> ServiceResult<Vec<String>> {
+    let contents = std::fs::read_to_string(path).map_err(|err| {
+        ServiceError::InvalidArgument(format!(
+            "failed to read BioCLIP labels at {}: {err}",
+            path.display()
+        ))
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&contents).map_err(|err| {
+        ServiceError::InvalidArgument(format!(
+            "failed to parse BioCLIP labels at {}: {err}",
+            path.display()
+        ))
+    })?;
+    let items = value.as_array().ok_or_else(|| {
+        ServiceError::InvalidArgument(format!(
+            "BioCLIP labels at {} must be a JSON array",
+            path.display()
+        ))
+    })?;
+
+    items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| bioclip_label_from_value(item).ok_or_else(|| {
+            ServiceError::InvalidArgument(format!(
+                "BioCLIP label at {} index {index} must be a string or object with label/name fields",
+                path.display()
+            ))
+        }))
+        .collect()
+}
+
+fn bioclip_label_from_value(value: &serde_json::Value) -> Option<String> {
+    if let Some(label) = value.as_str() {
+        return Some(label.to_owned());
+    }
+    if value.is_array() {
+        let mut parts = Vec::new();
+        collect_label_strings(value, &mut parts);
+        if !parts.is_empty() {
+            return Some(parts.join(" / "));
+        }
+    }
+    let object = value.as_object()?;
+    for key in ["label", "name", "scientific_name", "common_name", "id"] {
+        if let Some(value) = object.get(key) {
+            if let Some(text) = value.as_str() {
+                return Some(text.to_owned());
+            }
+            if value.is_number() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    object
+        .values()
+        .find_map(|value| value.as_str().map(str::to_owned))
+}
+
+fn collect_label_strings(value: &serde_json::Value, parts: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(value) => {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                parts.push(trimmed.to_owned());
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_label_strings(value, parts);
+            }
+        }
+        serde_json::Value::Number(value) => parts.push(value.to_string()),
+        _ => {}
+    }
+}
+
+fn push_top_k(best: &mut Vec<(usize, f32)>, limit: usize, label_index: usize, score: f32) {
+    if limit == 0 || !score.is_finite() {
+        return;
+    }
+    best.push((label_index, score));
+    best.sort_by(|left, right| {
+        right
+            .1
+            .partial_cmp(&left.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    best.truncate(limit);
+}
+
+fn top_k_from_request(request: &TaskRequest, max_len: usize) -> ServiceResult<usize> {
+    for key in BIOCLIP_TOP_K_META_KEYS {
+        if let Some(value) = request.meta.get(key) {
+            let parsed = value.trim().parse::<usize>().map_err(|err| {
+                ServiceError::InvalidArgument(format!("invalid BioCLIP TopK `{value}`: {err}"))
+            })?;
+            if parsed == 0 {
+                return Err(ServiceError::InvalidArgument(
+                    "BioCLIP TopK must be greater than zero".to_owned(),
+                ));
+            }
+            return Ok(parsed.min(max_len));
+        }
+    }
+    Ok(BIOCLIP_DEFAULT_TOP_K.min(max_len))
+}
+
+fn l2_norm(values: &[f32]) -> f32 {
+    values.iter().map(|value| value * value).sum::<f32>().sqrt()
 }
 
 impl ClipImageEmbedTask {
@@ -642,6 +1790,17 @@ fn embedding_json_result(embedding: EmbeddingV1) -> ServiceResult<TaskResult> {
     )
 }
 
+fn labels_json_result(labels: LabelsV1) -> ServiceResult<TaskResult> {
+    let json_bytes = labels
+        .to_json_bytes()
+        .map_err(|err| ServiceError::Internal(err.to_string()))?;
+
+    Ok(
+        TaskResult::new(json_bytes, lumen_schema::mime::LABELS_V1_JSON)
+            .with_result_schema(lumen_schema::mime::LABELS_V1_SCHEMA),
+    )
+}
+
 impl ClipTextEmbedTask {
     pub fn new(
         task_name: impl Into<String>,
@@ -764,7 +1923,9 @@ impl TaskHandler for ClipTextEmbedTask {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::{fs, io::Write};
 
+    use bytes::Bytes;
     use lumnn::core::{
         context::{MLContext, MLContextOptions},
         pipeline::MLPipeline,
@@ -779,8 +1940,10 @@ mod tests {
     };
 
     use super::{
-        CLIP_IMAGE_PREPROCESS_ID, ClipImageEmbedTask, ClipImagePreprocessConfig,
-        image_input_mimes_with_tensor, is_supported_image_input_mime,
+        BIOCLIP_DEFAULT_TOP_K, BioClipEmbeddingLayout, CLIP_IMAGE_PREPROCESS_ID,
+        ClipImageEmbedTask, ClipImagePreprocessConfig, MmapNpyMatrix,
+        image_input_mimes_with_tensor, is_supported_image_input_mime, load_bioclip_labels,
+        top_k_from_request,
     };
 
     #[test]
@@ -862,6 +2025,84 @@ mod tests {
         assert!(task.batch_key(&wrong_preprocess).is_err());
     }
 
+    #[test]
+    fn bioclip_top_k_meta_accepts_topk_alias() {
+        let request = TaskRequest::new(Bytes::new(), "image/jpeg").with_meta("TopK", "3");
+
+        assert_eq!(top_k_from_request(&request, 10).unwrap(), 3);
+        assert_eq!(
+            top_k_from_request(&TaskRequest::new(Bytes::new(), "image/jpeg"), 10).unwrap(),
+            BIOCLIP_DEFAULT_TOP_K
+        );
+    }
+
+    #[test]
+    fn bioclip_mmap_npy_reads_float32_matrix_header() {
+        let path = temp_path("bioclip_embeddings.npy");
+        write_npy_f32_matrix(&path, 2, 3, &[1.0, 0.0, 0.0, 0.0, 3.0, 4.0]);
+
+        let matrix = MmapNpyMatrix::open(&path).unwrap();
+
+        assert_eq!(matrix.rows(), 2);
+        assert_eq!(matrix.cols(), 3);
+        assert_eq!(matrix.value(1, 2), 4.0);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bioclip_mmap_npy_accepts_float16_matrix() {
+        let path = temp_path("bioclip_embeddings_f16.npy");
+        write_npy_f16_matrix(&path, 1, 2, &[1.5, -2.0]);
+
+        let matrix = MmapNpyMatrix::open(&path).unwrap();
+
+        assert_eq!(matrix.rows(), 1);
+        assert_eq!(matrix.cols(), 2);
+        assert_eq!(matrix.value(0, 0), 1.5);
+        assert_eq!(matrix.value(0, 1), -2.0);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bioclip_embedding_layout_accepts_label_columns() {
+        let path = temp_path("bioclip_embeddings_columns.npy");
+        write_npy_f16_matrix(&path, 2, 3, &[1.0, 0.0, 0.5, 0.0, 1.0, 0.5]);
+        let matrix = MmapNpyMatrix::open(&path).unwrap();
+
+        let layout = BioClipEmbeddingLayout::from_shape(3, &matrix).unwrap();
+
+        assert_eq!(layout, BioClipEmbeddingLayout::LabelColumns);
+        assert_eq!(layout.embedding_dim(&matrix), 2);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn bioclip_labels_accept_strings_and_objects() {
+        let path = temp_path("bioclip_labels.json");
+        fs::write(
+            &path,
+            r#"[{"scientific_name":"Acer rubrum"},"Panthera leo",{"id":42},[["Animalia","","Acanthodes","pristis"],""]]"#,
+        )
+        .unwrap();
+
+        let labels = load_bioclip_labels(&path).unwrap();
+
+        assert_eq!(
+            labels,
+            vec![
+                "Acer rubrum".to_owned(),
+                "Panthera leo".to_owned(),
+                "42".to_owned(),
+                "Animalia / Acanthodes / pristis".to_owned()
+            ]
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
     fn test_image_task() -> ClipImageEmbedTask {
         let context = MLContext::new(MLContextOptions::default()).unwrap();
         let pipeline = MLPipeline::new("test", Arc::clone(&context), Vec::new());
@@ -909,5 +2150,56 @@ mod tests {
         .with_meta(META_TENSOR_BYTE_ORDER, TENSOR_BYTE_ORDER_LITTLE)
         .with_meta(META_PREPROCESS_ID, preprocess_id)
         .with_meta(META_PREPROCESS_SKIP, "true")
+    }
+
+    fn temp_path(filename: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "lumen_hub_clip_{}_{}",
+            std::process::id(),
+            filename
+        ))
+    }
+
+    fn write_npy_f32_matrix(path: &std::path::Path, rows: usize, cols: usize, values: &[f32]) {
+        assert_eq!(values.len(), rows * cols);
+        let mut header = npy_header(rows, cols, "<f4");
+        let preamble_len = 10;
+        let padding = (16 - ((preamble_len + header.len() + 1) % 16)) % 16;
+        header.push_str(&" ".repeat(padding));
+        header.push('\n');
+
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(b"\x93NUMPY").unwrap();
+        file.write_all(&[1, 0]).unwrap();
+        file.write_all(&(header.len() as u16).to_le_bytes())
+            .unwrap();
+        file.write_all(header.as_bytes()).unwrap();
+        for value in values {
+            file.write_all(&value.to_le_bytes()).unwrap();
+        }
+    }
+
+    fn write_npy_f16_matrix(path: &std::path::Path, rows: usize, cols: usize, values: &[f32]) {
+        assert_eq!(values.len(), rows * cols);
+        let mut header = npy_header(rows, cols, "<f2");
+        let preamble_len = 10;
+        let padding = (16 - ((preamble_len + header.len() + 1) % 16)) % 16;
+        header.push_str(&" ".repeat(padding));
+        header.push('\n');
+
+        let mut file = fs::File::create(path).unwrap();
+        file.write_all(b"\x93NUMPY").unwrap();
+        file.write_all(&[1, 0]).unwrap();
+        file.write_all(&(header.len() as u16).to_le_bytes())
+            .unwrap();
+        file.write_all(header.as_bytes()).unwrap();
+        for value in values {
+            file.write_all(&half::f16::from_f32(*value).to_le_bytes())
+                .unwrap();
+        }
+    }
+
+    fn npy_header(rows: usize, cols: usize, descr: &str) -> String {
+        format!("{{'descr': '{descr}', 'fortran_order': False, 'shape': ({rows}, {cols}), }}")
     }
 }

@@ -1,6 +1,8 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
 use lumen_schema::{ModelInfo, Runtime};
+#[cfg(feature = "mnn")]
+use lumnn::mnn::MnnNode;
 use lumnn::{
     core::{context::MLContext, node::MLNode},
     ort::node::OrtNode,
@@ -64,10 +66,12 @@ impl PpocrModelFactory {
         let runtime_dir = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
+            Runtime::Mnn => "mnn",
         };
         let ext = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
+            Runtime::Mnn => "mnn",
         };
         let filename = format!("{component}.{precision}.{ext}");
         self.model_dir(model_name).join(runtime_dir).join(filename)
@@ -94,6 +98,14 @@ impl PpocrModelFactory {
             Runtime::Onnx => OrtNode::new(context.as_ref(), path_str, name)
                 .map(|node| Box::new(node) as Box<dyn MLNode>)
                 .map_err(ServiceError::Internal),
+            #[cfg(feature = "mnn")]
+            Runtime::Mnn => MnnNode::new(context.as_ref(), path_str, name)
+                .map(|node| Box::new(node) as Box<dyn MLNode>)
+                .map_err(ServiceError::Internal),
+            #[cfg(not(feature = "mnn"))]
+            Runtime::Mnn => Err(ServiceError::InvalidArgument(
+                "PP-OCR MNN runtime is not enabled in this lumen-hub build".to_owned(),
+            )),
             Runtime::CandleOnnx => Err(ServiceError::InvalidArgument(
                 "PP-OCR Candle ONNX runtime is not implemented yet; use runtime=onnx".to_owned(),
             )),
