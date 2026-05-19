@@ -12,7 +12,7 @@ const OPENVINO_WHEEL_SHA256: &str =
     "3007c803634cc69c6d52af1dea7ce729d9bb62b9a11070fd2f959119199007a8";
 const OPENVINO_WHEEL_FILE: &str =
     "onnxruntime_openvino-1.24.1-cp311-cp311-manylinux_2_28_x86_64.whl";
-const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.5";
+const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.6";
 const DEFAULT_RELEASE_BASE_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download";
 

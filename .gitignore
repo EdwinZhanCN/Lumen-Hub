@@ -16,3 +16,4 @@ tmp/
 3rd_party/
 data/
 .cache/
+/bioclip2-onnx
