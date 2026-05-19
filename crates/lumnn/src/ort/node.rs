@@ -5,6 +5,7 @@ use crate::ort::convert::{
     collect_session_outputs, descriptors_from_outlets, prepare_ort_values, prepare_session_inputs,
 };
 use async_trait::async_trait;
+use ort::session::builder::GraphOptimizationLevel;
 use ort::{
     memory::{AllocationDevice, AllocatorType, MemoryInfo, MemoryType},
     session::Session,
@@ -44,6 +45,8 @@ impl OrtNode {
 
         let session = Session::builder()
             .map_err(|err| format!("failed to create ORT session builder: {err}"))?
+            .with_optimization_level(GraphOptimizationLevel::Disable)
+            .map_err(|err| format!("failed to set optimization level: {err}"))?
             .commit_from_file(model_path)
             .map_err(|err| format!("failed to load ONNX model `{model_path}`: {err}"))?;
 
