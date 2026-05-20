@@ -176,6 +176,8 @@ pub enum Runtime {
     CandleOnnx,
     Rknn,
     Mnn,
+    #[serde(rename = "mnn-llm")]
+    MnnLlm,
 }
 
 impl Runtime {
@@ -185,6 +187,7 @@ impl Runtime {
             Self::CandleOnnx => "candle_onnx",
             Self::Rknn => "rknn",
             Self::Mnn => "mnn",
+            Self::MnnLlm => "mnn-llm",
         }
     }
 }

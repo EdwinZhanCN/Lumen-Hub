@@ -41,6 +41,7 @@ impl FastVlmService {
                 lumen_schema::Runtime::Onnx | lumen_schema::Runtime::CandleOnnx => "onnx",
                 lumen_schema::Runtime::Rknn => "rknn",
                 lumen_schema::Runtime::Mnn => "mnn",
+                lumen_schema::Runtime::MnnLlm => "mnn-llm",
             };
             let runtime_spec = model_info
                 .runtimes
@@ -51,6 +52,12 @@ impl FastVlmService {
                         "model `{model_name}` does not declare runtime `{runtime_key}`"
                     ))
                 })?;
+            if model_config.runtime == lumen_schema::Runtime::MnnLlm {
+                return Err(ServiceError::InvalidArgument(
+                    "FastVLM MNN-LLM runtime is declared in model_info.json, but MnnLlmNode is not implemented yet"
+                        .to_owned(),
+                ));
+            }
             validate_runtime_components(model_name, runtime_spec)?;
 
             model_ids.push(model_name.to_owned());

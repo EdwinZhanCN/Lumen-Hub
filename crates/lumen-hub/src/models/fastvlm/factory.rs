@@ -50,11 +50,13 @@ impl FastVlmModelFactory {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
+            Runtime::MnnLlm => "mnn-llm",
         };
         let ext = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
+            Runtime::MnnLlm => "json",
         };
         self.model_dir(model_name)
             .join(runtime_dir)
@@ -90,6 +92,9 @@ impl FastVlmModelFactory {
             )),
             Runtime::Mnn => Err(ServiceError::InvalidArgument(
                 "FastVLM MNN runtime is not implemented yet".to_owned(),
+            )),
+            Runtime::MnnLlm => Err(ServiceError::InvalidArgument(
+                "FastVLM MNN-LLM runtime is not implemented yet".to_owned(),
             )),
         }
     }

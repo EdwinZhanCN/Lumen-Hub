@@ -18,6 +18,8 @@ Lumilio-Photos/{model}
 model_info.json
 onnx/<component>.<precision>.onnx
 mnn/<component>.<precision>.mnn
+mnn-llm/config.json
+mnn-llm/<runtime package files>
 rknn/<component>.<precision>.rknn
 <root metadata files>
 datasets/<dataset>.json
@@ -46,6 +48,32 @@ onnx/<component>.fp32.onnx
 ```
 
 For `runtime: "mnn"`, the path is `mnn/<component>.<precision>.mnn`.
+
+For `runtime: "mnn-llm"`, Lumen treats `{model}/mnn-llm/` as an MNN LLM
+package directory. The runtime entrypoint is:
+
+```text
+mnn-llm/config.json
+```
+
+The model should declare this runtime with a package marker, for example:
+
+```json
+{
+  "runtimes": {
+    "mnn-llm": {
+      "available": true,
+      "components": ["config"],
+      "precisions": ["mixed"]
+    }
+  }
+}
+```
+
+Unlike ordinary tensor runtimes, `mnn-llm` does not derive artifact filenames
+from component and precision. Lumen downloads the root-level metadata files and
+all non-hidden files directly under `mnn-llm/`; the MNN LLM runtime interprets
+the package files through `mnn-llm/config.json`.
 
 ## Root Files
 

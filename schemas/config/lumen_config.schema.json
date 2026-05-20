@@ -202,7 +202,8 @@
         "onnx",
         "candle_onnx",
         "rknn",
-        "mnn"
+        "mnn",
+        "mnn-llm"
       ]
     },
     "ServerConfig": {

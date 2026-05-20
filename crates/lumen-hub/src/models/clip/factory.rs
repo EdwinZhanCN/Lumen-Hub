@@ -159,11 +159,13 @@ impl ClipModelFactory {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
+            Runtime::MnnLlm => "mnn-llm",
         };
         let ext = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
+            Runtime::MnnLlm => "json",
         };
         let filename = format!("{component}.{precision}.{ext}");
         self.model_dir(model_name).join(runtime_dir).join(filename)
@@ -209,6 +211,9 @@ impl ClipModelFactory {
             #[cfg(not(feature = "mnn"))]
             Runtime::Mnn => Err(ServiceError::InvalidArgument(
                 "CLIP MNN runtime is not enabled in this lumen-hub build".to_owned(),
+            )),
+            Runtime::MnnLlm => Err(ServiceError::InvalidArgument(
+                "CLIP MNN-LLM runtime is not supported".to_owned(),
             )),
         }
     }

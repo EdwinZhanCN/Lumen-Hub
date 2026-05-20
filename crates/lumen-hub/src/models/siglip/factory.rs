@@ -65,11 +65,13 @@ impl SiglipModelFactory {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
+            Runtime::MnnLlm => "mnn-llm",
         };
         let ext = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
             Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
+            Runtime::MnnLlm => "json",
         };
         self.model_dir(model_name)
             .join(runtime_dir)
@@ -115,6 +117,9 @@ impl SiglipModelFactory {
             #[cfg(not(feature = "mnn"))]
             Runtime::Mnn => Err(ServiceError::InvalidArgument(
                 "SigLIP MNN runtime is not enabled in this lumen-hub build".to_owned(),
+            )),
+            Runtime::MnnLlm => Err(ServiceError::InvalidArgument(
+                "SigLIP MNN-LLM runtime is not supported".to_owned(),
             )),
         }
     }
