@@ -155,23 +155,14 @@ fn accelerated_execution_providers() -> Result<ExecutionProviderPlan, OrtEnvInit
 
     #[cfg(feature = "ort-coreml")]
     {
-        let coreml_cache = std::env::var("ORT_COREML_CACHE_DIR")
-            .unwrap_or_else(|_| ".cache/onnxruntime/coreml".to_owned());
-
         providers.push(
             ort::ep::CoreML::default()
                 .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
-                .with_compute_units(ort::ep::coreml::ComputeUnits::All)
-                .with_static_input_shapes(false)
-                .with_subgraphs(false)
-                .with_specialization_strategy(
-                    ort::ep::coreml::SpecializationStrategy::FastPrediction,
-                )
-                .with_low_precision_accumulation_on_gpu(false)
-                .with_model_cache_dir(coreml_cache.clone())
+                .with_compute_units(ort::ep::coreml::ComputeUnits::CPUAndGPU)
+                .with_static_input_shapes(true)
                 .build(),
         );
-        provider_names.push(format!("CoreML(MLProgram,ALL,cache={coreml_cache})"));
+        provider_names.push("CoreML(MLProgram,CPUAndGPU,static-input-shapes)".to_owned());
     }
 
     #[cfg(feature = "ort-openvino")]

@@ -15,10 +15,6 @@ cuda = []
 opencl = []
 opengl = []
 coreml = []
-# Linking modes
-mnn-dynamic = []
-mnn-static = []
-build-mnn-from-source = []
 # Docs.rs stub
 docsrs = []
 
@@ -28,4 +24,3 @@ ndarray = "0.17"
 [build-dependencies]
 bindgen = "0.70"
 cc = { version = "1", features = ["parallel"] }
-cmake = "0.1"

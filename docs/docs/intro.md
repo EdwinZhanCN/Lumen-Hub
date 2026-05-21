@@ -8,7 +8,7 @@ sidebar_position: 1
 
 ## Core Capabilities
 
-- **Multi-model serving**: Host CLIP, SigLIP, FastVLM, and more in a single process
+- **Multi-model serving**: Host CLIP, SigLIP, OCR, and more in a single process
 - **Unified protocol**: The `InferenceService` trait wraps different models behind a common interface — the gRPC transport layer is model-agnostic
 - **Dynamic batching**: Automatically merges preprocessed tensor requests into batches to boost GPU/ONNX throughput
 - **Service discovery**: Broadcasts service addresses via mDNS — clients don't need hardcoded IPs or ports
@@ -21,7 +21,7 @@ main.rs          CLI entry: parse args → load config → start service
 
 daemon/          Transport: gRPC codec + dynamic batching + mDNS registration
 service/         Abstraction: ServiceHub → TaskRegistry → TaskHandler
-models/          Model layer: CLIP / SigLIP / FastVLM ... (concrete implementations)
+models/          Model layer: CLIP / SigLIP / OCR ... (concrete implementations)
 ```
 
 ## Documentation

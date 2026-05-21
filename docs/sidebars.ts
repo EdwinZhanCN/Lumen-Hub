@@ -17,7 +17,7 @@ const sidebars: SidebarsConfig = {
     {
       type: "category",
       label: "Models",
-      items: ["models/clip", "models/siglip", "models/fastvlm", "models/ppocr"],
+      items: ["models/clip", "models/siglip", "models/ppocr"],
     },
     {
       type: "category",

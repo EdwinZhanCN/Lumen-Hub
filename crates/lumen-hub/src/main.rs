@@ -13,8 +13,6 @@ use std::{
 use console::style;
 #[cfg(feature = "clip")]
 use lumen_hub::models::clip::ClipService;
-#[cfg(feature = "fastvlm")]
-use lumen_hub::models::fastvlm::FastVlmService;
 #[cfg(feature = "insightface")]
 use lumen_hub::models::insightface::InsightFaceService;
 #[cfg(feature = "ppocr")]
@@ -30,7 +28,6 @@ use lumen_hub::{
 use lumen_schema::{ConfigValidationError, LumenConfig, Mode, ServerConfig};
 #[cfg(any(
     feature = "clip",
-    feature = "fastvlm",
     feature = "insightface",
     feature = "ppocr",
     feature = "siglip"
@@ -213,7 +210,6 @@ fn build_service_hub_from_config(
 ) -> StartupResult<ServiceHub> {
     #[cfg(any(
         feature = "clip",
-        feature = "fastvlm",
         feature = "insightface",
         feature = "ppocr",
         feature = "siglip"
@@ -229,7 +225,6 @@ fn build_service_hub_from_config(
     #[cfg_attr(
         not(any(
             feature = "clip",
-            feature = "fastvlm",
             feature = "insightface",
             feature = "ppocr",
             feature = "siglip"
@@ -275,31 +270,6 @@ fn build_service_hub_from_config(
                 return Err(StartupError::PackageDisabled {
                     package: svc_config.package.clone(),
                     feature: "clip",
-                });
-            }
-            #[cfg(feature = "fastvlm")]
-            "fastvlm" | "lumen_fastvlm" => {
-                let service = FastVlmService::from_config(
-                    service_name,
-                    svc_config,
-                    &cache_dir,
-                    Arc::clone(&context),
-                )
-                .map_err(|e| StartupError::ServiceConstruction {
-                    service: service_name.to_owned(),
-                    message: e.to_string(),
-                })?;
-                hub.register(service)
-                    .map_err(|e| StartupError::ServiceConstruction {
-                        service: service_name.to_owned(),
-                        message: e.to_string(),
-                    })?;
-            }
-            #[cfg(not(feature = "fastvlm"))]
-            "fastvlm" | "lumen_fastvlm" => {
-                return Err(StartupError::PackageDisabled {
-                    package: svc_config.package.clone(),
-                    feature: "fastvlm",
                 });
             }
             #[cfg(feature = "insightface")]
@@ -682,7 +652,6 @@ enum StartupError {
 
     #[cfg(any(
         feature = "clip",
-        feature = "fastvlm",
         feature = "insightface",
         feature = "ppocr",
         feature = "siglip"
@@ -698,7 +667,6 @@ enum StartupError {
 
     #[cfg(any(
         not(feature = "clip"),
-        not(feature = "fastvlm"),
         not(feature = "insightface"),
         not(feature = "ppocr"),
         not(feature = "siglip")
@@ -713,7 +681,6 @@ enum StartupError {
 
     #[cfg(any(
         feature = "clip",
-        feature = "fastvlm",
         feature = "insightface",
         feature = "ppocr",
         feature = "siglip"

@@ -92,7 +92,6 @@ const config: Config = {
           items: [
             { label: "CLIP", to: "/models/clip" },
             { label: "SigLIP", to: "/models/siglip" },
-            { label: "FastVLM", to: "/models/fastvlm" },
             { label: "PP-OCR", to: "/models/ppocr" },
           ],
         },

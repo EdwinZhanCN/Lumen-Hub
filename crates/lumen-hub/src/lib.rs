@@ -6,8 +6,6 @@ pub mod warmup;
 pub mod models {
     #[cfg(feature = "clip")]
     pub mod clip;
-    #[cfg(feature = "fastvlm")]
-    pub mod fastvlm;
     #[cfg(feature = "insightface")]
     pub mod insightface;
     #[cfg(feature = "ppocr")]

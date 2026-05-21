@@ -16,7 +16,7 @@ Hub runtime profiles are built with `cargo xtask dist`. The public `lumen-cli` r
 | `windows-x64-dml` | ORT DirectML + ORT CPU | No MNN. |
 | `linux-x64-openvino` | ORT OpenVINO + dynamic ORT loading | Bundles OpenVINO-enabled ONNX Runtime libraries. |
 
-All beta profiles include `clip`, `siglip`, `insightface`, `ppocr`, and `fastvlm`.
+All beta profiles include `clip`, `siglip`, `insightface`, and `ppocr`.
 
 ## Build
 

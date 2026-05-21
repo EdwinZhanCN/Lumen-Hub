@@ -10,7 +10,6 @@ dist = false
 [features]
 default = ["profile-universal-cpu"]
 clip = []
-fastvlm = []
 insightface = []
 ppocr = ["imageproc", "rten-imageproc"]
 siglip = []
@@ -38,7 +37,6 @@ mnn-opengl = ["mnn", "lumnn/mnn-opengl"]
 mnn-coreml = ["mnn", "lumnn/mnn-coreml"]
 profile-universal-cpu = [
   "clip",
-  "fastvlm",
   "insightface",
   "ppocr",
   "siglip",
@@ -46,7 +44,6 @@ profile-universal-cpu = [
 ]
 profile-darwin-arm64 = [
   "clip",
-  "fastvlm",
   "insightface",
   "ppocr",
   "siglip",
@@ -56,7 +53,6 @@ profile-darwin-arm64 = [
 ]
 profile-linux-x64-cuda = [
   "clip",
-  "fastvlm",
   "insightface",
   "ppocr",
   "siglip",
@@ -65,7 +61,6 @@ profile-linux-x64-cuda = [
 ]
 profile-windows-x64-dml = [
   "clip",
-  "fastvlm",
   "insightface",
   "ppocr",
   "siglip",
@@ -74,7 +69,6 @@ profile-windows-x64-dml = [
 ]
 profile-linux-x64-openvino = [
   "clip",
-  "fastvlm",
   "insightface",
   "ppocr",
   "siglip",

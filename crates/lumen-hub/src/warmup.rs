@@ -3,42 +3,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(feature = "fastvlm")]
-use image::{ImageBuffer, Rgb, imageops::FilterType};
-#[cfg(feature = "fastvlm")]
-use std::collections::HashSet;
-
-#[cfg(feature = "fastvlm")]
-use lumen_schema::TextGenerationV1;
 use lumen_schema::{EmbeddingV1, FaceV1, LabelsV1, OCRV1};
 use thiserror::Error;
 
-#[cfg(feature = "fastvlm")]
-use crate::models::fastvlm::{
-    metadata::METADATA as FASTVLM_METADATA,
-    task::{FASTVLM_PREPROCESS_ID, META_MAX_TOKENS, META_PROMPT},
-};
-#[cfg(feature = "fastvlm")]
-use crate::service::{
-    DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, META_INPUT_KIND, META_OUTPUT_TENSOR_SHAPE,
-    META_PREPROCESS_ID, META_PREPROCESS_SKIP, META_TENSOR_BYTE_ORDER, META_TENSOR_DTYPE,
-    META_TENSOR_FORMAT, META_TENSOR_LAYOUT, META_TENSOR_SHAPE, TENSOR_BYTE_ORDER_LITTLE,
-    TENSOR_FORMAT_CONTIGUOUS, f32_to_le_bytes,
-};
 use crate::service::{ServiceError, ServiceHub, TaskRequest, TaskResult, TaskSpec};
 
 const SEMANTIC_IMAGE_CATEGORY: &str = "semantic";
 const BIO_CATEGORY: &str = "bio";
 const FACE_CATEGORY: &str = "face";
 const OCR_CATEGORY: &str = "ocr";
-#[cfg(feature = "fastvlm")]
-const CAPTION_CATEGORY: &str = "caption";
 
 const TEXT_EMBED_SAMPLE: &str = "a photo of a city bus";
-#[cfg(feature = "fastvlm")]
-const VLM_PROMPT: &str = "Describe the image briefly.";
-#[cfg(feature = "fastvlm")]
-const VLM_MAX_TOKENS: &str = "16";
 
 pub fn default_warmup_dir() -> PathBuf {
     if let Ok(exe) = env::current_exe()
@@ -60,29 +35,8 @@ pub async fn run_startup_warmup(hub: &ServiceHub, sample_root: &Path) -> Result<
     for capability in hub.capabilities() {
         let service_name = capability.service_name.as_str();
 
-        #[cfg(feature = "fastvlm")]
-        {
-            let task_names = capability
-                .tasks
-                .iter()
-                .map(|task| task.name.as_str())
-                .collect::<HashSet<_>>();
-            if let Some((embeds_task, decode_task)) = vlm_tasks(&task_names) {
-                warmup_vlm(hub, sample_root, service_name, embeds_task, decode_task).await?;
-                warmed += 1;
-            }
-        }
-
         for task in &capability.tasks {
             let task_name = task.name.as_str();
-            if task_name == "vlm_embeds"
-                || task_name == "vlm_decode"
-                || task_name.ends_with("_vlm_embeds")
-                || task_name.ends_with("_vlm_decode")
-            {
-                continue;
-            }
-
             if task_name == "semantic_image_embed" || task_name.ends_with("_semantic_image_embed") {
                 warmup_embedding_image(
                     hub,
@@ -214,64 +168,6 @@ async fn warmup_ocr(
     Ok(())
 }
 
-#[cfg(feature = "fastvlm")]
-async fn warmup_vlm(
-    hub: &ServiceHub,
-    sample_root: &Path,
-    service_name: &str,
-    embeds_task: &str,
-    decode_task: &str,
-) -> Result<(), WarmupError> {
-    let image_path = sample_file(sample_root, CAPTION_CATEGORY)?;
-    let payload = fastvlm_image_tensor(&image_path)?;
-    let embeds_request = TaskRequest::new(payload, DEFAULT_TENSOR_MIME)
-        .with_meta(META_INPUT_KIND, INPUT_KIND_TENSOR)
-        .with_meta(META_TENSOR_DTYPE, "fp32")
-        .with_meta(META_TENSOR_SHAPE, "[1,3,448,448]")
-        .with_meta(META_TENSOR_LAYOUT, "NCHW")
-        .with_meta(META_TENSOR_FORMAT, TENSOR_FORMAT_CONTIGUOUS)
-        .with_meta(META_TENSOR_BYTE_ORDER, TENSOR_BYTE_ORDER_LITTLE)
-        .with_meta(META_PREPROCESS_ID, FASTVLM_PREPROCESS_ID)
-        .with_meta(META_PREPROCESS_SKIP, "true")
-        .with_meta(META_PROMPT, VLM_PROMPT);
-
-    let embeds = handle(hub, service_name, embeds_task, embeds_request).await?;
-    let shape = embeds
-        .meta
-        .get(META_OUTPUT_TENSOR_SHAPE)
-        .cloned()
-        .unwrap_or_else(|| "<unknown>".to_owned());
-
-    let mut decode_request = TaskRequest::new(embeds.payload, embeds.payload_mime);
-    decode_request.meta = embeds.meta;
-    decode_request = decode_request.with_meta(META_MAX_TOKENS, VLM_MAX_TOKENS);
-    let decoded = handle(hub, service_name, decode_task, decode_request).await?;
-    let text = parse_result::<TextGenerationV1>(
-        &decoded,
-        service_name,
-        decode_task,
-        "text_generation_v1",
-    )?;
-    println!(
-        "warmup: service={service_name} task={decode_task} status=ok caption=\"{}\" generated_tokens={} embedding_shape={shape}",
-        text.text, text.generated_tokens
-    );
-    Ok(())
-}
-
-#[cfg(feature = "fastvlm")]
-fn vlm_tasks<'a>(task_names: &HashSet<&'a str>) -> Option<(&'a str, &'a str)> {
-    let embeds = task_names
-        .iter()
-        .copied()
-        .find(|name| *name == "vlm_embeds" || name.ends_with("_vlm_embeds"))?;
-    let decode = task_names
-        .iter()
-        .copied()
-        .find(|name| *name == "vlm_decode" || name.ends_with("_vlm_decode"))?;
-    Some((embeds, decode))
-}
-
 async fn handle(
     hub: &ServiceHub,
     service_name: &str,
@@ -359,68 +255,6 @@ fn is_ocr_task(task: &TaskSpec) -> bool {
         || task.name == "ocr"
         || task.name.ends_with("_ocr")
         || task.name.contains("ocr")
-}
-
-#[cfg(feature = "fastvlm")]
-fn fastvlm_image_tensor(path: &Path) -> Result<bytes::Bytes, WarmupError> {
-    let image = image::open(path).map_err(|source| WarmupError::DecodeImage {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let rgb = image.to_rgb8();
-    let (width, height) = rgb.dimensions();
-    let target_edge = FASTVLM_METADATA.vision_preprocess.resize_longest_edge;
-    let scale = target_edge as f32 / width.max(height) as f32;
-    let resized_width = ((width as f32 * scale).round() as u32).max(1);
-    let resized_height = ((height as f32 * scale).round() as u32).max(1);
-    let resized =
-        image::imageops::resize(&rgb, resized_width, resized_height, fastvlm_resize_filter());
-
-    let pad = FASTVLM_METADATA.vision_preprocess.pad_to;
-    let pad_color = FASTVLM_METADATA.vision_preprocess.pad_color_rgb;
-    let mut canvas = ImageBuffer::from_pixel(
-        pad.width,
-        pad.height,
-        Rgb([pad_color[0], pad_color[1], pad_color[2]]),
-    );
-    let x = (pad.width.saturating_sub(resized_width)) / 2;
-    let y = (pad.height.saturating_sub(resized_height)) / 2;
-    image::imageops::replace(&mut canvas, &resized, i64::from(x), i64::from(y));
-
-    let mut values = vec![0.0_f32; 3 * pad.width as usize * pad.height as usize];
-    let plane = pad.width as usize * pad.height as usize;
-    for (pixel_index, pixel) in canvas.pixels().enumerate() {
-        values[pixel_index] = normalize_fastvlm_channel(pixel[0], 0);
-        values[plane + pixel_index] = normalize_fastvlm_channel(pixel[1], 1);
-        values[2 * plane + pixel_index] = normalize_fastvlm_channel(pixel[2], 2);
-    }
-
-    Ok(f32_to_le_bytes(&values))
-}
-
-#[cfg(feature = "fastvlm")]
-fn normalize_fastvlm_channel(value: u8, channel: usize) -> f32 {
-    let preprocess = &FASTVLM_METADATA.vision_preprocess;
-    let mut value = f32::from(value);
-    if preprocess.do_rescale {
-        value *= preprocess.rescale_factor;
-    }
-    if preprocess.do_normalize {
-        value = (value - preprocess.image_mean[channel]) / preprocess.image_std[channel];
-    }
-    value
-}
-
-#[cfg(feature = "fastvlm")]
-fn fastvlm_resize_filter() -> FilterType {
-    use crate::models::fastvlm::metadata::FastVlmResizeFilter;
-
-    match FASTVLM_METADATA.vision_preprocess.resample {
-        FastVlmResizeFilter::Nearest => FilterType::Nearest,
-        FastVlmResizeFilter::Lanczos3 => FilterType::Lanczos3,
-        FastVlmResizeFilter::Bilinear => FilterType::Triangle,
-        FastVlmResizeFilter::Bicubic => FilterType::CatmullRom,
-    }
 }
 
 #[derive(Debug, Error)]

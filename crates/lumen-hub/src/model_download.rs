@@ -768,15 +768,15 @@ mod tests {
                 },
                 "deployment": {
                     "mode": "hub",
-                    "services": ["fastvlm_service"]
+                    "services": ["clip_service"]
                 },
                 "server": {
                     "port": 50051
                 },
                 "services": {
-                    "fastvlm_service": {
+                    "clip_service": {
                         "enabled": true,
-                        "package": "fastvlm",
+                        "package": "clip",
                         "models": {
                             "default": {
                                 "model": "antelopev2",
@@ -818,7 +818,7 @@ mod tests {
             "name": "antelopev2",
             "version": "1.0.0",
             "description": "Test MNN-LLM package for downloader tests.",
-            "model_type": "fastvlm",
+            "model_type": "clip",
             "source": {
                 "format": "huggingface",
                 "repo_id": "Lumilio-Photos/antelopev2"

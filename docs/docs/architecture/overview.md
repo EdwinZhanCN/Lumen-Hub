@@ -27,7 +27,7 @@ graph TD
     subgraph models["models/ Model"]
         CLIP[CLIP]
         SigLIP[SigLIP]
-        FastVLM[FastVLM]
+        PPOCR[PPOCR]
     end
 
     gRPC --> Batcher
@@ -36,7 +36,7 @@ graph TD
     Registry --> TH
     TH --> CLIP
     TH --> SigLIP
-    TH --> FastVLM
+    TH --> PPOCR
     Hub -.-> ISvc
     ISvc -.-> Registry
 ```

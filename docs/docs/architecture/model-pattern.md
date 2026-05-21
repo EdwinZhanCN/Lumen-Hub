@@ -101,7 +101,7 @@ pub trait TaskHandler: Send + Sync {
 |---|---|---|---|
 | CLIP | `image_embed`, `text_embed` | ✅ Image tensors | ONNX |
 | SigLIP | `image_embed`, `text_embed` | ✅ Image tensors | ONNX |
-| FastVLM | Planning | Planning | — |
+| PPOCR | `ocr` | Planned | ONNX |
 
 ## Checklist for Adding a New Model
 

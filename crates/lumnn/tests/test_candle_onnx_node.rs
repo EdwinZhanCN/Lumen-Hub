@@ -11,7 +11,7 @@ use lumnn::{
     },
 };
 use prost::Message;
-use std::{collections::HashMap, fs, path::PathBuf};
+use std::{collections::HashMap, fs};
 
 const ONNX_TENSOR_TYPE_FLOAT: i32 = 1;
 const ONNX_IR_VERSION: i64 = 8;
@@ -57,70 +57,6 @@ async fn candle_onnx_node_executes_tiny_add_model() {
     }
 
     let _ = fs::remove_file(model_path);
-}
-
-#[tokio::test]
-#[ignore = "requires ./out/fast-vlm-0.5b vision model"]
-async fn candle_onnx_node_smoke_tests_fastvlm_vision() {
-    let model_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../out/fast-vlm-0.5b/onnx/vision.fp16.onnx");
-    assert!(
-        model_path.is_file(),
-        "missing FastVLM vision model at {}",
-        model_path.display()
-    );
-
-    let model_path_str = model_path
-        .to_str()
-        .expect("FastVLM vision model path should be valid UTF-8");
-    let context = MLContext::new(MLContextOptions::default()).expect("context should initialize");
-    let node = CandleOnnxNode::new(
-        context.as_ref(),
-        model_path_str,
-        "fastvlm_vision".to_owned(),
-    )
-    .expect("CandleOnnxNode should load FastVLM vision model");
-
-    println!("device_runtime={}", node.device_runtime());
-    println!("input_descriptors={:?}", node.input_descriptors());
-    println!("output_descriptors={:?}", node.output_descriptors());
-
-    let input = context
-        .packet_from_host_tensor(
-            lumnn::core::packet::MLPacketDescriptor::new(
-                lumnn::core::packet::MLPacketDataType::Float32,
-                vec![1, 3, 448, 448],
-            ),
-            HostTensor::Float32(vec![0.0; 3 * 448 * 448]),
-        )
-        .expect("input packet should be created");
-
-    let outputs = node
-        .execute(
-            HashMap::from([("pixel_values".to_owned(), input)]),
-            context.as_ref(),
-        )
-        .await
-        .expect("FastVLM vision Candle execution should succeed");
-
-    let output = outputs
-        .get("image_features")
-        .expect("image_features output should exist");
-    println!("output_descriptor={:?}", output.descriptor);
-
-    match output
-        .to_host_tensor()
-        .await
-        .expect("output should materialize")
-    {
-        HostTensor::Float32(values) => {
-            assert!(!values.is_empty(), "output tensor should be non-empty")
-        }
-        HostTensor::Float16(values) => {
-            assert!(!values.is_empty(), "output tensor should be non-empty")
-        }
-        other => panic!("unexpected output tensor: {other:?}"),
-    }
 }
 
 fn write_tiny_add_model() -> PathBuf {

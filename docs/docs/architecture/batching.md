@@ -33,7 +33,7 @@ graph TD
     subgraph model["model (Execution)"]
         CLIP
         SigLIP
-        FVLM[FastVLM]
+        PPOCR
         Concat[Concat tensors along batch dim]
         Forward[Single forward pass]
         Split[Split outputs]
@@ -45,7 +45,7 @@ graph TD
     Registry --> HBatch
     HBatch --> CLIP
     HBatch --> SigLIP
-    HBatch --> FVLM
+    HBatch --> PPOCR
 ```
 
 ## BatchKey: Grouping Core

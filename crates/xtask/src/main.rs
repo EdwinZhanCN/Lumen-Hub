@@ -12,6 +12,7 @@ const OPENVINO_WHEEL_SHA256: &str =
     "3007c803634cc69c6d52af1dea7ce729d9bb62b9a11070fd2f959119199007a8";
 const OPENVINO_WHEEL_FILE: &str =
     "onnxruntime_openvino-1.24.1-cp311-cp311-manylinux_2_28_x86_64.whl";
+const MNN_PREBUILT_VERSION: &str = "3.5.0-lumnn.dyn";
 const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.6";
 const DEFAULT_RELEASE_BASE_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download";
@@ -97,6 +98,10 @@ fn dist(args: Vec<String>) -> Result<(), String> {
 
     if profile.openvino_bundle {
         download_openvino_bundle(&root, &archive_dir)?;
+    }
+
+    if profile.mnn_bundle {
+        bundle_mnn_libraries(&root, profile, &archive_dir)?;
     }
 
     write_readme(profile, &archive_dir)?;
@@ -250,7 +255,7 @@ fn copy_binary(profile: &DistProfile, root: &Path, archive_dir: &Path) -> Result
         .join("release")
         .join(exe_name);
 
-    if profile.openvino_bundle && !profile.target.contains("windows") {
+    if needs_runtime_launcher(profile) && !profile.target.contains("windows") {
         let bin_dst = archive_dir.join("bin").join("lumen-hub-bin");
         fs::copy(&src, &bin_dst).map_err(|err| {
             format!(
@@ -260,7 +265,7 @@ fn copy_binary(profile: &DistProfile, root: &Path, archive_dir: &Path) -> Result
             )
         })?;
         make_executable(&bin_dst)?;
-        write_openvino_wrapper(&archive_dir.join("bin").join("lumen-hub"))?;
+        write_unix_launcher(&archive_dir.join("bin").join("lumen-hub"), profile)?;
         return Ok(());
     }
 
@@ -331,21 +336,227 @@ fn copy_dir_filtered(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn write_openvino_wrapper(path: &Path) -> Result<(), String> {
-    let body = r#"#!/usr/bin/env bash
-set -euo pipefail
-APP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export LUMNN_ORT_DYLIB_PATH="$APP_HOME/lib/libonnxruntime.so"
-export LD_LIBRARY_PATH="$APP_HOME/lib:${LD_LIBRARY_PATH:-}"
-exec "$APP_HOME/bin/lumen-hub-bin" "$@"
-"#;
-    fs::write(path, body).map_err(|err| {
+fn needs_runtime_launcher(profile: &DistProfile) -> bool {
+    profile.openvino_bundle || profile.mnn_bundle
+}
+
+fn write_unix_launcher(path: &Path, profile: &DistProfile) -> Result<(), String> {
+    let mut lines = vec![
+        "#!/usr/bin/env bash".to_owned(),
+        "set -euo pipefail".to_owned(),
+        r#"APP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)""#.to_owned(),
+    ];
+
+    if profile.openvino_bundle {
+        lines.push(r#"export LUMNN_ORT_DYLIB_PATH="$APP_HOME/lib/libonnxruntime.so""#.to_owned());
+    }
+
+    if profile.openvino_bundle || profile.mnn_bundle {
+        if profile.target.contains("apple") {
+            lines.push(
+                r#"export DYLD_LIBRARY_PATH="$APP_HOME/lib:${DYLD_LIBRARY_PATH:-}""#.to_owned(),
+            );
+        } else {
+            lines.push(r#"export LD_LIBRARY_PATH="$APP_HOME/lib:${LD_LIBRARY_PATH:-}""#.to_owned());
+        }
+    }
+
+    lines.push(r#"exec "$APP_HOME/bin/lumen-hub-bin" "$@""#.to_owned());
+
+    fs::write(path, lines.join("\n") + "\n").map_err(|err| {
         format!(
-            "failed to write OpenVINO wrapper `{}`: {err}",
+            "failed to write runtime launcher `{}`: {err}",
             path.display()
         )
     })?;
     make_executable(path)
+}
+
+fn mnn_prebuilt_suffix(target: &str) -> Result<&'static str, String> {
+    match target {
+        "aarch64-apple-darwin" | "x86_64-apple-darwin" => Ok("macos-universal"),
+        "x86_64-unknown-linux-gnu" => Ok("linux-x86_64"),
+        "x86_64-pc-windows-msvc" => Ok("windows-x86_64"),
+        other => Err(format!(
+            "no MNN prebuilt mapping for target `{other}`; expected a supported desktop target"
+        )),
+    }
+}
+
+fn mnn_prebuilt_lib_dir(root: &Path, target: &str) -> Result<PathBuf, String> {
+    let suffix = mnn_prebuilt_suffix(target)?;
+    let asset = format!("mnn-{MNN_PREBUILT_VERSION}-{suffix}");
+    let lib_dir = root
+        .join("crates")
+        .join("lumnn-mnn-sys")
+        .join("3rd_party")
+        .join("prebuilt")
+        .join(asset)
+        .join("lib");
+    if !lib_dir.is_dir() {
+        return Err(format!(
+            "MNN prebuilt lib directory not found at `{}`; build lumen-hub for `{target}` first so lumnn-mnn-sys can download prebuilts",
+            lib_dir.display()
+        ));
+    }
+    Ok(lib_dir)
+}
+
+fn bundle_mnn_libraries(
+    root: &Path,
+    profile: &DistProfile,
+    archive_dir: &Path,
+) -> Result<(), String> {
+    let src_lib = mnn_prebuilt_lib_dir(root, profile.target)?;
+    if profile.target.contains("windows") {
+        copy_mnn_windows_runtime(&src_lib, &archive_dir.join("bin"))?;
+    } else {
+        copy_mnn_unix_runtime(&src_lib, &archive_dir.join("lib"))?;
+    }
+    write_mnn_notice(archive_dir, profile)
+}
+
+fn is_mnn_runtime_library(name: &str) -> bool {
+    name == "libMNN.dylib"
+        || name == "libMNN.so"
+        || name == "MNN.dll"
+        || name.starts_with("libllm.")
+        || name.starts_with("libMNN_Express.")
+        || name.starts_with("llm.")
+        || name.starts_with("MNN_Express.")
+}
+
+fn copy_mnn_unix_runtime(src_lib: &Path, dst_lib: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst_lib).map_err(|err| {
+        format!(
+            "failed to create MNN lib directory `{}`: {err}",
+            dst_lib.display()
+        )
+    })?;
+
+    let mut copied_primary = false;
+    for entry in fs::read_dir(src_lib)
+        .map_err(|err| format!("failed to read `{}`: {err}", src_lib.display()))?
+    {
+        let entry = entry.map_err(|err| format!("failed to read MNN lib entry: {err}"))?;
+        if !entry
+            .file_type()
+            .map_err(|err| format!("failed to read file type: {err}"))?
+            .is_file()
+        {
+            continue;
+        }
+
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !is_mnn_runtime_library(&name) {
+            continue;
+        }
+
+        let dst = dst_lib.join(name.as_ref());
+        fs::copy(entry.path(), &dst).map_err(|err| {
+            format!(
+                "failed to copy MNN runtime `{}` to `{}`: {err}",
+                entry.path().display(),
+                dst.display()
+            )
+        })?;
+        make_executable(&dst)?;
+        if name == "libMNN.dylib" || name == "libMNN.so" {
+            copied_primary = true;
+        }
+    }
+
+    if !copied_primary {
+        return Err(format!(
+            "MNN prebuilt at `{}` did not contain libMNN.dylib or libMNN.so",
+            src_lib.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn copy_mnn_windows_runtime(src_lib: &Path, dst_bin: &Path) -> Result<(), String> {
+    fs::create_dir_all(dst_bin).map_err(|err| {
+        format!(
+            "failed to create MNN bin directory `{}`: {err}",
+            dst_bin.display()
+        )
+    })?;
+
+    let mut copied_primary = false;
+    for entry in fs::read_dir(src_lib)
+        .map_err(|err| format!("failed to read `{}`: {err}", src_lib.display()))?
+    {
+        let entry = entry.map_err(|err| format!("failed to read MNN lib entry: {err}"))?;
+        if !entry
+            .file_type()
+            .map_err(|err| format!("failed to read file type: {err}"))?
+            .is_file()
+        {
+            continue;
+        }
+
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.ends_with(".dll") || !is_mnn_runtime_library(&name) {
+            continue;
+        }
+
+        let dst = dst_bin.join(name.as_ref());
+        fs::copy(entry.path(), &dst).map_err(|err| {
+            format!(
+                "failed to copy MNN runtime `{}` to `{}`: {err}",
+                entry.path().display(),
+                dst.display()
+            )
+        })?;
+        if name == "MNN.dll" {
+            copied_primary = true;
+        }
+    }
+
+    if !copied_primary {
+        return Err(format!(
+            "MNN prebuilt at `{}` did not contain MNN.dll",
+            src_lib.display()
+        ));
+    }
+
+    Ok(())
+}
+
+fn write_mnn_notice(archive_dir: &Path, profile: &DistProfile) -> Result<(), String> {
+    let runtime_location = if profile.target.contains("windows") {
+        "`bin/*.dll`"
+    } else {
+        "`lib/`"
+    };
+    let launcher_note = if needs_runtime_launcher(profile) && !profile.target.contains("windows") {
+        "Use `bin/lumen-hub`, which sets the bundled library path before launching the real binary.\n"
+    } else {
+        ""
+    };
+    let notice = format!(
+        "This package bundles dynamic MNN `{MNN_PREBUILT_VERSION}` prebuilts for `{}`.\nRuntime libraries are packaged under {runtime_location}.\n{launcher_note}",
+        profile.target
+    );
+    let path = archive_dir.join("licenses").join("mnn").join("README.md");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create MNN licenses directory `{}`: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    fs::write(&path, notice).map_err(|err| {
+        format!(
+            "failed to write MNN package notice `{}`: {err}",
+            path.display()
+        )
+    })
 }
 
 fn download_openvino_bundle(root: &Path, archive_dir: &Path) -> Result<(), String> {
@@ -491,13 +702,35 @@ fn write_openvino_notice(archive_dir: &Path) -> Result<(), String> {
 }
 
 fn write_readme(profile: &DistProfile, archive_dir: &Path) -> Result<(), String> {
-    let openvino_note = if profile.openvino_bundle {
-        "\nOpenVINO runtime libraries are bundled in `lib/`. Use `bin/lumen-hub`, which sets `LUMNN_ORT_DYLIB_PATH` and `LD_LIBRARY_PATH` before launching the real binary.\n"
+    let mut runtime_notes: Vec<String> = Vec::new();
+    if profile.openvino_bundle {
+        runtime_notes.push(
+            "OpenVINO runtime libraries are bundled in `lib/`. `bin/lumen-hub` sets `LUMNN_ORT_DYLIB_PATH` and the bundled library path before launching the real binary.".to_owned(),
+        );
+    }
+    if profile.mnn_bundle {
+        let location = if profile.target.contains("windows") {
+            "`bin/*.dll`"
+        } else {
+            "`lib/`"
+        };
+        runtime_notes.push(format!(
+            "MNN dynamic runtime libraries (`{MNN_PREBUILT_VERSION}`) are bundled in {location}."
+        ));
+        if needs_runtime_launcher(profile) && !profile.target.contains("windows") {
+            runtime_notes.push(
+                "On Unix, use `bin/lumen-hub`; it configures the bundled library path before launching `bin/lumen-hub-bin`."
+                    .to_owned(),
+            );
+        }
+    }
+    let runtime_note = if runtime_notes.is_empty() {
+        String::new()
     } else {
-        ""
+        format!("\n{}\n", runtime_notes.join("\n"))
     };
     let body = format!(
-        "# {}\n\nProfile: `{}`\nTarget: `{}`\nFeatures: `{}`\n\nLayout:\n- `bin/`: executable launcher and binary\n- `lib/`: bundled runtime libraries, when needed\n- `licenses/`: license and third-party notices\n\nStart with:\n\n```bash\n./bin/lumen-hub --config /path/to/lumen-config.json\n```\n{openvino_note}",
+        "# {}\n\nProfile: `{}`\nTarget: `{}`\nFeatures: `{}`\n\nLayout:\n- `bin/`: executable launcher and binary\n- `lib/`: bundled runtime libraries, when needed\n- `licenses/`: license and third-party notices\n\nStart with:\n\n```bash\n./bin/lumen-hub --config /path/to/lumen-config.json\n```\n{runtime_note}",
         profile.archive_name,
         profile.name,
         profile.target,
@@ -816,6 +1049,7 @@ struct DistProfile {
     target: &'static str,
     features: &'static [&'static str],
     openvino_bundle: bool,
+    mnn_bundle: bool,
 }
 
 const PROFILES: &[DistProfile] = &[
@@ -825,6 +1059,7 @@ const PROFILES: &[DistProfile] = &[
         target: "x86_64-unknown-linux-gnu",
         features: &["profile-universal-cpu"],
         openvino_bundle: false,
+        mnn_bundle: false,
     },
     DistProfile {
         name: "darwin-arm64",
@@ -832,6 +1067,7 @@ const PROFILES: &[DistProfile] = &[
         target: "aarch64-apple-darwin",
         features: &["profile-darwin-arm64"],
         openvino_bundle: false,
+        mnn_bundle: true,
     },
     DistProfile {
         name: "linux-x64-cuda",
@@ -839,6 +1075,7 @@ const PROFILES: &[DistProfile] = &[
         target: "x86_64-unknown-linux-gnu",
         features: &["profile-linux-x64-cuda"],
         openvino_bundle: false,
+        mnn_bundle: false,
     },
     DistProfile {
         name: "windows-x64-dml",
@@ -846,6 +1083,7 @@ const PROFILES: &[DistProfile] = &[
         target: "x86_64-pc-windows-msvc",
         features: &["profile-windows-x64-dml"],
         openvino_bundle: false,
+        mnn_bundle: false,
     },
     DistProfile {
         name: "linux-x64-openvino",
@@ -853,6 +1091,7 @@ const PROFILES: &[DistProfile] = &[
         target: "x86_64-unknown-linux-gnu",
         features: &["profile-linux-x64-openvino"],
         openvino_bundle: true,
+        mnn_bundle: false,
     },
 ];
 
@@ -875,6 +1114,22 @@ mod tests {
     fn zip_archive_names_reject_backslash_components() {
         let src_dir = Path::new("dist").join("lumen-cli-windows-x64");
         assert!(zip_archive_name(&src_dir, Path::new(r"bin\lumen-cli.exe")).is_err());
+    }
+
+    #[test]
+    fn mnn_prebuilt_suffix_maps_supported_targets() {
+        assert_eq!(
+            mnn_prebuilt_suffix("aarch64-apple-darwin").unwrap(),
+            "macos-universal"
+        );
+        assert_eq!(
+            mnn_prebuilt_suffix("x86_64-unknown-linux-gnu").unwrap(),
+            "linux-x86_64"
+        );
+        assert_eq!(
+            mnn_prebuilt_suffix("x86_64-pc-windows-msvc").unwrap(),
+            "windows-x86_64"
+        );
     }
 
     #[test]

@@ -9,20 +9,8 @@ use std::process::Command;
 use std::{env, fs};
 
 /// MNN prebuilt version to download from GitHub releases
-const MNN_PREBUILT_VERSION: &str = "3.5.0-lumnn";
+const MNN_PREBUILT_VERSION: &str = "3.5.0-lumnn.dyn";
 const MNN_PREBUILT_REPO: &str = "EdwinZhanCN/MNN";
-
-/// MNN linking mode
-enum MnnLinkMode {
-    /// Download prebuilt MNN from GitHub releases (default for supported platforms)
-    Prebuilt,
-    /// Build MNN from source
-    BuildFromSource,
-    /// Use pre-built MNN dynamic library (user-provided via MNN_LIB_DIR)
-    Dynamic,
-    /// Use pre-built MNN static library (user-provided via MNN_LIB_DIR)
-    Static,
-}
 
 fn main() {
     // 在 docs.rs 构建环境中，跳过所有 C++ 编译
@@ -34,245 +22,253 @@ fn main() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap();
-    let debug = env::var("DEBUG").unwrap();
-
-    // Feature flags
-    let coreml_enabled = env::var("CARGO_FEATURE_COREML").is_ok();
-    let metal_enabled = env::var("CARGO_FEATURE_METAL").is_ok();
-    let cuda_enabled = env::var("CARGO_FEATURE_CUDA").is_ok();
-    let opencl_enabled = env::var("CARGO_FEATURE_OPENCL").is_ok();
-    let opengl_enabled = env::var("CARGO_FEATURE_OPENGL").is_ok();
-    let vulkan_enabled = env::var("CARGO_FEATURE_VULKAN").is_ok();
-
-    let mnn_dynamic = env::var("CARGO_FEATURE_MNN_DYNAMIC").is_ok();
-    let mnn_static = env::var("CARGO_FEATURE_MNN_STATIC").is_ok();
-    let build_from_source = env::var("CARGO_FEATURE_BUILD_MNN_FROM_SOURCE").is_ok();
-
-    if mnn_dynamic && mnn_static {
-        panic!("Features `mnn-dynamic` and `mnn-static` are mutually exclusive. Please enable only one.");
-    }
-
-    let link_mode = if mnn_dynamic {
-        MnnLinkMode::Dynamic
-    } else if mnn_static {
-        MnnLinkMode::Static
-    } else if build_from_source {
-        MnnLinkMode::BuildFromSource
-    } else if get_prebuilt_asset_name(&os, &arch).is_some() {
-        MnnLinkMode::Prebuilt
-    } else {
-        println!(
-            "cargo:warning=No prebuilt MNN available for {}/{}, building from source...",
-            os, arch
-        );
-        MnnLinkMode::BuildFromSource
-    };
 
     let manifest_dir_path = PathBuf::from(&manifest_dir);
 
-    // Determine MNN include dir and library dir based on link mode
-    let (mnn_include_dir, mnn_lib_dir) = match &link_mode {
-        MnnLinkMode::Prebuilt => {
-            let asset_name = get_prebuilt_asset_name(&os, &arch)
-                .expect("No prebuilt available (should have been caught earlier)");
-            let prebuilt_dir = download_prebuilt_mnn(&manifest_dir_path, &asset_name, &os);
-
-            let include_dir = prebuilt_dir.join("include");
-            let lib_dir = prebuilt_dir.join("lib");
-
-            if !include_dir.exists() {
-                panic!(
-                    "Prebuilt MNN include directory not found: {}",
-                    include_dir.display()
-                );
-            }
-            if !lib_dir.exists() {
-                panic!(
-                    "Prebuilt MNN lib directory not found: {}",
-                    lib_dir.display()
-                );
-            }
-
-            println!(
-                "cargo:warning=Using prebuilt MNN {} for {}/{}",
-                MNN_PREBUILT_VERSION, os, arch
-            );
-
-            (vec![include_dir], vec![lib_dir])
+    let (mnn_include_dir, mnn_lib_dir) = if let Ok(lib_dir_str) = env::var("MNN_LIB_DIR") {
+        let lib_dir = PathBuf::from(&lib_dir_str);
+        if !lib_dir.exists() {
+            panic!("MNN_LIB_DIR='{}' does not exist", lib_dir.display());
         }
-        MnnLinkMode::BuildFromSource => {
-            // Get or download MNN source code
-            let mnn_source_dir = get_mnn_source(&manifest_dir_path);
 
-            // Build MNN using cmake
-            let dst = build_mnn_with_cmake(
-                &mnn_source_dir,
-                &arch,
-                &os,
-                &debug,
-                coreml_enabled,
-                metal_enabled,
-                cuda_enabled,
-                opencl_enabled,
-                opengl_enabled,
-                vulkan_enabled,
+        verify_dynamic_libraries(&lib_dir, &os);
+
+        let include_dirs = get_mnn_include_dirs(&manifest_dir_path);
+
+        println!("cargo:rerun-if-env-changed=MNN_LIB_DIR");
+        println!("cargo:rerun-if-env-changed=MNN_INCLUDE_DIR");
+        println!("cargo:rerun-if-env-changed=MNN_LLM_INCLUDE_DIR");
+        println!(
+            "cargo:warning=Using MNN dynamic libraries from MNN_LIB_DIR: {}",
+            lib_dir.display()
+        );
+
+        (include_dirs, vec![lib_dir])
+    } else {
+        let asset_name = get_prebuilt_asset_name(&os, &arch).unwrap_or_else(|| {
+            panic!(
+                "No prebuilt MNN available for {}/{}.\n\
+                 Set MNN_LIB_DIR to a directory containing dynamic MNN libraries.",
+                os, arch
+            )
+        });
+        let prebuilt_dir = download_prebuilt_mnn(&manifest_dir_path, &asset_name, &os);
+
+        let include_dir = prebuilt_dir.join("include");
+        let lib_dir = prebuilt_dir.join("lib");
+
+        if !include_dir.exists() {
+            panic!(
+                "Prebuilt MNN include directory not found: {}",
+                include_dir.display()
             );
-
-            // Include dirs: cmake output + MNN source
-            let include_dir = vec![dst.join("include"), mnn_source_dir.join("include")];
-            let lib_dir = vec![dst.clone(), dst.join("lib")];
-            (include_dir, lib_dir)
         }
-        MnnLinkMode::Dynamic | MnnLinkMode::Static => {
-            let mode_name = if mnn_dynamic {
-                "mnn-dynamic"
-            } else {
-                "mnn-static"
-            };
-
-            // MNN_LIB_DIR is required for pre-built libraries
-            let lib_dir_str = env::var("MNN_LIB_DIR").unwrap_or_else(|_| {
-                panic!(
-                    "MNN_LIB_DIR environment variable is required when using `{}` feature.\n\
-                     Set it to the directory containing the pre-built MNN library.\n\
-                     Example: MNN_LIB_DIR=/usr/local/lib cargo build --features {}",
-                    mode_name, mode_name,
-                )
-            });
-            let lib_dir = PathBuf::from(&lib_dir_str);
-            if !lib_dir.exists() {
-                panic!("MNN_LIB_DIR='{}' does not exist", lib_dir.display());
-            }
-
-            // MNN_INCLUDE_DIR: look for it in env, or fall back to MNN source/3rd_party
-            let include_dirs = get_mnn_include_dirs(&manifest_dir_path);
-
-            println!("cargo:rerun-if-env-changed=MNN_LIB_DIR");
-            println!("cargo:rerun-if-env-changed=MNN_INCLUDE_DIR");
-
-            println!(
-                "cargo:warning=Using pre-built MNN {} library from: {}",
-                if mnn_dynamic { "dynamic" } else { "static" },
+        if !lib_dir.exists() {
+            panic!(
+                "Prebuilt MNN lib directory not found: {}",
                 lib_dir.display()
             );
-
-            (include_dirs, vec![lib_dir])
         }
+
+        verify_dynamic_libraries(&lib_dir, &os);
+        warn_if_llm_headers_missing(&include_dir);
+
+        println!(
+            "cargo:warning=Using prebuilt MNN {} for {}/{}",
+            MNN_PREBUILT_VERSION, os, arch
+        );
+
+        (vec![include_dir], vec![lib_dir])
     };
 
-    // Build our C++ wrapper using cc (always needed)
-    build_wrapper(&manifest_dir_path, &mnn_include_dir, &os, &link_mode);
-
-    // Link libraries
-    link_libraries(
-        &mnn_lib_dir,
-        &os,
-        &link_mode,
-        coreml_enabled,
-        metal_enabled,
-        cuda_enabled,
-        opencl_enabled,
-        opengl_enabled,
-        vulkan_enabled,
-    );
-
-    // Generate Rust bindings
+    build_wrapper(&manifest_dir_path, &mnn_include_dir, &os);
+    link_libraries(&mnn_lib_dir, &os);
     bind_gen(&manifest_dir_path, &mnn_include_dir, &os, &arch);
 }
 
-/// Get MNN include directories for pre-built library mode.
+/// Get MNN include directories when using a custom MNN_LIB_DIR.
 /// Priority:
 /// 1. MNN_INCLUDE_DIR environment variable
 /// 2. MNN_SOURCE_DIR/include (if MNN_SOURCE_DIR is set)
 /// 3. Local 3rd_party/MNN/include
+/// 4. Bundled prebuilt headers (when MNN_LIB_DIR is set)
 fn get_mnn_include_dirs(manifest_dir: &PathBuf) -> Vec<PathBuf> {
-    // 1. Check MNN_INCLUDE_DIR
     if let Ok(include_dir) = env::var("MNN_INCLUDE_DIR") {
         let include_path = PathBuf::from(&include_dir);
         if include_path.exists() {
+            let mut include_dirs = vec![include_path.clone()];
+            append_env_llm_include_dir(&mut include_dirs);
+            warn_if_llm_headers_missing(&include_path);
             println!(
                 "cargo:warning=Using MNN headers from MNN_INCLUDE_DIR: {}",
                 include_path.display()
             );
-            return vec![include_path];
-        } else {
-            panic!(
-                "MNN_INCLUDE_DIR='{}' does not exist",
-                include_path.display()
-            );
+            return include_dirs;
         }
+        panic!(
+            "MNN_INCLUDE_DIR='{}' does not exist",
+            include_path.display()
+        );
     }
 
-    // 2. Check MNN_SOURCE_DIR
     if let Ok(mnn_dir) = env::var("MNN_SOURCE_DIR") {
         let mnn_path = PathBuf::from(&mnn_dir);
-        let include_path = mnn_path.join("include");
-        if include_path.exists() {
+        if mnn_path.exists() {
+            let mut include_dirs = mnn_source_include_dirs(manifest_dir, &mnn_path);
+            ensure_mnn_llm_public_headers(manifest_dir, &mut include_dirs);
             println!(
                 "cargo:warning=Using MNN headers from MNN_SOURCE_DIR: {}",
-                include_path.display()
+                mnn_path.display()
             );
-            return vec![include_path];
+            return include_dirs;
         }
+        panic!("MNN_SOURCE_DIR='{}' does not exist", mnn_path.display());
     }
 
-    // 3. Check local 3rd_party/MNN/include
-    let local_include = manifest_dir.join("3rd_party/MNN/include");
+    let local_mnn = manifest_dir.join("3rd_party/MNN");
+    let local_include = local_mnn.join("include");
     if local_include.exists() {
+        let mut include_dirs = mnn_source_include_dirs(manifest_dir, &local_mnn);
+        ensure_mnn_llm_public_headers(manifest_dir, &mut include_dirs);
         println!(
             "cargo:warning=Using MNN headers from local source: {}",
             local_include.display()
         );
-        return vec![local_include];
+        return include_dirs;
+    }
+
+    if env::var("MNN_LIB_DIR").is_ok() {
+        if let Some(prebuilt_include) = find_bundled_prebuilt_include(manifest_dir) {
+            println!(
+                "cargo:warning=Using bundled prebuilt MNN headers with custom MNN_LIB_DIR: {}",
+                prebuilt_include.display()
+            );
+            return vec![prebuilt_include];
+        }
     }
 
     panic!(
         "MNN headers not found. Please set one of:\n\
          - MNN_INCLUDE_DIR: path to directory containing MNN headers\n\
+         - MNN_LLM_INCLUDE_DIR: optional path to MNN transformers/llm/engine/include\n\
          - MNN_SOURCE_DIR: path to MNN source tree\n\
          Or ensure 3rd_party/MNN exists in the project root."
     );
 }
 
-/// Get the prebuilt asset name for the current OS/arch combination.
-/// Returns None if no prebuilt is available.
+fn has_mnn_llm_public_header(include_dirs: &[PathBuf]) -> bool {
+    include_dirs
+        .iter()
+        .any(|dir| dir.join("MNN/llm/llm.hpp").exists())
+}
+
+fn ensure_mnn_llm_public_headers(manifest_dir: &Path, include_dirs: &mut Vec<PathBuf>) {
+    if has_mnn_llm_public_header(include_dirs) {
+        return;
+    }
+    if let Some(prebuilt_include) = find_bundled_prebuilt_include(manifest_dir) {
+        println!(
+            "cargo:warning=Supplementing MNN_SOURCE_DIR headers with bundled prebuilt MNN/llm/llm.hpp from {}",
+            prebuilt_include.display()
+        );
+        include_dirs.push(prebuilt_include);
+    }
+}
+
+fn find_bundled_prebuilt_include(manifest_dir: &Path) -> Option<PathBuf> {
+    let prebuilt_root = manifest_dir.join("3rd_party/prebuilt");
+    if !prebuilt_root.is_dir() {
+        return None;
+    }
+
+    let mut candidates = Vec::new();
+    if let Ok(entries) = fs::read_dir(&prebuilt_root) {
+        for entry in entries.flatten() {
+            let include_dir = entry.path().join("include");
+            if include_dir.join("MNN/llm/llm.hpp").is_file() {
+                candidates.push(include_dir);
+            }
+        }
+    }
+
+    candidates.sort();
+    candidates.into_iter().next()
+}
+
+fn mnn_source_include_dirs(build_or_manifest_dir: &Path, mnn_source_dir: &Path) -> Vec<PathBuf> {
+    let mut include_dirs = Vec::new();
+
+    let build_include = build_or_manifest_dir.join("include");
+    if build_include.exists() {
+        include_dirs.push(build_include);
+    }
+
+    let source_include = mnn_source_dir.join("include");
+    if source_include.exists() {
+        include_dirs.push(source_include);
+    }
+
+    let llm_include = mnn_source_dir.join("transformers/llm/engine/include");
+    if llm_include.exists() {
+        include_dirs.push(llm_include);
+    }
+
+    append_env_llm_include_dir(&mut include_dirs);
+    include_dirs
+}
+
+fn append_env_llm_include_dir(include_dirs: &mut Vec<PathBuf>) {
+    if let Ok(llm_include_dir) = env::var("MNN_LLM_INCLUDE_DIR") {
+        let llm_include_path = PathBuf::from(&llm_include_dir);
+        if llm_include_path.exists() {
+            println!(
+                "cargo:warning=Using MNN LLM headers from MNN_LLM_INCLUDE_DIR: {}",
+                llm_include_path.display()
+            );
+            include_dirs.push(llm_include_path);
+        } else {
+            panic!(
+                "MNN_LLM_INCLUDE_DIR='{}' does not exist",
+                llm_include_path.display()
+            );
+        }
+    }
+}
+
+fn warn_if_llm_headers_missing(include_dir: &Path) {
+    if !include_dir.join("MNN/llm/llm.hpp").exists() && !include_dir.join("llm/llm.hpp").exists() {
+        println!(
+            "cargo:warning=MNN LLM headers were not found under {}; rebuild prebuilts with -DMNN_BUILD_LLM=ON before enabling MnnLlmNode",
+            include_dir.display()
+        );
+    }
+}
+
 fn get_prebuilt_asset_name(os: &str, arch: &str) -> Option<String> {
     let suffix = match (os, arch) {
         ("linux", "x86_64") => "linux-x86_64",
         ("windows", "x86_64") => "windows-x86_64",
-        ("macos", _) => "macos-universal", // universal binary for both x86_64 and arm64
-        // Unsupported platforms — no prebuilt available:
-        // ("linux", "aarch64")
-        // ("windows", "x86")
-        // ("windows", "aarch64")
-        // ("ios", "aarch64")
-        // ("android", "aarch64")
-        // ("android", "arm")
+        ("macos", _) => "macos-universal",
         _ => return None,
     };
     Some(format!("mnn-{}-{}", MNN_PREBUILT_VERSION, suffix))
 }
 
-/// Download and extract prebuilt MNN library from GitHub releases.
-/// Returns the path to the extracted directory containing lib/ and include/.
 fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> PathBuf {
     let cache_dir = manifest_dir.join("3rd_party").join("prebuilt");
     let extract_dir = cache_dir.join(asset_name);
 
-    // Check if already extracted
     if extract_dir.join("lib").exists() && extract_dir.join("include").exists() {
         println!(
             "cargo:warning=Using cached prebuilt MNN from: {}",
             extract_dir.display()
         );
-        // Ensure dynamic libs are removed even from cached extractions
-        remove_dynamic_libs(&extract_dir);
+        remove_static_libraries(&extract_dir);
         return extract_dir;
     }
 
     fs::create_dir_all(&cache_dir).expect("Failed to create prebuilt cache directory");
 
-    // Determine archive extension and download URL
     let (ext, url) = if os == "windows" {
         (
             "zip",
@@ -293,13 +289,11 @@ fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> Pat
 
     let archive_path = cache_dir.join(format!("{}.{}", asset_name, ext));
 
-    // Download if archive doesn't exist
     if !archive_path.exists() {
         println!("cargo:warning=Downloading prebuilt MNN from: {}", url);
         download_file(&url, &archive_path);
     }
 
-    // Extract
     println!(
         "cargo:warning=Extracting prebuilt MNN to: {}",
         extract_dir.display()
@@ -311,7 +305,6 @@ fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> Pat
         extract_tar_gz(&archive_path, &cache_dir);
     }
 
-    // Verify extraction
     if !extract_dir.join("lib").exists() {
         panic!(
             "Prebuilt MNN extraction failed: lib/ not found in {}",
@@ -319,60 +312,65 @@ fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> Pat
         );
     }
 
-    // For Windows, reorganize lib files:
-    // prebuilt has MNN_static.lib -> rename to MNN.lib for static linking
-    if os == "windows" {
-        let lib_dir = extract_dir.join("lib");
-        let static_lib = lib_dir.join("MNN_static.lib");
-        let mnn_lib = lib_dir.join("MNN.lib");
-        if static_lib.exists() {
-            // MNN.lib from prebuilt is the import lib for DLL, we want the static one
-            // Backup the import lib and replace with static lib
-            let import_lib = lib_dir.join("MNN_import.lib");
-            if mnn_lib.exists() {
-                let _ = fs::rename(&mnn_lib, &import_lib);
-            }
-            fs::copy(&static_lib, &mnn_lib).expect("Failed to copy MNN_static.lib to MNN.lib");
-        }
-    }
-
-    // Remove dynamic libraries to force static linking.
-    // On macOS the linker prefers .dylib over .a even with `static=MNN`.
-    remove_dynamic_libs(&extract_dir);
-
+    remove_static_libraries(&extract_dir);
     extract_dir
 }
 
-/// Remove dynamic library files from the prebuilt lib directory to force static linking.
-fn remove_dynamic_libs(extract_dir: &Path) {
-    let lib_dir = extract_dir.join("lib");
-    if let Ok(entries) = fs::read_dir(&lib_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".dylib") || name.ends_with(".so") || name.ends_with(".dll") {
-                    let _ = fs::remove_file(&path);
-                }
-            }
+fn verify_dynamic_libraries(lib_dir: &Path, os: &str) {
+    let required: &[&str] = match os {
+        "macos" | "ios" => &["libMNN.dylib"],
+        "linux" => &["libMNN.so"],
+        "windows" => &["MNN.dll", "MNN.lib"],
+        _ => &["libMNN.so"],
+    };
+
+    for name in required {
+        let path = lib_dir.join(name);
+        if !path.is_file() {
+            panic!(
+                "Required MNN dynamic library not found: {}.\n\
+                 Expected dynamic-only prebuilts tagged `{}`.",
+                path.display(),
+                MNN_PREBUILT_VERSION
+            );
         }
     }
 }
 
-/// Download a file from a URL using available system tool.
+fn remove_static_libraries(extract_dir: &Path) {
+    let lib_dir = extract_dir.join("lib");
+    let Ok(entries) = fs::read_dir(&lib_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
+        let is_static = name.ends_with(".a")
+            || name.ends_with("_static.lib")
+            || (name.ends_with(".lib")
+                && !matches!(name, "MNN.lib" | "llm.lib" | "MNN_Express.lib"));
+
+        if is_static {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
 fn download_file(url: &str, dest: &Path) {
-    // Try curl first (available on all modern platforms)
     let status = Command::new("curl")
-        .args(&["-L", "-f", "-s", "-o"])
+        .args(["-L", "-f", "-s", "-o"])
         .arg(dest.to_str().unwrap())
         .arg(url)
         .status();
 
-    match status {
-        Ok(s) if s.success() => return,
-        _ => {}
+    if matches!(status, Ok(s) if s.success()) {
+        return;
     }
 
-    // Fallback: try powershell on Windows
     if cfg!(target_os = "windows") {
         let ps_cmd = format!(
             "Invoke-WebRequest -Uri '{}' -OutFile '{}' -UseBasicParsing",
@@ -380,11 +378,10 @@ fn download_file(url: &str, dest: &Path) {
             dest.to_str().unwrap()
         );
         let status = Command::new("powershell")
-            .args(&["-NoProfile", "-Command", &ps_cmd])
+            .args(["-NoProfile", "-Command", &ps_cmd])
             .status();
-        match status {
-            Ok(s) if s.success() => return,
-            _ => {}
+        if matches!(status, Ok(s) if s.success()) {
+            return;
         }
     }
 
@@ -396,12 +393,11 @@ fn download_file(url: &str, dest: &Path) {
     );
 }
 
-/// Extract a .tar.gz archive.
 fn extract_tar_gz(archive: &Path, dest_dir: &Path) {
     let status = Command::new("tar")
-        .args(&["xzf"])
+        .args(["xzf"])
         .arg(archive.to_str().unwrap())
-        .args(&["-C"])
+        .args(["-C"])
         .arg(dest_dir.to_str().unwrap())
         .status()
         .expect("Failed to run tar");
@@ -411,9 +407,7 @@ fn extract_tar_gz(archive: &Path, dest_dir: &Path) {
     }
 }
 
-/// Extract a .zip archive.
 fn extract_zip(archive: &Path, dest_dir: &Path) {
-    // On Windows, use powershell's Expand-Archive
     if cfg!(target_os = "windows") {
         let ps_cmd = format!(
             "Expand-Archive -Force -Path '{}' -DestinationPath '{}'",
@@ -421,18 +415,17 @@ fn extract_zip(archive: &Path, dest_dir: &Path) {
             dest_dir.to_str().unwrap()
         );
         let status = Command::new("powershell")
-            .args(&["-NoProfile", "-Command", &ps_cmd])
+            .args(["-NoProfile", "-Command", &ps_cmd])
             .status()
             .expect("Failed to run powershell");
         if !status.success() {
             panic!("Failed to extract {}", archive.display());
         }
     } else {
-        // Fallback: unzip command
         let status = Command::new("unzip")
-            .args(&["-o", "-q"])
+            .args(["-o", "-q"])
             .arg(archive.to_str().unwrap())
-            .args(&["-d"])
+            .args(["-d"])
             .arg(dest_dir.to_str().unwrap())
             .status()
             .expect("Failed to run unzip");
@@ -442,250 +435,7 @@ fn extract_zip(archive: &Path, dest_dir: &Path) {
     }
 }
 
-/// Get MNN source code directory
-/// Priority:
-/// 1. Environment variable MNN_SOURCE_DIR
-/// 2. Local 3rd_party/MNN directory
-/// 3. Clone from GitHub
-fn get_mnn_source(manifest_dir: &PathBuf) -> PathBuf {
-    // Check environment variable first
-    if let Ok(mnn_dir) = env::var("MNN_SOURCE_DIR") {
-        let mnn_path = PathBuf::from(mnn_dir);
-        if mnn_path.exists() && mnn_path.join("CMakeLists.txt").exists() {
-            println!(
-                "cargo:warning=Using MNN source from MNN_SOURCE_DIR: {}",
-                mnn_path.display()
-            );
-            return mnn_path;
-        } else {
-            panic!(
-                "MNN_SOURCE_DIR is set but directory is invalid or missing CMakeLists.txt: {}",
-                mnn_path.display()
-            );
-        }
-    }
-
-    // Check local 3rd_party/MNN
-    let local_mnn = manifest_dir.join("3rd_party/MNN");
-    if local_mnn.exists() && local_mnn.join("CMakeLists.txt").exists() {
-        println!(
-            "cargo:warning=Using local MNN source: {}",
-            local_mnn.display()
-        );
-        return local_mnn;
-    }
-
-    // Clone from GitHub
-    println!("cargo:warning=MNN source not found, cloning from GitHub...");
-    let third_party_dir = manifest_dir.join("3rd_party");
-    fs::create_dir_all(&third_party_dir).expect("Failed to create 3rd_party directory");
-
-    let status = Command::new("git")
-        .args(&[
-            "clone",
-            "--depth=1",
-            "--branch=release-3.5.0",
-            "https://github.com/EdwinZhanCN/MNN.git",
-            local_mnn.to_str().unwrap(),
-        ])
-        .status()
-        .expect("Failed to execute git clone command. Make sure git is installed.");
-
-    if !status.success() {
-        panic!("Failed to clone MNN from GitHub");
-    }
-
-    if !local_mnn.join("CMakeLists.txt").exists() {
-        panic!("MNN cloned but CMakeLists.txt not found");
-    }
-
-    println!(
-        "cargo:warning=Successfully cloned MNN to: {}",
-        local_mnn.display()
-    );
-    local_mnn
-}
-
-fn build_mnn_with_cmake(
-    mnn_source_dir: &PathBuf,
-    arch: &str,
-    os: &str,
-    debug: &str,
-    coreml_enabled: bool,
-    metal_enabled: bool,
-    cuda_enabled: bool,
-    opencl_enabled: bool,
-    opengl_enabled: bool,
-    vulkan_enabled: bool,
-) -> PathBuf {
-    let mut config = cmake::Config::new(mnn_source_dir);
-
-    config
-        .define("MNN_BUILD_SHARED_LIBS", "OFF")
-        .define("MNN_BUILD_TOOLS", "OFF")
-        .define("MNN_BUILD_DEMO", "OFF")
-        .define("MNN_BUILD_TEST", "OFF")
-        .define("MNN_BUILD_BENCHMARK", "OFF")
-        .define("MNN_BUILD_QUANTOOLS", "OFF")
-        .define("MNN_BUILD_CONVERTER", "OFF")
-        .define("MNN_PORTABLE_BUILD", "ON")
-        .define("MNN_SEP_BUILD", "OFF");
-
-    // For Windows, always use Release mode to ensure consistent CRT linking
-    if os == "windows" {
-        // Force NMake Makefiles generator on Windows to avoid MSVC detection issues
-        // This is more reliable in CI/CD environments like Jenkins
-        config.generator("NMake Makefiles");
-        config.define("CMAKE_BUILD_TYPE", "Release");
-        // Check if we're using static CRT
-        if env::var("CARGO_CFG_TARGET_FEATURE").map_or(false, |f| f.contains("crt-static")) {
-            // MNN has a specific option for static CRT on Windows
-            config.define("MNN_WIN_RUNTIME_MT", "ON");
-
-            // Also set these for extra safety
-            config.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreaded");
-            config.define("CMAKE_C_FLAGS_RELEASE", "/MT /O2 /Ob2 /DNDEBUG");
-            config.define("CMAKE_CXX_FLAGS_RELEASE", "/MT /O2 /Ob2 /DNDEBUG");
-            config.define("CMAKE_C_FLAGS", "/MT");
-            config.define("CMAKE_CXX_FLAGS", "/MT");
-        }
-    } else {
-        // For non-Windows platforms, respect debug flag
-        if debug == "true" {
-            config.define("CMAKE_BUILD_TYPE", "Debug");
-        } else {
-            config.define("CMAKE_BUILD_TYPE", "Release");
-        }
-    }
-
-    // Android cross-compilation
-    if os == "android" {
-        let ndk = env::var("ANDROID_NDK_ROOT")
-            .or_else(|_| env::var("ANDROID_NDK_HOME"))
-            .or_else(|_| env::var("ANDROID_NDK"))
-            .or_else(|_| env::var("NDK_HOME"))
-            .expect(
-                "Android NDK not found. Please set one of: ANDROID_NDK_ROOT, ANDROID_NDK_HOME, ANDROID_NDK, NDK_HOME",
-            );
-
-        config
-            .define(
-                "CMAKE_TOOLCHAIN_FILE",
-                PathBuf::from(&ndk).join("build/cmake/android.toolchain.cmake"),
-            )
-            .define("ANDROID_STL", "c++_static")
-            .define("ANDROID_NATIVE_API_LEVEL", "android-21")
-            .define("ANDROID_TOOLCHAIN", "clang")
-            .define("MNN_BUILD_FOR_ANDROID_COMMAND", "ON")
-            .define("MNN_USE_SSE", "OFF");
-
-        match arch {
-            "arm" => {
-                config.define("ANDROID_ABI", "armeabi-v7a");
-            }
-            "aarch64" => {
-                config.define("ANDROID_ABI", "arm64-v8a");
-            }
-            "x86" => {
-                config.define("ANDROID_ABI", "x86");
-            }
-            "x86_64" => {
-                config.define("ANDROID_ABI", "x86_64");
-            }
-            _ => {}
-        }
-    }
-
-    // iOS cross-compilation
-    if os == "ios" {
-        let rust_target = env::var("TARGET").unwrap_or_default();
-        let is_simulator = rust_target.contains("-sim") || arch == "x86_64";
-
-        config
-            .define("CMAKE_SYSTEM_NAME", "iOS")
-            .define("MNN_BUILD_FOR_IOS", "ON")
-            .define("CMAKE_OSX_DEPLOYMENT_TARGET", "13.0");
-
-        if arch == "aarch64" {
-            config.define("CMAKE_OSX_ARCHITECTURES", "arm64");
-        } else if arch == "x86_64" {
-            config.define("CMAKE_OSX_ARCHITECTURES", "x86_64");
-        }
-
-        // Critical: set the correct SDK for simulator vs device
-        if is_simulator {
-            config.define("CMAKE_OSX_SYSROOT", "iphonesimulator");
-        } else {
-            config.define("CMAKE_OSX_SYSROOT", "iphoneos");
-        }
-
-        // MNN's CMakeLists.txt only sets CMAKE_SYSTEM_PROCESSOR from
-        // CMAKE_OSX_ARCHITECTURES when CMAKE_SYSTEM_NAME == "Darwin",
-        // but for iOS it's "iOS". Without this, ARM assembly sources
-        // (NEON, AArch64) are not compiled, causing undefined symbols.
-        if arch == "aarch64" {
-            config.define("CMAKE_SYSTEM_PROCESSOR", "arm64");
-            config.define("ARCHS", "arm64");
-        } else if arch == "x86_64" {
-            config.define("CMAKE_SYSTEM_PROCESSOR", "x86_64");
-        }
-    }
-
-    // SIMD optimizations
-    // Only enable SSE for x86_64, not for 32-bit x86 (i686)
-    // because i686 target doesn't have guaranteed SSE support
-    if arch == "x86_64" && os != "android" && os != "ios" {
-        config.define("MNN_USE_SSE", "ON");
-    } else {
-        // For all other architectures (including 32-bit x86/i686), disable SSE/AVX
-        // This prevents compilation errors with SIMD intrinsics on incompatible targets
-        config.define("MNN_USE_SSE", "OFF");
-        config.define("MNN_USE_AVX", "OFF");
-        config.define("MNN_USE_AVX2", "OFF");
-        config.define("MNN_USE_AVX512", "OFF");
-    }
-
-    // CoreML (macOS/iOS only)
-    if coreml_enabled && matches!(os, "macos" | "ios") {
-        config.define("MNN_COREML", "ON");
-    }
-
-    // Metal GPU (macOS/iOS only)
-    if metal_enabled && matches!(os, "macos" | "ios") {
-        config.define("MNN_METAL", "ON");
-    }
-
-    // CUDA GPU (Linux/Windows)
-    if cuda_enabled && matches!(os, "linux" | "windows") {
-        config.define("MNN_CUDA", "ON");
-    }
-
-    // OpenCL GPU (cross-platform)
-    if opencl_enabled {
-        config.define("MNN_OPENCL", "ON");
-    }
-
-    // OpenGL GPU (Android/Linux)
-    if opengl_enabled && matches!(os, "android" | "linux") {
-        config.define("MNN_OPENGL", "ON");
-    }
-
-    // Vulkan GPU (cross-platform)
-    if vulkan_enabled {
-        config.define("MNN_VULKAN", "ON");
-    }
-
-    println!("cargo:rerun-if-changed=MNN/CMakeLists.txt");
-
-    config.build()
-}
-
-fn build_wrapper(
-    manifest_dir: &PathBuf,
-    mnn_include_dirs: &[PathBuf],
-    os: &str,
-    link_mode: &MnnLinkMode,
-) {
+fn build_wrapper(manifest_dir: &PathBuf, mnn_include_dirs: &[PathBuf], os: &str) {
     let wrapper_file = manifest_dir.join("cpp/src/mnn_wrapper.cpp");
 
     println!("cargo:rerun-if-changed=cpp/src/mnn_wrapper.cpp");
@@ -702,13 +452,8 @@ fn build_wrapper(
         build.include(inc);
     }
 
-    // Platform-specific C++ flags
     if os == "windows" {
         build.flag("/std:c++14").flag("/EHsc").flag("/W3");
-        // Match CRT with prebuilt MNN: prebuilt uses /MT (static CRT)
-        if matches!(link_mode, MnnLinkMode::Prebuilt) {
-            build.static_crt(true);
-        }
     } else {
         build.flag("-std=c++14").flag("-fvisibility=hidden");
     }
@@ -716,33 +461,15 @@ fn build_wrapper(
     build.compile("mnn_wrapper");
 }
 
-fn link_libraries(
-    lib_dirs: &[PathBuf],
-    os: &str,
-    link_mode: &MnnLinkMode,
-    coreml_enabled: bool,
-    metal_enabled: bool,
-    cuda_enabled: bool,
-    opencl_enabled: bool,
-    opengl_enabled: bool,
-    vulkan_enabled: bool,
-) {
-    // Add library search paths
+fn link_libraries(lib_dirs: &[PathBuf], os: &str) {
     for dir in lib_dirs {
         println!("cargo:rustc-link-search=native={}", dir.display());
     }
 
-    // Link MNN library based on mode
-    match link_mode {
-        MnnLinkMode::Dynamic => {
-            println!("cargo:rustc-link-lib=dylib=MNN");
-        }
-        MnnLinkMode::Static | MnnLinkMode::BuildFromSource | MnnLinkMode::Prebuilt => {
-            println!("cargo:rustc-link-lib=static=MNN");
-        }
-    }
+    println!("cargo:rustc-link-lib=dylib=MNN");
+    link_optional_dynamic_library(lib_dirs, os, "llm");
+    link_optional_dynamic_library(lib_dirs, os, "MNN_Express");
 
-    // Platform-specific C++ runtime
     match os {
         "macos" | "ios" => {
             println!("cargo:rustc-link-lib=c++");
@@ -753,86 +480,33 @@ fn link_libraries(
             println!("cargo:rustc-link-lib=pthread");
         }
         "android" => {
-            println!("cargo:rustc-link-lib=c++_static");
+            println!("cargo:rustc-link-lib=c++_shared");
             println!("cargo:rustc-link-lib=log");
         }
-        "windows" => {
-            // MSVC runtime is linked automatically when using matching CRT settings
-        }
+        "windows" => {}
         _ => {}
     }
+}
 
-    // Prebuilt MNN for macOS/iOS includes Metal backend, so always link Apple frameworks
-    if matches!(link_mode, MnnLinkMode::Prebuilt) && matches!(os, "macos" | "ios") {
-        println!("cargo:rustc-link-lib=framework=Foundation");
-        println!("cargo:rustc-link-lib=framework=CoreFoundation");
-        println!("cargo:rustc-link-lib=framework=Metal");
-        println!("cargo:rustc-link-lib=framework=MetalPerformanceShaders");
-        println!("cargo:rustc-link-lib=objc");
+fn link_optional_dynamic_library(lib_dirs: &[PathBuf], os: &str, library: &str) {
+    let has_library = lib_dirs
+        .iter()
+        .any(|dir| dynamic_library_path(dir, os, library).exists());
 
-        // Prebuilt MNN may embed -lclang_rt.osx from the builder's Xcode.
-        // If the user's toolchain differs (e.g. CommandLineTools-only), add
-        // the runtime's actual location as a search path.
-        add_clang_rt_search_path();
+    if has_library {
+        println!("cargo:rustc-link-lib=dylib={library}");
+    } else if library == "llm" {
+        println!(
+            "cargo:warning=No standalone MNN llm library found; assuming LLM objects are linked into libMNN"
+        );
     }
+}
 
-    // CoreML frameworks
-    if coreml_enabled && matches!(os, "macos" | "ios") {
-        println!("cargo:rustc-link-lib=framework=CoreML");
-        println!("cargo:rustc-link-lib=framework=Foundation");
-        println!("cargo:rustc-link-lib=framework=Metal");
-        println!("cargo:rustc-link-lib=framework=MetalPerformanceShaders");
-    }
-
-    // Metal frameworks
-    if metal_enabled && matches!(os, "macos" | "ios") {
-        println!("cargo:rustc-link-lib=framework=Foundation");
-        println!("cargo:rustc-link-lib=framework=Metal");
-        println!("cargo:rustc-link-lib=framework=MetalPerformanceShaders");
-    }
-
-    // CUDA libraries
-    if cuda_enabled && matches!(os, "linux" | "windows") {
-        println!("cargo:rustc-link-lib=cuda");
-        println!("cargo:rustc-link-lib=cudart");
-        println!("cargo:rustc-link-lib=cublas");
-        println!("cargo:rustc-link-lib=cudnn");
-    }
-
-    // OpenCL library
-    if opencl_enabled {
-        if os == "macos" {
-            println!("cargo:rustc-link-lib=framework=OpenCL");
-        } else {
-            println!("cargo:rustc-link-lib=OpenCL");
-        }
-    }
-
-    // OpenGL libraries
-    if opengl_enabled && matches!(os, "android" | "linux") {
-        if os == "android" {
-            println!("cargo:rustc-link-lib=GLESv3");
-            println!("cargo:rustc-link-lib=EGL");
-        } else {
-            println!("cargo:rustc-link-lib=GL");
-        }
-    }
-
-    // Vulkan library
-    if vulkan_enabled {
-        if os == "macos" {
-            // macOS uses MoltenVK (Vulkan over Metal)
-            // Probe common locations for the Vulkan SDK
-            if let Ok(sdk_root) = env::var("VULKAN_SDK") {
-                let lib_path = PathBuf::from(&sdk_root).join("lib");
-                if lib_path.exists() {
-                    println!("cargo:rustc-link-search=native={}", lib_path.display());
-                }
-            }
-            println!("cargo:rustc-link-lib=MoltenVK");
-        } else {
-            println!("cargo:rustc-link-lib=vulkan");
-        }
+fn dynamic_library_path(lib_dir: &Path, os: &str, library: &str) -> PathBuf {
+    match os {
+        "windows" => lib_dir.join(format!("{library}.lib")),
+        "macos" | "ios" => lib_dir.join(format!("lib{library}.dylib")),
+        _ => lib_dir.join(format!("lib{library}.so")),
     }
 }
 
@@ -855,7 +529,6 @@ fn bind_gen(manifest_dir: &PathBuf, mnn_include_dirs: &[PathBuf], os: &str, arch
         builder = add_linux_system_include_args(builder);
     }
 
-    // Android-specific clang target and sysroot
     if os == "android" {
         let ndk = env::var("ANDROID_NDK_ROOT")
             .or_else(|_| env::var("ANDROID_NDK_HOME"))
@@ -871,9 +544,8 @@ fn bind_gen(manifest_dir: &PathBuf, mnn_include_dirs: &[PathBuf], os: &str, arch
             "x86" => "i686-linux-android",
             _ => "aarch64-linux-android",
         };
-        builder = builder.clang_arg(format!("--target={}{}", target, api_level));
+        builder = builder.clang_arg(format!("--target={target}{api_level}"));
 
-        // Point bindgen to the NDK sysroot so it doesn't pick up host headers
         if !ndk.is_empty() {
             let host_tag = if cfg!(target_os = "macos") {
                 "darwin-x86_64"
@@ -890,7 +562,6 @@ fn bind_gen(manifest_dir: &PathBuf, mnn_include_dirs: &[PathBuf], os: &str, arch
         }
     }
 
-    // iOS-specific: remap target triple for clang/bindgen compatibility
     if os == "ios" {
         let rust_target = env::var("TARGET").unwrap_or_default();
         let clang_target = if rust_target == "aarch64-apple-ios-sim" {
@@ -902,7 +573,7 @@ fn bind_gen(manifest_dir: &PathBuf, mnn_include_dirs: &[PathBuf], os: &str, arch
         } else {
             rust_target
         };
-        builder = builder.clang_arg(format!("--target={}", clang_target));
+        builder = builder.clang_arg(format!("--target={clang_target}"));
     }
 
     let bindings = builder.generate().expect("Unable to generate bindings");
@@ -994,51 +665,4 @@ fn push_unique_path(paths: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>, path:
     if path.exists() && seen.insert(path.clone()) {
         paths.push(path);
     }
-}
-
-/// Add the clang runtime library search path for macOS.
-///
-/// Prebuilt MNN libraries may embed `-lclang_rt.osx` from the builder's
-/// Xcode installation. When the user's toolchain differs (e.g. uses only
-/// CommandLineTools without the full Xcode app), the linker needs the
-/// actual location of `libclang_rt.osx.a`.
-fn add_clang_rt_search_path() {
-    // Probe common locations in priority order
-    let candidates = [
-        // CommandLineTools (no full Xcode installed)
-        "/Library/Developer/CommandLineTools/usr/lib/clang",
-        // Standard Xcode path
-        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/clang",
-    ];
-
-    for base in &candidates {
-        let base_path = Path::new(base);
-        if !base_path.exists() {
-            continue;
-        }
-        // Find the newest clang version directory
-        let mut versions: Vec<PathBuf> = match std::fs::read_dir(base_path) {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| p.is_dir())
-                .collect(),
-            Err(_) => continue,
-        };
-        versions.sort();
-        // Newest first
-        for version_dir in versions.iter().rev() {
-            let darwin_dir = version_dir.join("lib").join("darwin");
-            if darwin_dir.join("libclang_rt.osx.a").exists() {
-                println!(
-                    "cargo:warning=Adding clang_rt search path: {}",
-                    darwin_dir.display()
-                );
-                println!("cargo:rustc-link-search=native={}", darwin_dir.display());
-                return;
-            }
-        }
-    }
-
-    println!("cargo:warning=Could not find libclang_rt.osx.a; linking may fail if the prebuilt MNN requires it");
 }

@@ -45,10 +45,10 @@ impl OrtNode {
 
         let session = Session::builder()
             .map_err(|err| format!("failed to create ORT session builder: {err}"))?
-            .with_optimization_level(GraphOptimizationLevel::Disable)
+            .with_optimization_level(GraphOptimizationLevel::Level1)
             .map_err(|err| format!("failed to set optimization level: {err}"))?
             .with_memory_pattern(false)
-            .map_err(|err| format!("failed to disable memory pattern: {err}"))?
+            .map_err(|err| format!("failed to enable memory pattern: {err}"))?
             .commit_from_file(model_path)
             .map_err(|err| format!("failed to load ONNX model `{model_path}`: {err}"))?;
 
