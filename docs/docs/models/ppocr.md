@@ -48,10 +48,12 @@ Other detection and recognition fields in the example file are part of the runti
 
 | Task | Input | Output | Uses |
 |------|-------|--------|------|
-| `ocr` | `image/jpeg`, `image/png`, `image/webp`, `image/avif` | `application/json` with schema `ocr_v1` | `detection.{precision}.onnx` + `recognition.{precision}.onnx` + vocabulary |
+| `ocr` | `image/jpeg`, `image/png`, `image/webp`, `image/avif`, `application/octet-stream` | `application/json` with schema `ocr_v1` | `detection.{precision}.onnx` + `recognition.{precision}.onnx` + vocabulary |
+
+Tensor input skips detection preprocess only. See [Task Input Contract](../architecture/task-input.md).
 
 ## Limits
 
-- Input is image-only. Tensor input is not supported.
+- Input is image-only for the raw path. Tensor input skips detection preprocess only.
 - Recognition preprocessing normalizes crops to the configured static shape, for example `[3, 48, 320]`.
 - Current runtime support is ONNX only.

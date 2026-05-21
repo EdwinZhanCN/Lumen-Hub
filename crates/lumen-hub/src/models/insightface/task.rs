@@ -12,11 +12,13 @@ use serde::Deserialize;
 
 use super::metadata::{InsightFaceDetectionSpec, InsightFacePackSpec, InsightFaceRecognitionSpec};
 use crate::service::{
-    META_MODEL_ID, ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult, TaskSpec,
+    DEFAULT_TENSOR_MIME, FixedShapeTensorValidationOptions, IMAGE_TENSOR_LAYOUT, LetterboxTransform,
+    META_MODEL_ID, PREPROCESS_INSIGHTFACE_DET, ServiceError, ServiceResult, TaskHandler, TaskRequest,
+    TaskResult, TaskSpec, bytes_to_f32_le, is_tensor_input_request, parse_letterbox_transform,
+    parse_source_dimensions, validate_fixed_shape_tensor_request,
 };
 
 const SUPPORTED_IMAGE_MIMES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/avif"];
-const TENSOR_JSON_MIME: &str = "application/vnd.lumen.tensor+json";
 const JSON_MIME: &str = "application/json";
 const NUM_ANCHORS: usize = 2;
 const ARCFACE_TEMPLATE: [[f32; 2]; 5] = [
@@ -75,11 +77,7 @@ impl InsightFaceTask {
             &name,
             "InsightFace face detection, alignment, and embedding recognition",
         )
-        .with_input_mimes(
-            image_input_mimes()
-                .into_iter()
-                .chain([TENSOR_JSON_MIME.to_owned(), JSON_MIME.to_owned()]),
-        )
+        .with_input_mimes(image_input_mimes_with_tensor())
         .with_output_mime(JSON_MIME)
         .with_metadata("output_schema", "face_v1")
         .with_metadata(META_MODEL_ID, &model_id)
@@ -99,15 +97,82 @@ impl InsightFaceTask {
         })
     }
 
-    async fn run_face_recognition(&self, image: &DynamicImage) -> ServiceResult<FaceV1> {
+    fn det_input_shape(&self) -> Vec<usize> {
+        vec![
+            1,
+            3,
+            self.pack.detection.input_size[1],
+            self.pack.detection.input_size[0],
+        ]
+    }
+
+    async fn run_face_recognition_from_image(&self, image: &DynamicImage) -> ServiceResult<FaceV1> {
         let rgb = image.to_rgb8();
         let (det_input, transform) = det_preprocess(&rgb, &self.pack.detection);
+        self.run_face_pipeline(
+            &rgb,
+            &det_input,
+            transform,
+            rgb.width(),
+            rgb.height(),
+            |landmarks| *landmarks,
+            |bbox| *bbox,
+        )
+        .await
+    }
+
+    async fn run_face_recognition_from_det_tensor(
+        &self,
+        request: &TaskRequest,
+    ) -> ServiceResult<FaceV1> {
+        let expected_shape = self.det_input_shape();
+        validate_fixed_shape_tensor_request(
+            request,
+            FixedShapeTensorValidationOptions {
+                dtype: "fp32",
+                layout: IMAGE_TENSOR_LAYOUT,
+                preprocess_id: PREPROCESS_INSIGHTFACE_DET,
+                expected_shape: &expected_shape,
+            },
+        )?;
+        let source = parse_source_dimensions(request)?;
+        let transform = parse_letterbox_transform(request)?;
+        let det_input = bytes_to_f32_le(&request.payload)?;
+        let canvas = denormalize_det_nchw_to_rgb(
+            &det_input,
+            self.pack.detection.input_size[1],
+            self.pack.detection.input_size[0],
+            &self.pack.detection.mean,
+            &self.pack.detection.std,
+        );
+        self.run_face_pipeline(
+            &canvas,
+            &det_input,
+            transform,
+            source.width,
+            source.height,
+            |landmarks| source_landmarks_to_canvas(landmarks, transform),
+            |bbox| source_bbox_to_canvas(bbox, transform),
+        )
+        .await
+    }
+
+    async fn run_face_pipeline(
+        &self,
+        crop_image: &RgbImage,
+        det_input: &[f32],
+        transform: LetterboxTransform,
+        source_w: u32,
+        source_h: u32,
+        map_landmarks_for_crop: impl Fn(&[[f32; 2]; 5]) -> [[f32; 2]; 5],
+        map_bbox_for_crop: impl Fn(&[f32; 4]) -> [f32; 4],
+    ) -> ServiceResult<FaceV1> {
         let det_outputs = run_detection_node(
             self.det_node.as_ref(),
             self.context.as_ref(),
             &self.det_config.input_name,
             &self.det_config.output_names,
-            &det_input,
+            det_input,
             self.pack.detection.input_size[1],
             self.pack.detection.input_size[0],
         )
@@ -118,17 +183,26 @@ impl InsightFaceTask {
             &det_outputs,
             &self.pack.detection,
             &transform,
-            rgb.width(),
-            rgb.height(),
+            source_w,
+            source_h,
         )?;
         let detections = nms(candidates, self.pack.detection.nms_threshold);
 
         let mut faces = Vec::with_capacity(detections.len());
         for det in detections {
+            let crop_landmarks = map_landmarks_for_crop(&det.landmarks);
             let aligned = if self.pack.recognition.align_landmarks {
-                align_face(&rgb, &det.landmarks, self.pack.recognition.input_size)
+                align_face(
+                    crop_image,
+                    &crop_landmarks,
+                    self.pack.recognition.input_size,
+                )
             } else {
-                crop_face(&rgb, det.bbox, self.pack.recognition.input_size)
+                crop_face(
+                    crop_image,
+                    map_bbox_for_crop(&det.bbox),
+                    self.pack.recognition.input_size,
+                )
             };
             let rec_input = rec_preprocess(&aligned, &self.pack.recognition);
             let embedding = match run_recognition_node(
@@ -174,8 +248,12 @@ impl TaskHandler for InsightFaceTask {
     }
 
     async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
-        let image = decode_request_image(&request)?;
-        let result = self.run_face_recognition(&image).await?;
+        let result = if is_tensor_input_request(&request) {
+            self.run_face_recognition_from_det_tensor(&request).await?
+        } else {
+            let image = decode_request_image(&request)?;
+            self.run_face_recognition_from_image(&image).await?
+        };
         let json_bytes = result.to_json_bytes().map_err(|e| {
             ServiceError::Internal(format!("failed to serialize face_v1 result: {e}"))
         })?;
@@ -186,10 +264,12 @@ impl TaskHandler for InsightFaceTask {
     }
 }
 
-fn image_input_mimes() -> Vec<String> {
+fn image_input_mimes_with_tensor() -> Vec<String> {
     SUPPORTED_IMAGE_MIMES
         .iter()
-        .map(|mime| mime.to_string())
+        .copied()
+        .chain(std::iter::once(DEFAULT_TENSOR_MIME))
+        .map(str::to_owned)
         .collect()
 }
 
@@ -199,129 +279,55 @@ fn decode_request_image(request: &TaskRequest) -> ServiceResult<DynamicImage> {
             .map_err(|e| ServiceError::InvalidArgument(format!("failed to decode image: {e}")));
     }
 
-    if request.payload_mime == TENSOR_JSON_MIME || request.payload_mime == JSON_MIME {
-        let tensor: TensorImageInput = serde_json::from_slice(&request.payload).map_err(|e| {
-            ServiceError::InvalidArgument(format!("failed to decode tensor JSON input: {e}"))
-        })?;
-        let rgb = tensor.into_rgb_image()?;
-        return Ok(DynamicImage::ImageRgb8(rgb));
-    }
-
     Err(ServiceError::InvalidArgument(format!(
-        "unsupported face_recognition input MIME `{}`",
-        request.payload_mime
+        "unsupported face_recognition input MIME `{}`; supported image MIME types: {}",
+        request.payload_mime,
+        SUPPORTED_IMAGE_MIMES.join(", ")
     )))
 }
 
-#[derive(Debug, Deserialize)]
-struct TensorImageInput {
-    shape: Vec<usize>,
-    data: Vec<f32>,
-    #[serde(default)]
-    layout: Option<String>,
-    #[serde(default)]
-    value_range: Option<String>,
-}
-
-impl TensorImageInput {
-    fn into_rgb_image(self) -> ServiceResult<RgbImage> {
-        let layout = self
-            .layout
-            .as_deref()
-            .unwrap_or_else(|| infer_layout(&self.shape));
-        let (height, width) = image_hw(&self.shape, layout)?;
-        let expected = height
-            .checked_mul(width)
-            .and_then(|v| v.checked_mul(3))
-            .ok_or_else(|| ServiceError::InvalidArgument("tensor image is too large".to_owned()))?;
-        if self.data.len() != expected {
-            return Err(ServiceError::InvalidArgument(format!(
-                "tensor data length mismatch: expected {expected}, got {}",
-                self.data.len()
-            )));
-        }
-
-        let normalized = self
-            .value_range
-            .as_deref()
-            .map(|range| range == "0_1" || range == "0..1")
-            .unwrap_or_else(|| self.data.iter().copied().fold(0.0_f32, f32::max) <= 1.5);
-        let to_u8 = |v: f32| -> u8 {
-            let scaled = if normalized { v * 255.0 } else { v };
-            scaled.round().clamp(0.0, 255.0) as u8
-        };
-
-        let mut image = RgbImage::new(width as u32, height as u32);
-        for y in 0..height {
-            for x in 0..width {
-                let rgb = match layout {
-                    "hwc" => {
-                        let i = (y * width + x) * 3;
-                        [
-                            to_u8(self.data[i]),
-                            to_u8(self.data[i + 1]),
-                            to_u8(self.data[i + 2]),
-                        ]
-                    }
-                    "chw" => [
-                        to_u8(self.data[y * width + x]),
-                        to_u8(self.data[height * width + y * width + x]),
-                        to_u8(self.data[2 * height * width + y * width + x]),
-                    ],
-                    "nchw" => [
-                        to_u8(self.data[y * width + x]),
-                        to_u8(self.data[height * width + y * width + x]),
-                        to_u8(self.data[2 * height * width + y * width + x]),
-                    ],
-                    "nhwc" => {
-                        let i = (y * width + x) * 3;
-                        [
-                            to_u8(self.data[i]),
-                            to_u8(self.data[i + 1]),
-                            to_u8(self.data[i + 2]),
-                        ]
-                    }
-                    other => {
-                        return Err(ServiceError::InvalidArgument(format!(
-                            "unsupported tensor image layout `{other}`"
-                        )));
-                    }
-                };
-                image.put_pixel(x as u32, y as u32, Rgb(rgb));
+fn denormalize_det_nchw_to_rgb(
+    values: &[f32],
+    height: usize,
+    width: usize,
+    mean: &[f32; 3],
+    std: &[f32; 3],
+) -> RgbImage {
+    let plane = height * width;
+    let mut image = RgbImage::new(width as u32, height as u32);
+    for y in 0..height {
+        for x in 0..width {
+            let mut rgb = [0u8; 3];
+            for channel in 0..3 {
+                let normalized = values[channel * plane + y * width + x];
+                let pixel = normalized * std[channel] + mean[channel];
+                rgb[channel] = pixel.round().clamp(0.0, 255.0) as u8;
             }
+            image.put_pixel(x as u32, y as u32, Rgb(rgb));
         }
-        Ok(image)
     }
+    image
 }
 
-fn infer_layout(shape: &[usize]) -> &'static str {
-    match shape {
-        [_, _, 3] => "hwc",
-        [3, _, _] => "chw",
-        [1, 3, _, _] => "nchw",
-        [1, _, _, 3] => "nhwc",
-        _ => "hwc",
+fn source_landmarks_to_canvas(
+    landmarks: &[[f32; 2]; 5],
+    transform: LetterboxTransform,
+) -> [[f32; 2]; 5] {
+    let mut mapped = [[0.0; 2]; 5];
+    for (dst, src) in mapped.iter_mut().zip(landmarks) {
+        dst[0] = src[0] * transform.scale + transform.pad_x;
+        dst[1] = src[1] * transform.scale + transform.pad_y;
     }
+    mapped
 }
 
-fn image_hw(shape: &[usize], layout: &str) -> ServiceResult<(usize, usize)> {
-    match (shape, layout) {
-        ([h, w, 3], "hwc") => Ok((*h, *w)),
-        ([3, h, w], "chw") => Ok((*h, *w)),
-        ([1, 3, h, w], "nchw") => Ok((*h, *w)),
-        ([1, h, w, 3], "nhwc") => Ok((*h, *w)),
-        _ => Err(ServiceError::InvalidArgument(format!(
-            "tensor shape {:?} is incompatible with layout `{layout}`",
-            shape
-        ))),
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct LetterboxTransform {
-    scale: f32,
-    pad_x: f32,
-    pad_y: f32,
+fn source_bbox_to_canvas(bbox: &[f32; 4], transform: LetterboxTransform) -> [f32; 4] {
+    [
+        bbox[0] * transform.scale + transform.pad_x,
+        bbox[1] * transform.scale + transform.pad_y,
+        bbox[2] * transform.scale + transform.pad_x,
+        bbox[3] * transform.scale + transform.pad_y,
+    ]
 }
 
 fn det_preprocess(
@@ -775,23 +781,20 @@ fn l2_normalize(mut values: Vec<f32>) -> Vec<f32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TensorImageInput, iou};
+    use super::{LetterboxTransform, iou, source_bbox_to_canvas, source_landmarks_to_canvas};
 
     #[test]
-    fn parses_hwc_tensor_image() {
-        let image = TensorImageInput {
-            shape: vec![1, 2, 3],
-            data: vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            layout: Some("hwc".to_owned()),
-            value_range: Some("0_1".to_owned()),
-        }
-        .into_rgb_image()
-        .unwrap();
+    fn maps_source_geometry_back_to_canvas_space() {
+        let transform = LetterboxTransform {
+            scale: 0.5,
+            pad_x: 10.0,
+            pad_y: 20.0,
+        };
+        let landmarks = source_landmarks_to_canvas(&[[100.0, 200.0]; 5], transform);
+        assert_eq!(landmarks[0], [60.0, 120.0]);
 
-        assert_eq!(image.width(), 2);
-        assert_eq!(image.height(), 1);
-        assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0]);
-        assert_eq!(image.get_pixel(1, 0).0, [0, 255, 0]);
+        let bbox = source_bbox_to_canvas(&[100.0, 200.0, 140.0, 260.0], transform);
+        assert_eq!(bbox, [60.0, 120.0, 80.0, 150.0]);
     }
 
     #[test]

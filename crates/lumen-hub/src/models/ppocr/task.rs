@@ -13,7 +13,9 @@ use serde::Deserialize;
 
 use super::nodes::{CtcDecodeNode, DBPostProcessNode};
 use crate::service::{
-    META_MODEL_ID, ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult, TaskSpec,
+    DEFAULT_TENSOR_MIME, META_MODEL_ID, PREPROCESS_PPOCR_DET, ServiceError, ServiceResult,
+    TaskHandler, TaskRequest, TaskResult, TaskSpec, bytes_to_f32_le, is_tensor_input_request,
+    parse_source_dimensions, validate_dynamic_det_tensor_request,
 };
 
 // ---------------------------------------------------------------------------
@@ -169,7 +171,7 @@ impl PpocrTask {
         let name = name.into();
 
         let spec = TaskSpec::new(&name, "PP-OCR end-to-end text detection and recognition")
-            .with_input_mimes(image_input_mimes())
+            .with_input_mimes(image_input_mimes_with_tensor())
             .with_output_mime("application/json")
             .with_metadata("output_schema", "ocr_v1")
             .with_metadata(META_MODEL_ID, &model_id)
@@ -198,10 +200,14 @@ impl TaskHandler for PpocrTask {
     }
 
     async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
-        let image = image::load_from_memory(&request.payload)
-            .map_err(|e| ServiceError::InvalidArgument(format!("failed to decode image: {e}")))?;
-
-        let results = self.run_ocr(&image).await?;
+        let results = if is_tensor_input_request(&request) {
+            self.run_ocr_from_det_tensor(&request).await?
+        } else {
+            let image = image::load_from_memory(&request.payload).map_err(|e| {
+                ServiceError::InvalidArgument(format!("failed to decode image: {e}"))
+            })?;
+            self.run_ocr_from_image(&image).await?
+        };
 
         let json_bytes = results
             .to_json_bytes()
@@ -214,12 +220,10 @@ impl TaskHandler for PpocrTask {
 }
 
 impl PpocrTask {
-    /// Runs the full OCR pipeline on a decoded image.
-    async fn run_ocr(&self, image: &DynamicImage) -> ServiceResult<OCRV1> {
+    async fn run_ocr_from_image(&self, image: &DynamicImage) -> ServiceResult<OCRV1> {
         let rgb = image.to_rgb8();
         let (src_h, src_w) = (rgb.height(), rgb.width());
 
-        // 1. Detection preprocessing
         let (det_input, det_input_h, det_input_w, ratio_h, ratio_w) = det_preprocess(
             &rgb,
             self.det_config.limit_side_len,
@@ -228,20 +232,81 @@ impl PpocrTask {
             &self.det_config.std,
         );
 
-        // 2. Detection ONNX inference
+        self.run_ocr_pipeline(
+            &rgb,
+            &det_input,
+            det_input_h,
+            det_input_w,
+            ratio_h,
+            ratio_w,
+            src_w,
+            src_h,
+            |box_coords| *box_coords,
+        )
+        .await
+    }
+
+    async fn run_ocr_from_det_tensor(&self, request: &TaskRequest) -> ServiceResult<OCRV1> {
+        let descriptor = validate_dynamic_det_tensor_request(
+            request,
+            crate::service::DynamicDetTensorValidationOptions {
+                dtype: "fp32",
+                preprocess_id: PREPROCESS_PPOCR_DET,
+            },
+        )?;
+        let source = parse_source_dimensions(request)?;
+        let det_input = bytes_to_f32_le(&request.payload)?;
+        let det_input_h = descriptor.shape[2];
+        let det_input_w = descriptor.shape[3];
+        let ratio_h = det_input_h as f32 / source.height as f32;
+        let ratio_w = det_input_w as f32 / source.width as f32;
+        let crop_canvas = denormalize_nchw_to_rgb(
+            &det_input,
+            det_input_h,
+            det_input_w,
+            self.det_config.scale,
+            &self.det_config.mean,
+            &self.det_config.std,
+        );
+
+        self.run_ocr_pipeline(
+            &crop_canvas,
+            &det_input,
+            det_input_h,
+            det_input_w,
+            ratio_h,
+            ratio_w,
+            source.width,
+            source.height,
+            |box_coords| source_box_to_det_canvas(box_coords, ratio_w, ratio_h),
+        )
+        .await
+    }
+
+    async fn run_ocr_pipeline(
+        &self,
+        crop_image: &RgbImage,
+        det_input: &[f32],
+        det_input_h: usize,
+        det_input_w: usize,
+        ratio_h: f32,
+        ratio_w: f32,
+        src_w: u32,
+        src_h: u32,
+        map_box_for_crop: impl Fn(&[f32; 8]) -> [f32; 8],
+    ) -> ServiceResult<OCRV1> {
         let det_output = run_detection_node(
             self.det_node.as_ref(),
             self.context.as_ref(),
             &self.det_config.input_name,
             &self.det_config.output_name,
-            &det_input,
+            det_input,
             det_input_h,
             det_input_w,
         )
         .await
         .map_err(|e| ServiceError::Internal(format!("detection inference failed: {e}")))?;
 
-        // 3. DB post-process → boxes
         let boxes = run_db_postprocess(
             &self.db_node,
             self.context.as_ref(),
@@ -275,7 +340,8 @@ impl PpocrTask {
         let mut items = Vec::with_capacity(sorted_boxes.len());
 
         for (box_idx, box_coords) in sorted_boxes.iter().enumerate() {
-            let crop = match perspective_crop(&rgb, box_coords) {
+            let crop_box = map_box_for_crop(box_coords);
+            let crop = match perspective_crop(crop_image, &crop_box) {
                 Ok(c) => c,
                 Err(err) => {
                     if ppocr_debug_enabled() {
@@ -848,6 +914,48 @@ fn indices_to_text(indices: &[i64], vocab: &[String], blank_id: i64) -> String {
         .join("")
 }
 
+fn image_input_mimes_with_tensor() -> Vec<String> {
+    SUPPORTED_IMAGE_MIMES
+        .iter()
+        .copied()
+        .chain(std::iter::once(DEFAULT_TENSOR_MIME))
+        .map(str::to_owned)
+        .collect()
+}
+
+fn denormalize_nchw_to_rgb(
+    values: &[f32],
+    height: usize,
+    width: usize,
+    scale: f32,
+    mean: &[f32; 3],
+    std: &[f32; 3],
+) -> RgbImage {
+    let plane = height * width;
+    let mut image = RgbImage::new(width as u32, height as u32);
+    for y in 0..height {
+        for x in 0..width {
+            let mut rgb = [0u8; 3];
+            for channel in 0..3 {
+                let normalized = values[channel * plane + y * width + x];
+                let pixel = normalized * std[channel] + mean[channel];
+                rgb[channel] = (pixel / scale).round().clamp(0.0, 255.0) as u8;
+            }
+            image.put_pixel(x as u32, y as u32, Rgb(rgb));
+        }
+    }
+    image
+}
+
+fn source_box_to_det_canvas(box_coords: &[f32; 8], ratio_w: f32, ratio_h: f32) -> [f32; 8] {
+    let mut mapped = *box_coords;
+    for index in (0..8).step_by(2) {
+        mapped[index] *= ratio_w;
+        mapped[index + 1] *= ratio_h;
+    }
+    mapped
+}
+
 fn image_input_mimes() -> Vec<String> {
     SUPPORTED_IMAGE_MIMES
         .iter()
@@ -908,6 +1016,17 @@ mod tests {
     fn test_indices_to_text_with_nonzero_blank_id() {
         let vocab = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
         assert_eq!(indices_to_text(&[0, 1, 3], &vocab, 2), "abc");
+    }
+
+    #[test]
+    fn test_image_input_mimes_include_tensor_mime() {
+        assert!(image_input_mimes_with_tensor().contains(&DEFAULT_TENSOR_MIME.to_owned()));
+    }
+
+    #[test]
+    fn test_source_box_to_det_canvas_scales_coordinates() {
+        let mapped = source_box_to_det_canvas(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0], 2.0, 0.5);
+        assert_eq!(mapped, [20.0, 10.0, 60.0, 20.0, 100.0, 30.0, 140.0, 40.0]);
     }
 
     #[test]

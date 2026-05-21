@@ -466,12 +466,84 @@ impl BioClipClassifyTask {
         let labels = self.dataset.top_k(&values, top_k)?;
         labels_json_result(LabelsV1::new(labels, &self.model_id))
     }
+
+    fn batched_tensor_packets(
+        &self,
+        requests: &[TaskRequest],
+    ) -> ServiceResult<HashMap<String, MLPacket>> {
+        let expected_shape = self.preprocess.output_shape();
+        let mut batched_shape = expected_shape.clone();
+        batched_shape[0] = requests.len();
+
+        let tensor = match self.input_dtype {
+            MLPacketDataType::Float32 => {
+                let mut values = Vec::new();
+                for request in requests {
+                    self.tensor_input_descriptor(request)?;
+                    values.extend(bytes_to_f32_le(&request.payload)?);
+                }
+                HostTensor::Float32(values)
+            }
+            MLPacketDataType::Float16 => {
+                let mut values = Vec::new();
+                for request in requests {
+                    self.tensor_input_descriptor(request)?;
+                    values.extend(bytes_to_f16_le(&request.payload)?);
+                }
+                HostTensor::Float16(values)
+            }
+            other => {
+                return Err(ServiceError::Internal(format!(
+                    "BioCLIP image ONNX input `{}` has unsupported dtype {:?}",
+                    self.input_name, other
+                )));
+            }
+        };
+
+        let packet = self
+            .context
+            .packet_from_host_tensor(
+                MLPacketDescriptor::new(self.input_dtype, batched_shape),
+                tensor,
+            )
+            .map_err(ServiceError::Internal)?;
+
+        Ok(HashMap::from([(self.input_name.clone(), packet)]))
+    }
 }
 
 #[async_trait]
 impl TaskHandler for BioClipClassifyTask {
     fn spec(&self) -> &TaskSpec {
         &self.spec
+    }
+
+    fn batch_key(&self, request: &TaskRequest) -> ServiceResult<Option<BatchKey>> {
+        if normalized_meta(request.meta.get(META_INPUT_KIND)).as_deref() != Some(INPUT_KIND_TENSOR)
+        {
+            return Ok(None);
+        }
+        let descriptor = self.tensor_input_descriptor(request)?;
+        Ok(Some(BatchKey::new(format!(
+            "model.id={}\nmodel.version={}\npayload_mime={}\ndtype={}\nshape_tail={:?}\nlayout={}\nformat={}\nbyte_order={}\npreprocess.id={}",
+            request
+                .meta
+                .get(META_MODEL_ID)
+                .map(String::as_str)
+                .unwrap_or(&self.model_id),
+            request
+                .meta
+                .get(META_MODEL_VERSION)
+                .map(String::as_str)
+                .unwrap_or(""),
+            DEFAULT_TENSOR_MIME,
+            descriptor.dtype,
+            &descriptor.shape[1..],
+            descriptor.layout,
+            descriptor.format,
+            descriptor.byte_order,
+            CLIP_IMAGE_PREPROCESS_ID
+        ))))
     }
 
     async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
@@ -494,6 +566,47 @@ impl TaskHandler for BioClipClassifyTask {
         };
 
         self.labels_result_from_packet(packet, top_k).await
+    }
+
+    async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> {
+        if requests.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let batch_len = requests.len();
+        let top_k_values: Vec<usize> = requests
+            .iter()
+            .map(|request| top_k_from_request(request, self.dataset.len()))
+            .collect::<ServiceResult<_>>()?;
+
+        let packet = self
+            .run_pipeline(self.batched_tensor_packets(&requests)?)
+            .await?;
+        let (values, shape) = float32_values_and_shape(packet).await?;
+        if shape.first().copied() != Some(batch_len) {
+            return Err(ServiceError::Internal(format!(
+                "BioCLIP batch output shape {:?} does not match batch size {batch_len}",
+                shape
+            )));
+        }
+        let row_width = values.len().checked_div(batch_len).ok_or_else(|| {
+            ServiceError::Internal("BioCLIP batch output has invalid batch size".to_owned())
+        })?;
+        if row_width * batch_len != values.len() {
+            return Err(ServiceError::Internal(format!(
+                "BioCLIP batch output element count {} is not divisible by batch size {batch_len}",
+                values.len()
+            )));
+        }
+
+        values
+            .chunks(row_width)
+            .zip(top_k_values)
+            .map(|(row, top_k)| {
+                let labels = self.dataset.top_k(row, top_k)?;
+                labels_json_result(LabelsV1::new(labels, &self.model_id))
+            })
+            .collect()
     }
 }
 

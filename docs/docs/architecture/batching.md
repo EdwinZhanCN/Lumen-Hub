@@ -33,7 +33,7 @@ graph TD
     subgraph model["model (Execution)"]
         CLIP
         SigLIP
-        PPOCR
+        BioCLIP
         Concat[Concat tensors along batch dim]
         Forward[Single forward pass]
         Split[Split outputs]
@@ -45,7 +45,7 @@ graph TD
     Registry --> HBatch
     HBatch --> CLIP
     HBatch --> SigLIP
-    HBatch --> PPOCR
+    HBatch --> BioCLIP
 ```
 
 ## BatchKey: Grouping Core
@@ -119,7 +119,11 @@ flowchart TD
 
 | Scenario | Batched? | Reason |
 |---|---|---|
-| Preprocessed tensors (`preprocess.skip=true`) | ✅ | Shapes known, directly concatenable |
+| Embedding image tensors (`preprocess.skip=true`, fixed shape) | ✅ | Shapes known, single forward, directly concatenable |
+| BioCLIP classify image tensors | ✅ | Same vision encoder batching as CLIP |
 | Raw images (`image/jpeg`) | ❌ | Uneven preprocessing cost, unsafe to concatenate |
 | Raw text | ❌ | Tokenized sequences vary in length, need padding |
+| OCR / face recognition (multi-stage pipelines) | ❌ | Dynamic shapes and variable instance counts |
 | Model doesn't implement `batch_key()` | ❌ | Returns `None`, opts out by default |
+
+See [Task Input Contract](./task-input.md) for tensor metadata requirements.

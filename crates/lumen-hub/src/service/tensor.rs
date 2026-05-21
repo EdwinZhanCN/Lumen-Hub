@@ -29,8 +29,34 @@ pub const META_PREPROCESS_SKIP: &str = "lumen.preprocess.skip";
 pub const META_MODEL_ID: &str = "lumen.model.id";
 pub const META_MODEL_VERSION: &str = "lumen.model.version";
 
+pub const META_SOURCE_WIDTH: &str = "lumen.source.width";
+pub const META_SOURCE_HEIGHT: &str = "lumen.source.height";
+pub const META_LETTERBOX_SCALE: &str = "lumen.letterbox.scale";
+pub const META_LETTERBOX_PAD_X: &str = "lumen.letterbox.pad_x";
+pub const META_LETTERBOX_PAD_Y: &str = "lumen.letterbox.pad_y";
+
+pub const PREPROCESS_CLIP_IMAGE: &str = "clip_image_preprocess_v1";
+pub const PREPROCESS_SIGLIP_IMAGE: &str = "siglip_image_preprocess_v1";
+pub const PREPROCESS_PPOCR_DET: &str = "ppocr_det_v1";
+pub const PREPROCESS_INSIGHTFACE_DET: &str = "insightface_det_v1";
+
+pub const IMAGE_TENSOR_LAYOUT: &str = "NCHW";
+
 pub const TENSOR_FORMAT_CONTIGUOUS: &str = "contiguous";
 pub const TENSOR_BYTE_ORDER_LITTLE: &str = "little";
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LetterboxTransform {
+    pub scale: f32,
+    pub pad_x: f32,
+    pub pad_y: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceDimensions {
+    pub width: u32,
+    pub height: u32,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TensorDescriptor {
@@ -46,6 +72,24 @@ pub struct TensorValidationOptions<'a> {
     pub dtype: &'a str,
     pub layout: &'a str,
     pub preprocess_id: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct FixedShapeTensorValidationOptions<'a> {
+    pub dtype: &'a str,
+    pub layout: &'a str,
+    pub preprocess_id: &'a str,
+    pub expected_shape: &'a [usize],
+}
+
+#[derive(Debug, Clone)]
+pub struct DynamicDetTensorValidationOptions<'a> {
+    pub dtype: &'a str,
+    pub preprocess_id: &'a str,
+}
+
+pub fn is_tensor_input_request(request: &TaskRequest) -> bool {
+    normalized_meta(request.meta.get(META_INPUT_KIND)).as_deref() == Some(INPUT_KIND_TENSOR)
 }
 
 pub fn validate_tensor_request(
@@ -104,6 +148,75 @@ pub fn validate_tensor_request(
         layout: options.layout.to_owned(),
         format: TENSOR_FORMAT_CONTIGUOUS.to_owned(),
         byte_order: TENSOR_BYTE_ORDER_LITTLE.to_owned(),
+    })
+}
+
+pub fn validate_fixed_shape_tensor_request(
+    request: &TaskRequest,
+    options: FixedShapeTensorValidationOptions<'_>,
+) -> ServiceResult<TensorDescriptor> {
+    let descriptor = validate_tensor_request(
+        request,
+        TensorValidationOptions {
+            dtype: options.dtype,
+            layout: options.layout,
+            preprocess_id: options.preprocess_id,
+        },
+    )?;
+    if descriptor.shape != options.expected_shape {
+        return Err(ServiceError::InvalidArgument(format!(
+            "tensor shape must be {:?}, got {:?}",
+            options.expected_shape, descriptor.shape
+        )));
+    }
+    Ok(descriptor)
+}
+
+pub fn validate_dynamic_det_tensor_request(
+    request: &TaskRequest,
+    options: DynamicDetTensorValidationOptions<'_>,
+) -> ServiceResult<TensorDescriptor> {
+    let descriptor = validate_tensor_request(
+        request,
+        TensorValidationOptions {
+            dtype: options.dtype,
+            layout: IMAGE_TENSOR_LAYOUT,
+            preprocess_id: options.preprocess_id,
+        },
+    )?;
+    if descriptor.shape.len() != 4
+        || descriptor.shape[0] != 1
+        || descriptor.shape[1] != 3
+        || !is_multiple_of_32(descriptor.shape[2])
+        || !is_multiple_of_32(descriptor.shape[3])
+    {
+        return Err(ServiceError::InvalidArgument(format!(
+            "detection tensor shape must be [1,3,H,W] with H and W multiples of 32, got {:?}",
+            descriptor.shape
+        )));
+    }
+    Ok(descriptor)
+}
+
+pub fn parse_source_dimensions(request: &TaskRequest) -> ServiceResult<SourceDimensions> {
+    let width = parse_positive_u32_meta(request, META_SOURCE_WIDTH)?;
+    let height = parse_positive_u32_meta(request, META_SOURCE_HEIGHT)?;
+    Ok(SourceDimensions { width, height })
+}
+
+pub fn parse_letterbox_transform(request: &TaskRequest) -> ServiceResult<LetterboxTransform> {
+    let scale = parse_finite_f32_meta(request, META_LETTERBOX_SCALE)?;
+    let pad_x = parse_finite_f32_meta(request, META_LETTERBOX_PAD_X)?;
+    let pad_y = parse_finite_f32_meta(request, META_LETTERBOX_PAD_Y)?;
+    if scale <= 0.0 {
+        return Err(ServiceError::InvalidArgument(format!(
+            "`{META_LETTERBOX_SCALE}` must be greater than zero"
+        )));
+    }
+    Ok(LetterboxTransform {
+        scale,
+        pad_x,
+        pad_y,
     })
 }
 
@@ -261,6 +374,36 @@ fn normalized_mime(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
+fn is_multiple_of_32(value: usize) -> bool {
+    value >= 32 && value.is_multiple_of(32)
+}
+
+fn parse_positive_u32_meta(request: &TaskRequest, key: &'static str) -> ServiceResult<u32> {
+    let value = require_meta(&request.meta, key)?;
+    let parsed = value.parse::<u32>().map_err(|err| {
+        ServiceError::InvalidArgument(format!("invalid `{key}` `{value}`: {err}"))
+    })?;
+    if parsed == 0 {
+        return Err(ServiceError::InvalidArgument(format!(
+            "`{key}` must be greater than zero"
+        )));
+    }
+    Ok(parsed)
+}
+
+fn parse_finite_f32_meta(request: &TaskRequest, key: &'static str) -> ServiceResult<f32> {
+    let value = require_meta(&request.meta, key)?;
+    let parsed = value.parse::<f32>().map_err(|err| {
+        ServiceError::InvalidArgument(format!("invalid `{key}` `{value}`: {err}"))
+    })?;
+    if !parsed.is_finite() {
+        return Err(ServiceError::InvalidArgument(format!(
+            "`{key}` must be finite"
+        )));
+    }
+    Ok(parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +456,70 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn validates_dynamic_det_tensor_shape() {
+        let request = TaskRequest::new(vec![0; 1 * 3 * 736 * 1280 * 4], DEFAULT_TENSOR_MIME)
+            .with_meta(META_INPUT_KIND, INPUT_KIND_TENSOR)
+            .with_meta(META_TENSOR_DTYPE, "fp32")
+            .with_meta(META_TENSOR_SHAPE, "[1,3,736,1280]")
+            .with_meta(META_TENSOR_LAYOUT, IMAGE_TENSOR_LAYOUT)
+            .with_meta(META_TENSOR_FORMAT, TENSOR_FORMAT_CONTIGUOUS)
+            .with_meta(META_TENSOR_BYTE_ORDER, TENSOR_BYTE_ORDER_LITTLE)
+            .with_meta(META_PREPROCESS_ID, PREPROCESS_PPOCR_DET)
+            .with_meta(META_PREPROCESS_SKIP, "true");
+
+        let descriptor = validate_dynamic_det_tensor_request(
+            &request,
+            DynamicDetTensorValidationOptions {
+                dtype: "fp32",
+                preprocess_id: PREPROCESS_PPOCR_DET,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(descriptor.shape, vec![1, 3, 736, 1280]);
+    }
+
+    #[test]
+    fn rejects_det_tensor_shape_not_aligned_to_32() {
+        let request = TaskRequest::new(vec![0; 1 * 3 * 100 * 100 * 4], DEFAULT_TENSOR_MIME)
+            .with_meta(META_INPUT_KIND, INPUT_KIND_TENSOR)
+            .with_meta(META_TENSOR_DTYPE, "fp32")
+            .with_meta(META_TENSOR_SHAPE, "[1,3,100,100]")
+            .with_meta(META_TENSOR_LAYOUT, IMAGE_TENSOR_LAYOUT)
+            .with_meta(META_TENSOR_FORMAT, TENSOR_FORMAT_CONTIGUOUS)
+            .with_meta(META_TENSOR_BYTE_ORDER, TENSOR_BYTE_ORDER_LITTLE)
+            .with_meta(META_PREPROCESS_ID, PREPROCESS_PPOCR_DET)
+            .with_meta(META_PREPROCESS_SKIP, "true");
+
+        assert!(
+            validate_dynamic_det_tensor_request(
+                &request,
+                DynamicDetTensorValidationOptions {
+                    dtype: "fp32",
+                    preprocess_id: PREPROCESS_PPOCR_DET,
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_source_and_letterbox_metadata() {
+        let request = TaskRequest::new(Vec::<u8>::new(), DEFAULT_TENSOR_MIME)
+            .with_meta(META_SOURCE_WIDTH, "1920")
+            .with_meta(META_SOURCE_HEIGHT, "1080")
+            .with_meta(META_LETTERBOX_SCALE, "0.3333333")
+            .with_meta(META_LETTERBOX_PAD_X, "0")
+            .with_meta(META_LETTERBOX_PAD_Y, "140");
+
+        let source = parse_source_dimensions(&request).unwrap();
+        let transform = parse_letterbox_transform(&request).unwrap();
+
+        assert_eq!(source.width, 1920);
+        assert_eq!(source.height, 1080);
+        assert_eq!(transform.pad_y, 140.0);
     }
 }
