@@ -46,12 +46,14 @@ dist build --artifacts=global --tag <tag>
 ## Jetson Runtime
 
 `linux-arm64-jetson` is built for JetPack 6+ and dynamic ONNX Runtime CUDA.
-Install a JetPack-compatible `onnxruntime-gpu` package on the Jetson, for
-example from the Jetson AI Lab `jp6/cu126` index, or point Lumen at a custom
-runtime:
+`lumen-cli start --profile linux-arm64-jetson` checks for `onnxruntime-gpu`
+through `python3`, detects the local CUDA 12 minor version, and installs
+`onnxruntime-gpu` from the matching Jetson AI Lab index when missing: `cu126`,
+`cu128`, or `cu129`. If CUDA cannot be detected, it defaults to `cu126`.
+
+You can still point Lumen at a custom runtime:
 
 ```bash
-python3 -m pip install --index-url https://pypi.jetson-ai-lab.io/jp6/cu126 onnxruntime-gpu==1.23.0
 export LUMNN_ORT_DYLIB_PATH=/path/to/onnxruntime/capi/libonnxruntime.so
 ./bin/lumen-hub --config /path/to/lumen-config.json
 ```
@@ -59,9 +61,9 @@ export LUMNN_ORT_DYLIB_PATH=/path/to/onnxruntime/capi/libonnxruntime.so
 The package launcher checks common wheel install locations before falling back
 to `LUMNN_ORT_DYLIB_PATH`.
 
-The Rust `ort` binding is built against ONNX Runtime API 23 so Jetson AI Lab's
-`onnxruntime-gpu==1.23.0` wheel is accepted. Newer 1.24.x runtimes remain valid
-because ONNX Runtime can provide older C API tables.
+The Rust `ort` binding is built against ONNX Runtime API 23, so 1.23.x and
+newer runtimes are accepted when the wheel provides the required CUDA execution
+provider.
 
 Each artifact is written under `dist/lumen-hub-<profile>/` with this layout:
 

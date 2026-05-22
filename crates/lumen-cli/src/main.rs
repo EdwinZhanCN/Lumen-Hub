@@ -19,6 +19,8 @@ const OFFICIAL_RELEASE_DOWNLOAD_PREFIX: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/";
 const OFFICIAL_RELEASE_LATEST_DOWNLOAD_PREFIX: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/";
+const JETSON_PROFILE: &str = "linux-arm64-jetson";
+const JETSON_ORT_PACKAGE: &str = "onnxruntime-gpu";
 
 fn main() -> ExitCode {
     match run(env::args().collect()) {
@@ -276,24 +278,188 @@ fn start(args: &[String]) -> Result<(), CliError> {
         .join(&manifest.version)
         .join(&artifact.profile);
     let hub = ensure_hub_installed(&install_dir, artifact)?;
+    let jetson_ort_dylib = ensure_jetson_onnxruntime(profile)?;
 
     log::step(format!("starting {}", hub.display()))?;
     outro("Lumen Hub output follows.")?;
-    let status = Command::new(&hub)
+    let mut command = Command::new(&hub);
+    command
         .arg("--config")
         .arg(&config_path)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(|source| CliError::SpawnHub {
-            path: hub.clone(),
-            source,
-        })?;
+        .stderr(Stdio::inherit());
+    if let Some(path) = jetson_ort_dylib {
+        command.env("LUMNN_ORT_DYLIB_PATH", path);
+    }
+    let status = command.status().map_err(|source| CliError::SpawnHub {
+        path: hub.clone(),
+        source,
+    })?;
     if !status.success() {
         return Err(CliError::HubExited(status.code()));
     }
     Ok(())
+}
+
+fn ensure_jetson_onnxruntime(profile: &str) -> Result<Option<PathBuf>, CliError> {
+    if profile != JETSON_PROFILE {
+        return Ok(None);
+    }
+
+    if let Some(path) = locate_python_onnxruntime_dylib() {
+        log::success(format!(
+            "Jetson ONNX Runtime already installed: {}",
+            path.display()
+        ))?;
+        return Ok(Some(path));
+    }
+
+    let cuda_version = detect_cuda_version();
+    let cuda_index = cuda_version
+        .as_deref()
+        .and_then(jetson_cuda_index_for_version)
+        .unwrap_or("cu126");
+    let index_url = format!("https://pypi.jetson-ai-lab.io/jp6/{cuda_index}");
+    let package_spec = env::var("LUMEN_JETSON_ORT_VERSION")
+        .map(|version| format!("{JETSON_ORT_PACKAGE}=={version}"))
+        .unwrap_or_else(|_| JETSON_ORT_PACKAGE.to_owned());
+
+    let detected = cuda_version
+        .as_deref()
+        .map(|value| format!("CUDA {value}"))
+        .unwrap_or_else(|| "CUDA version unknown, defaulting to cu126".to_owned());
+    log::step(format!(
+        "installing Jetson ONNX Runtime ({detected}, index {index_url})"
+    ))?;
+
+    run_python_pip_install(&index_url, &package_spec, false).or_else(|first_err| {
+        log::warning(format!(
+            "system pip install failed ({first_err}); retrying with --user"
+        ))?;
+        run_python_pip_install(&index_url, &package_spec, true)
+    })?;
+
+    let path = locate_python_onnxruntime_dylib().ok_or_else(|| {
+        CliError::InvalidArgument(
+            "onnxruntime-gpu installed, but libonnxruntime.so was not found through python3"
+                .to_owned(),
+        )
+    })?;
+    log::success(format!("Jetson ONNX Runtime ready: {}", path.display()))?;
+    Ok(Some(path))
+}
+
+fn run_python_pip_install(index_url: &str, package_spec: &str, user: bool) -> Result<(), CliError> {
+    let mut command = Command::new("python3");
+    command.args([
+        "-m",
+        "pip",
+        "install",
+        "--extra-index-url",
+        index_url,
+        package_spec,
+    ]);
+    if user {
+        command.arg("--user");
+    }
+    let status = command
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(CliError::Io)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(CliError::InvalidArgument(format!(
+            "`python3 -m pip install {package_spec}` failed with status {status}"
+        )))
+    }
+}
+
+fn locate_python_onnxruntime_dylib() -> Option<PathBuf> {
+    let script = r#"
+import pathlib
+try:
+    import onnxruntime
+except Exception:
+    raise SystemExit(1)
+path = pathlib.Path(onnxruntime.__file__).parent / "capi" / "libonnxruntime.so"
+if path.is_file():
+    print(path)
+    raise SystemExit(0)
+raise SystemExit(1)
+"#;
+    command_stdout("python3", &["-c", script]).and_then(|stdout| {
+        let path = stdout.lines().next()?.trim();
+        if path.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(path))
+        }
+    })
+}
+
+fn detect_cuda_version() -> Option<String> {
+    if let Some(version) = command_stdout("nvcc", &["--version"]).and_then(|text| {
+        text.split("release ")
+            .nth(1)
+            .and_then(|rest| rest.split([',', ' ']).next())
+            .map(str::to_owned)
+    }) {
+        return Some(version);
+    }
+
+    for path in [
+        "/usr/local/cuda/version.json",
+        "/usr/local/cuda/version.txt",
+        "/usr/local/cuda/version",
+    ] {
+        if let Ok(contents) = fs::read_to_string(path)
+            && let Some(version) = first_cuda_version_in_text(&contents)
+        {
+            return Some(version);
+        }
+    }
+
+    None
+}
+
+fn first_cuda_version_in_text(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    for start in 0..bytes.len() {
+        if !bytes[start].is_ascii_digit() {
+            continue;
+        }
+        let mut end = start;
+        let mut dots = 0;
+        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+            if bytes[end] == b'.' {
+                dots += 1;
+            }
+            end += 1;
+        }
+        if dots >= 1 {
+            let candidate = &text[start..end];
+            if candidate.starts_with("12.") {
+                return Some(candidate.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn jetson_cuda_index_for_version(version: &str) -> Option<&'static str> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    match (major, minor) {
+        (12, 6) | (12, 7) => Some("cu126"),
+        (12, 8) => Some("cu128"),
+        (12, 9) => Some("cu129"),
+        _ => None,
+    }
 }
 
 fn read_bootstrap(path: &Path) -> Result<Bootstrap, CliError> {
@@ -1695,6 +1861,27 @@ mod tests {
             .expect("linux-arm64 backend is available");
         assert_eq!(backend.name, "cpu-only");
         assert_eq!(backend.release_profile, "linux-arm64");
+    }
+
+    #[test]
+    fn maps_cuda_versions_to_jetson_ai_lab_indexes() {
+        assert_eq!(jetson_cuda_index_for_version("12.6"), Some("cu126"));
+        assert_eq!(jetson_cuda_index_for_version("12.7"), Some("cu126"));
+        assert_eq!(jetson_cuda_index_for_version("12.8"), Some("cu128"));
+        assert_eq!(jetson_cuda_index_for_version("12.9"), Some("cu129"));
+        assert_eq!(jetson_cuda_index_for_version("13.0"), None);
+    }
+
+    #[test]
+    fn extracts_cuda_version_from_text() {
+        assert_eq!(
+            first_cuda_version_in_text(r#"{ "cuda": { "version": "12.6.68" } }"#).as_deref(),
+            Some("12.6.68")
+        );
+        assert_eq!(
+            first_cuda_version_in_text("CUDA Version 12.8.0").as_deref(),
+            Some("12.8.0")
+        );
     }
 
     #[test]

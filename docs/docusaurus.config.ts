@@ -6,6 +6,7 @@ const config: Config = {
   title: "Lumen Hub",
   tagline: "Unified Multimodal Inference Gateway",
   favicon: "img/favicon.ico",
+  trailingSlash: false,
 
   future: {
     v4: true,
