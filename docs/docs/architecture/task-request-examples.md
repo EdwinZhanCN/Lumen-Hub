@@ -31,7 +31,7 @@ Each chunk uses this shape (single-chunk requests omit `seq` / `total` or set `s
 | `task` | yes | Registered task name (see below) |
 | `payload_mime` | yes | Input MIME type |
 | `payload` | yes | Raw bytes (image, text UTF-8, or tensor) |
-| `meta.service` | when multiple services are registered | e.g. `clip`, `siglip`, `ppocr`, `insightface` |
+| `meta.service` | when multiple services are registered | e.g. `clip`, `siglip`, `ocr`, `face`, `bioclip` |
 | `correlation_id` | recommended | Tracing / response correlation |
 
 When `meta.service` is omitted and exactly one service is registered, the hub routes to that service automatically.
@@ -185,7 +185,7 @@ Batching requires the tensor path above plus `server.batching.enabled=true`. Onl
   "payload_mime": "image/png",
   "payload": "<png bytes>",
   "meta": {
-    "service": "clip",
+    "service": "bioclip",
     "top_k": "10"
   }
 }
@@ -202,7 +202,7 @@ Optional Top-K meta keys (any one): `TopK`, `topK`, `top_k`, `top-k`, `lumen.top
   "payload_mime": "application/octet-stream",
   "payload": "<602112 bytes: 1×3×224×224 fp32 little-endian>",
   "meta": {
-    "service": "clip",
+    "service": "bioclip",
     "top_k": "10",
     "lumen.input.kind": "tensor",
     "lumen.preprocess.skip": "true",
@@ -231,7 +231,7 @@ Optional Top-K meta keys (any one): `TopK`, `topK`, `top_k`, `top-k`, `lumen.top
   "payload_mime": "image/png",
   "payload": "<png bytes>",
   "meta": {
-    "service": "ppocr"
+    "service": "ocr"
   }
 }
 ```
@@ -247,7 +247,7 @@ Client must supply a detection-ready NCHW tensor and original image dimensions. 
   "payload_mime": "application/octet-stream",
   "payload": "<1×3×736×1280 fp32 little-endian bytes>",
   "meta": {
-    "service": "ppocr",
+    "service": "ocr",
     "lumen.input.kind": "tensor",
     "lumen.preprocess.skip": "true",
     "lumen.preprocess.id": "ppocr_det_v1",
@@ -279,12 +279,12 @@ Server still runs DB post-processing, per-box recognition, and CTC decode. Outpu
   "payload_mime": "image/png",
   "payload": "<png bytes>",
   "meta": {
-    "service": "insightface"
+    "service": "face"
   }
 }
 ```
 
-### Tensor — detection preprocess skip (Plan A)
+### Tensor — detection preprocess skip
 
 Client performs letterbox, normalize, and NCHW packing. Shape must match pack `detection.input_size` (e.g. `[1,3,640,640]` for antelopev2). Letterbox metadata is required so bbox / landmarks map back to the original image.
 
@@ -295,7 +295,7 @@ Client performs letterbox, normalize, and NCHW packing. Shape must match pack `d
   "payload_mime": "application/octet-stream",
   "payload": "<4915200 bytes: 1×3×640×640 fp32 little-endian>",
   "meta": {
-    "service": "insightface",
+    "service": "face",
     "lumen.input.kind": "tensor",
     "lumen.preprocess.skip": "true",
     "lumen.preprocess.id": "insightface_det_v1",
@@ -323,9 +323,9 @@ Server still runs SCRFD post-processing, NMS, face alignment, and ArcFace recogn
 |---|---|---|---|---|
 | `semantic_text_embed` | `clip`, `siglip` | `text/plain` | — | no |
 | `semantic_image_embed` | `clip`, `siglip` | `image/*` | `clip_image_preprocess_v1` / `siglip_image_preprocess_v1` | yes |
-| `bioclip_classify` | `clip` | `image/*` | `clip_image_preprocess_v1` | yes |
-| `ocr` | `ppocr` | `image/*` | `ppocr_det_v1` + source meta | no |
-| `face_recognition` | `insightface` | `image/*` | `insightface_det_v1` + source/letterbox meta | no |
+| `bioclip_classify` | `bioclip` | `image/*` | `clip_image_preprocess_v1` | yes |
+| `ocr` | `ocr` | `image/*` | `ppocr_det_v1` + source meta | no |
+| `face_recognition` | `face` | `image/*` | `insightface_det_v1` + source/letterbox meta | no |
 
 ## Deprecated
 

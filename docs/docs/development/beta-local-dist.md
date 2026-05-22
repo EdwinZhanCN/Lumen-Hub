@@ -55,7 +55,7 @@ You can still point Lumen at a custom runtime:
 
 ```bash
 export LUMNN_ORT_DYLIB_PATH=/path/to/onnxruntime/capi/libonnxruntime.so
-./bin/lumen-hub --config /path/to/lumen-config.json
+./bin/lumen-hub --config ~/.lumen/config.yaml
 ```
 
 The package launcher checks common wheel install locations before falling back
@@ -78,7 +78,7 @@ checksums.txt
 ## Run
 
 ```bash
-./bin/lumen-hub --config /path/to/lumen-config.json
+./bin/lumen-hub --config ~/.lumen/config.yaml
 ```
 
 On startup, `lumen-hub` downloads missing model files into `metadata.cache_dir`, validates `model_info.json`, then builds the service hub.

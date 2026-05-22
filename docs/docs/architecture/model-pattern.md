@@ -4,9 +4,9 @@ sidebar_position: 4
 
 # Model Integration Pattern
 
-Every model in Lumen Hub follows the same integration pattern: **Factory → Service → Pipeline → Task**.
+Every model follows the same integration pattern: **Factory → Service → Pipeline → Task**.
 
-## Pattern Overview
+## Pattern overview
 
 ```mermaid
 graph TD
@@ -18,28 +18,19 @@ graph TD
     TH1 -->|handle| Single[Single-request inference]
     TH1 -->|batch_key| BCompat[Batching compatibility key]
     TH1 -->|handle_batch| Batch[Batched inference]
-    TH1 --> Pipeline[MLPipeline]
-    Pipeline --> Backend[ONNX / Candle pipeline]
+    TH1 --> Pipeline[MLPipeline via lumnn]
 ```
 
-## 1. ModelFactory (`factory.rs`)
+## 1. Service construction (`service.rs`)
 
-Implements the `ModelFactory` trait. Responsibilities:
-- Discover and load model files
-- Select device (CPU/CUDA/Metal)
-- Set model context (input/output names, dtype, shape constraints)
+`ClipService::from_config`, `SiglipService::from_config`, etc.:
 
-```rust
-impl ModelFactory for ClipModelFactory {
-    fn build(&self, config: &str, context: Arc<MLContext>) -> ServiceResult<InferenceServiceInstance> {
-        // Load ONNX model → create ClipService
-    }
-}
-```
+- Load `model_info.json` from `{cache_dir}/{model}/`
+- Parse model-specific `task_metadata`
+- Build `MLPipeline` per task
+- Register `TaskHandler` instances on a `TaskRegistry`
 
-## 2. InferenceService (`service.rs`)
-
-The entry point for a service. Implements the `InferenceService` trait:
+## 2. InferenceService
 
 ```rust
 pub trait InferenceService: Send + Sync {
@@ -49,67 +40,44 @@ pub trait InferenceService: Send + Sync {
 }
 ```
 
-One `InferenceService` can contain multiple tasks (e.g., CLIP image embedding + text embedding).
+One service can expose multiple tasks (for example SigLIP `semantic_text_embed` + `semantic_image_embed`).
 
 ## 3. Pipeline (`pipeline.rs`)
 
-Connects model forward pass and postprocessing nodes into an `MLPipeline`:
+Connects forward nodes and postprocessing (for example L2 normalize) in `lumnn::MLPipeline`.
 
-```mermaid
-flowchart LR
-    Input[Input] --> Forward[ONNX Forward]
-    Forward --> L2[L2NormalizeNode]
-    L2 --> Output[Output embedding]
-```
-
-Pipeline is provided by `lumnn` and supports ONNX and Candle backends.
+Backends come from `MLContext` (ONNX or MNN session per component).
 
 ## 4. TaskHandler (`task.rs`)
-
-Each task implements the `TaskHandler` trait:
 
 ```rust
 pub trait TaskHandler: Send + Sync {
     fn spec(&self) -> &TaskSpec;
-
-    // Default: returns None (opts out of batching)
-    fn batch_key(&self, request: &TaskRequest) -> ServiceResult<Option<BatchKey>> {
-        Ok(None)
-    }
-
+    fn batch_key(&self, request: &TaskRequest) -> ServiceResult<Option<BatchKey>> { Ok(None) }
     async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult>;
-
-    // Default: calls handle() one by one
-    async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> {
-        let mut results = Vec::with_capacity(requests.len());
-        for request in requests {
-            results.push(self.handle(request).await?);
-        }
-        Ok(results)
-    }
+    async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> { ... }
 }
 ```
 
-**To support batching, a model must override two methods:**
+Override `batch_key` and `handle_batch` to participate in daemon batching.
 
-- `batch_key()` — Returns tensor shape/dtype/model identifier, ensuring only compatible requests merge
-- `handle_batch()` — Concatenate tensors along the batch dimension, run one forward pass, split results
+## Shipped models (beta)
 
-## Existing Models
+| Package | Service key (typical) | Tasks | Batching | Backend |
+|---|---|---|---|---|
+| `clip` | `bioclip` | `bioclip_classify` | image tensors | ONNX / MNN |
+| `clip` | custom | `semantic_text_embed`, `semantic_image_embed` | image tensors | ONNX / MNN |
+| `siglip` | `siglip` | `semantic_text_embed`, `semantic_image_embed` | image tensors | ONNX / MNN |
+| `ppocr` | `ocr` | `ocr` | no | ONNX only |
+| `insightface` | `face` | `face_recognition` | no | ONNX / MNN |
 
-| Model | Tasks | Batching | Backend |
-|---|---|---|---|
-| CLIP | `image_embed`, `text_embed` | ✅ Image tensors | ONNX |
-| SigLIP | `image_embed`, `text_embed` | ✅ Image tensors | ONNX |
-| PPOCR | `ocr` | Planned | ONNX |
+BioCLIP uses the `clip` package with a `dataset` field on the model config; see [BioCLIP](../models/bioclip.md).
 
-## Checklist for Adding a New Model
+## Checklist for adding a model
 
-1. Create directory at `models/<name>/`
-2. Implement `ModelFactory` (load model, create device context)
-3. Implement `InferenceService` (wrap `TaskRegistry`)
-4. Implement `Pipeline` (compose forward + postprocessing nodes)
-5. Implement `TaskHandler` (single-request inference; optionally override `batch_key` + `handle_batch`)
-6. Add module in `models/mod.rs`
-7. Add feature gate in `Cargo.toml`
-8. Register service name in `LumenConfig`
+1. Create `crates/lumen-hub/src/models/<name>/`
+2. Add `model_info.example.json` under `crates/lumen-hub/tools/<name>/`
+3. Implement service + task handlers
+4. Register `mod` and Cargo feature in `lumen-hub`
+5. Add package name to hub `main.rs` match and beta dist profile features
+6. Publish model repo under `Lumilio-Photos/{model}` — [Model Repository Spec](../development/model-repository.md)

@@ -21,8 +21,8 @@ const config: Config = {
   onBrokenLinks: "throw",
 
   i18n: {
-    defaultLocale: "zh-Hans",
-    locales: ["zh-Hans"],
+    defaultLocale: "en",
+    locales: ["en"],
   },
 
   markdown: {
@@ -92,6 +92,8 @@ const config: Config = {
           title: "Models",
           items: [
             { label: "CLIP", to: "/models/clip" },
+            { label: "BioCLIP", to: "/models/bioclip" },
+            { label: "InsightFace", to: "/models/insightface" },
             { label: "SigLIP", to: "/models/siglip" },
             { label: "PP-OCR", to: "/models/ppocr" },
           ],

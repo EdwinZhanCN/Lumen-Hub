@@ -8,14 +8,15 @@ This document traces an inference request from gRPC ingress to response.
 
 ## Stage 1: Streaming Assembly
 
-The gRPC client sends requests over an `InferenceStream` bidirectional stream. Each `InferenceRequestChunk` carries:
+The gRPC client sends requests over the `Infer` bidirectional stream (`proto/ml_service.proto`). Each `InferRequest` chunk carries:
 
 - `correlation_id` — Shared by all chunks of the same request
-- `payload` — Data chunk bytes
-- `meta` — Metadata (`service`, `lumen.input.kind`, `lumen.preprocess.skip`, etc.)
-- `chunk_index` / `chunk_count` — Chunk sequence number and total
+- `task` — Registered task name
+- `payload` / `payload_mime` — Body and MIME type
+- `meta` — String map (`service`, `lumen.input.kind`, `lumen.preprocess.skip`, etc.)
+- `seq` / `total` — Optional chunk index and count
 
-In `grpc.rs:handle_messages`, the server collects all chunks for the same `correlation_id`, concatenates payloads, merges metadata (taking the first chunk), and calls `assemble_task_request` to produce a complete `TaskRequest`.
+In `grpc.rs`, the server collects chunks for the same `correlation_id`, concatenates payloads, merges metadata, and calls `assemble_task_request` to produce a `TaskRequest`.
 
 ```mermaid
 sequenceDiagram
@@ -40,7 +41,7 @@ sequenceDiagram
     Task-->>Registry: TaskResult
     Registry-->>Hub: TaskResult
     Hub-->>gRPC: TaskResult
-    gRPC-->>Client: InferenceResponseChunk stream
+    gRPC-->>Client: InferResponse stream
 ```
 
 ## Stage 2: Batching Decision
@@ -80,24 +81,24 @@ Only **preprocessed tensors** are batched. Raw images/text are not — their pre
 
 ## Stage 4: Task Execution
 
-CLIP image embedding example:
+SigLIP image embedding example:
 
 ```
-ClipImageEmbedTask::handle(request)
-  ├── payload_mime is image?
-  │     → preprocess_image(payload) → MLPacket → pipeline.run()
-  └── payload_mime is tensor?
-        → tensor_request_to_packet(request) → pipeline.run()
+SiglipImageEmbedTask::handle(request)
+  ├── image MIME?
+  │     → preprocess_image → MLPacket → pipeline.run()
+  └── tensor + preprocess.skip?
+        → tensor_request_to_packet → pipeline.run()
 
 pipeline.run(packets)
-  → ONNX model forward
-  → L2NormalizeNode
-  → embedding response
+  → ONNX/MNN forward
+  → L2 normalize (when configured)
+  → embedding_v1 JSON response
 ```
 
-## Stage 5: Response Encoding
+## Stage 5: Response encoding
 
-After `TaskResult` is returned, `grpc.rs:task_result_to_responses` encodes it into an `InferenceResponseChunk` stream (chunked at 4 MB for large payloads).
+After `TaskResult` is returned, `grpc.rs` encodes `InferResponse` chunks (large payloads split at 4 MB).
 
 ## Batching Path
 

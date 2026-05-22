@@ -12,12 +12,20 @@ const sidebars: SidebarsConfig = {
         "architecture/request-lifecycle",
         "architecture/batching",
         "architecture/model-pattern",
+        "architecture/task-input",
+        "architecture/task-request-examples",
       ],
     },
     {
       type: "category",
       label: "Models",
-      items: ["models/clip", "models/siglip", "models/ppocr"],
+      items: [
+        "models/clip",
+        "models/bioclip",
+        "models/insightface",
+        "models/siglip",
+        "models/ppocr",
+      ],
     },
     {
       type: "category",

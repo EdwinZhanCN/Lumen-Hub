@@ -19,8 +19,13 @@ function HomepageHeader() {
         <div className={styles.buttons}>
           <Link
             className="button button--secondary button--lg"
+            to="/beta-quick-start">
+            Beta quick start
+          </Link>
+          <Link
+            className="button button--outline button--secondary button--lg"
             to="/architecture/overview">
-            阅读架构文档
+            Architecture
           </Link>
         </div>
       </div>
@@ -33,23 +38,34 @@ export default function Home(): ReactNode {
   return (
     <Layout
       title={siteConfig.title}
-      description="Lumen Hub 统一多模态推理网关文档">
+      description="Documentation for Lumen Hub, a unified multimodal inference gateway.">
       <HomepageHeader />
       <main>
         <section className={styles.features}>
           <div className="container">
             <div className="row">
               <div className="col col--4">
-                <h3>三层架构</h3>
-                <p>daemon（传输）→ service（抽象）→ models（推理），职责清晰，逐层依赖。</p>
+                <h3>Three-layer design</h3>
+                <p>
+                  daemon (transport) → service (routing) → models (inference).
+                  Each layer has a single responsibility and depends only on
+                  the layer below.
+                </p>
               </div>
               <div className="col col--4">
-                <h3>动态批处理</h3>
-                <p>对预处理张量请求自动合并批次，提升 GPU/ONNX 推理吞吐。</p>
+                <h3>Dynamic batching</h3>
+                <p>
+                  Preprocessed tensor requests are merged automatically to
+                  improve ONNX and GPU throughput.
+                </p>
               </div>
               <div className="col col--4">
-                <h3>模型可插拔</h3>
-                <p>Factory → Service → Pipeline → Task 统一集成模式，新模型可快速接入。</p>
+                <h3>Pluggable models</h3>
+                <p>
+                  Factory → Service → Pipeline → Task is the standard
+                  integration path for CLIP, SigLIP, PP-OCR, InsightFace, and
+                  BioCLIP.
+                </p>
               </div>
             </div>
           </div>

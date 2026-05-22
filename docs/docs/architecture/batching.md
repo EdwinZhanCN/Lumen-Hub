@@ -52,18 +52,18 @@ graph TD
 
 `BatchKey` is a string identifier that determines which requests can merge. Same `BatchKey` = same service + same task + same tensor shape/dtype.
 
-Generation (CLIP example):
+Generation (SigLIP image embed example):
 
 ```
 grpc.rs:
-  task_key = hub.batch_key("clip", "image_embed", request)
+  task_key = hub.batch_key("siglip", "semantic_image_embed", request)
   batch_key = BatchKey::new(format!(
-      "service=clip\ntask=image_embed\n{}",
+      "service=siglip\ntask=semantic_image_embed\n{}",
       task_key.as_str()
   ))
 ```
 
-`task_key` is produced by `ClipImageEmbedTask::batch_key()` and includes model ID, version, tensor shape, and dtype — ensuring only **fully compatible** requests are merged.
+`task_key` is produced by the task's `batch_key()` and includes model ID, tensor shape, and dtype — ensuring only **fully compatible** requests are merged.
 
 ## BatchFn: Execution Callback
 

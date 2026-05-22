@@ -4,16 +4,16 @@ sidebar_position: 1
 
 # Architecture Overview
 
-Lumen Hub uses a three-layer architecture. Upper layers depend on lower ones; lower layers are completely unaware of the layers above.
+Lumen Hub uses a three-layer architecture inside `crates/lumen-hub`. Upper layers depend on lower ones; lower layers are unaware of layers above.
 
-## Layer Diagram
+## Layer diagram
 
 ```mermaid
 graph TD
     subgraph daemon["daemon/ Transport"]
-        gRPC[gRPC codec]
-        Batcher[Batched]
-        mDNS[mDNS]
+        gRPC[gRPC Infer stream]
+        Batcher[Batcher]
+        mDNS[mDNS optional]
         Server[Tonic Server]
     end
 
@@ -24,10 +24,11 @@ graph TD
         TH[TaskHandler]
     end
 
-    subgraph models["models/ Model"]
-        CLIP[CLIP]
+    subgraph models["models/ Inference"]
+        CLIP[CLIP / BioCLIP]
         SigLIP[SigLIP]
-        PPOCR[PPOCR]
+        PPOCR[PP-OCR]
+        IFace[InsightFace]
     end
 
     gRPC --> Batcher
@@ -37,67 +38,77 @@ graph TD
     TH --> CLIP
     TH --> SigLIP
     TH --> PPOCR
+    TH --> IFace
     Hub -.-> ISvc
     ISvc -.-> Registry
 ```
 
-## daemon/ — Transport Layer
+## daemon/ — Transport layer
 
-**Concerns**: gRPC chunk assembly, `TaskRequest` deserialization, batching queue, mDNS broadcast, Tonic server lifecycle.
+**Concerns**: gRPC chunk assembly, `TaskRequest` construction, batching queue, optional mDNS, Tonic server lifecycle.
 
-**Ignores**: What model the request is for, how data is preprocessed, how inference runs.
+**Ignores**: Model-specific preprocessing and inference.
 
-Key components:
-
-| File | Responsibility |
+| Module | Responsibility |
 |---|---|
-| `server.rs` | Bind address, register gRPC service → start Tonic Server |
-| `grpc.rs` | Implement `Inference` trait: assemble streaming chunks → `TaskRequest` → route to ServiceHub |
-| `batcher.rs` | Maintain per-BatchKey request queues; trigger batch execution when `max_batch_size` / `queue_latency` fires |
-| `mdns.rs` | Advertise `_lumen._tcp` service via mDNS-SD — clients can auto-discover |
+| `server.rs` | Bind address, register gRPC service, shutdown |
+| `grpc.rs` | `Infer` streaming → `TaskRequest` → `ServiceHub` / `Batcher` |
+| `batcher.rs` | Per-`BatchKey` queues; flush on size or latency |
+| `mdns.rs` | Advertise `_lumen._tcp` when enabled |
+| `proto.rs` / `home_native.v1.rs` | Generated from `proto/ml_service.proto` |
 
-## service/ — Abstraction Layer
+## service/ — Abstraction layer
 
-**Concerns**: Service registration and lookup, task routing, `BatchKey` generation (for batching groups).
+**Concerns**: Service registration, task routing, `BatchKey` generation.
 
-**Ignores**: Network protocols, concrete model implementations.
+**Ignores**: Network protocols and concrete model weights.
 
-Key components:
-
-| File | Responsibility |
+| Module | Responsibility |
 |---|---|
-| `hub.rs` (`ServiceHub`) | Holds `HashMap<service_name, Arc<dyn InferenceService>>`; routes requests by service/task name |
-| `registry.rs` (`TaskRegistry`) | Holds `HashMap<task_name, Arc<dyn TaskHandler>>`; each model service registers its own tasks |
-| `service.rs` (`InferenceService`) | Trait: `name()` + `capability()` + `tasks()` |
-| `task.rs` (`TaskHandler`) | Trait: `spec()` + `handle()` + `batch_key()` + `handle_batch()` |
-| `factory.rs` (`ModelFactory`) | Trait: standardised model construction flow |
+| `hub.rs` | `HashMap<service_name, Arc<dyn InferenceService>>` |
+| `registry.rs` | `HashMap<task_name, Arc<dyn TaskHandler>>` |
+| `service.rs` | `InferenceService` trait |
+| `task.rs` | `TaskHandler` trait (`handle`, `batch_key`, `handle_batch`) |
+| `factory.rs` | `ModelFactory` trait for legacy construction paths |
+| `tensor.rs` | Tensor metadata keys and preprocess ID constants |
 
-## models/ — Model Layer
+## models/ — Model layer
 
-**Concerns**: ONNX/Candle model loading, image/text preprocessing, inference execution, postprocessing (e.g. L2 normalisation).
+**Concerns**: `model_info.json` parsing, artifact loading via `lumnn`, preprocessing, inference, postprocessing.
 
-**Ignores**: Upper-layer routing, transport protocols.
-
-Each model follows a uniform directory layout:
+**Ignores**: gRPC and hub routing.
 
 ```
 models/<name>/
-  factory.rs   → ModelFactory impl
-  service.rs   → InferenceService impl
-  pipeline.rs  → Inference pipeline construction
-  nodes.rs     → Custom processing nodes (e.g. L2 normalisation)
-  task.rs      → TaskHandler impl (single-request + batch inference)
+  mod.rs
+  factory.rs / service.rs
+  pipeline.rs
+  nodes.rs      # optional
+  task.rs
 ```
 
-## Dependency Direction
+Beta models: `clip` (includes BioCLIP classify), `siglip`, `ppocr`, `insightface`.
+
+## lumnn — Runtime layer
+
+`lumnn` (separate crate) provides `MLContext`, `MLPipeline`, and backends:
+
+- **ONNX Runtime** — default in beta dist profiles
+- **MNN** — optional; bundled on some profiles (for example `darwin-arm64` Metal)
+- **Candle** — optional compile-time feature, not in beta dist bundles
+
+Model services build pipelines from `lumnn` nodes; runtime selection comes from config `runtime: onnx | mnn`.
+
+## Dependency direction
 
 ```
 main.rs
-  → LumenConfig (schema layer)
-  → daemon::serve_grpc (start server)
-    → HubGrpcService (holds ServiceHub + Batcher)
-      → ServiceHub::handle / handle_batch
-        → TaskRegistry::handle / handle_batch
-          → TaskHandler (implemented in models/)
+  → LumenConfig (lumen-schema)
+  → ensure_models_for_config
+  → build_service_hub_from_config
+  → serve_grpc_with_shutdown(HubGrpcService)
+    → ServiceHub::handle / handle_batch
+      → TaskHandler (models/)
+```
 
-Cross-layer dependencies are injected via Arc<dyn Trait> — no concrete type coupling.
+Cross-layer coupling uses `Arc<dyn Trait>` — no concrete type coupling between daemon and models.
