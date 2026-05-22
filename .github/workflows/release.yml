@@ -29,6 +29,9 @@ jobs:
                     - profile: linux-arm64
                       os: ubuntu-24.04-arm
                       archive: lumen-hub-linux-arm64.tar.gz
+                    - profile: linux-arm64-jetson
+                      os: ubuntu-24.04-arm
+                      archive: lumen-hub-linux-arm64-jetson.tar.gz
                     - profile: windows-x64-dml
                       os: windows-2025
                       archive: lumen-hub-windows-x64-dml.zip
@@ -268,6 +271,7 @@ jobs:
                   test -f release-assets/lumen-hub-darwin-arm64.tar.gz
                   test -f release-assets/lumen-hub-linux-x64-cuda.tar.gz
                   test -f release-assets/lumen-hub-linux-arm64.tar.gz
+                  test -f release-assets/lumen-hub-linux-arm64-jetson.tar.gz
                   test -f release-assets/lumen-hub-windows-x64-dml.zip
                   test -f release-assets/lumen-hub-linux-x64-openvino.tar.gz
                   test -f release-assets/lumen-cli-aarch64-apple-darwin.tar.xz
@@ -324,6 +328,7 @@ jobs:
                   | Hub | \`darwin-arm64\` | \`lumen-hub-darwin-arm64.tar.gz\` |
                   | Hub | \`linux-x64-cuda\` | \`lumen-hub-linux-x64-cuda.tar.gz\` |
                   | Hub | \`linux-arm64\` | \`lumen-hub-linux-arm64.tar.gz\` |
+                  | Hub | \`linux-arm64-jetson\` | \`lumen-hub-linux-arm64-jetson.tar.gz\` |
                   | Hub | \`windows-x64-dml\` | \`lumen-hub-windows-x64-dml.zip\` |
                   | Hub | \`linux-x64-openvino\` | \`lumen-hub-linux-x64-openvino.tar.gz\` |
                   | CLI | \`aarch64-apple-darwin\` | \`lumen-cli-aarch64-apple-darwin.tar.xz\` |
@@ -348,6 +353,7 @@ jobs:
                       release-assets/lumen-hub-darwin-arm64.tar.gz
                       release-assets/lumen-hub-linux-x64-cuda.tar.gz
                       release-assets/lumen-hub-linux-arm64.tar.gz
+                      release-assets/lumen-hub-linux-arm64-jetson.tar.gz
                       release-assets/lumen-hub-windows-x64-dml.zip
                       release-assets/lumen-hub-linux-x64-openvino.tar.gz
                       release-assets/lumen-cli-aarch64-apple-darwin.tar.xz

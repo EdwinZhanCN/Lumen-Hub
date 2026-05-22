@@ -11,8 +11,8 @@ const config: Config = {
     v4: true,
   },
 
-  url: "https://lumilio.org",
-  baseUrl: "/hub/",
+  url: "https://edwinzhancn.github.io",
+  baseUrl: "/Lumen-Hub/",
 
   organizationName: "EdwinZhanCN",
   projectName: "Lumen-Hub",

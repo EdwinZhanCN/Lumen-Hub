@@ -66,6 +66,14 @@ profile-linux-arm64 = [
   "siglip",
   "ort-download-binaries",
 ]
+profile-linux-arm64-jetson = [
+  "clip",
+  "insightface",
+  "ppocr",
+  "siglip",
+  "ort-load-dynamic",
+  "ort-cuda",
+]
 profile-windows-x64-dml = [
   "clip",
   "insightface",

@@ -44,7 +44,7 @@ ort = { version = "2.0.0-rc.12", default-features = false, features = [
   "ndarray",
   "tracing",
   "half",
-  "api-24",
+  "api-23",
   "tls-native",
 ] }
 thiserror = "2.0.18"

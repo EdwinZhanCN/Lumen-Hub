@@ -35,6 +35,9 @@ jobs:
           - name: linux-arm64
             os: ubuntu-24.04-arm
             features: profile-linux-arm64
+          - name: linux-arm64-jetson
+            os: ubuntu-24.04-arm
+            features: profile-linux-arm64-jetson
           - name: windows-x64-dml
             os: windows-2025
             features: profile-windows-x64-dml

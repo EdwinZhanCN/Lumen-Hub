@@ -1018,9 +1018,10 @@ fn backend_choices(platform: PlatformProfile) -> Vec<BackendChoice> {
             ),
             BackendChoice::available(Backend::cpu_only()),
         ],
-        "linux-arm64" => vec![BackendChoice::available(Backend::cpu_only_profile(
-            "linux-arm64",
-        ))],
+        "linux-arm64" => vec![
+            BackendChoice::available(Backend::ort_jetson_cuda()),
+            BackendChoice::available(Backend::cpu_only_profile("linux-arm64")),
+        ],
         _ => vec![BackendChoice::available(Backend::cpu_only())],
     }
 }
@@ -1355,6 +1356,16 @@ impl Backend {
         }
     }
 
+    fn ort_jetson_cuda() -> Self {
+        Self {
+            name: "ort-jetson-cuda",
+            release_profile: "linux-arm64-jetson",
+            cv_runtime: "onnx",
+            semantic_runtime: "onnx",
+            semantic_precision: "fp16",
+        }
+    }
+
     fn cpu_only() -> Self {
         Self::cpu_only_profile("universal-cpu")
     }
@@ -1646,6 +1657,7 @@ mod tests {
                 Backend::mnn_metal(),
                 Backend::ort_cuda(),
                 Backend::ort_openvino(),
+                Backend::ort_jetson_cuda(),
                 Backend::cpu_only_profile("linux-arm64"),
                 Backend::cpu_only(),
             ] {
@@ -1667,13 +1679,18 @@ mod tests {
     }
 
     #[test]
-    fn linux_arm64_uses_native_cpu_release_profile() {
+    fn linux_arm64_offers_jetson_and_native_cpu_profiles() {
         let choices = backend_choices(PlatformProfile {
             name: "linux-arm64",
         });
 
-        assert_eq!(choices.len(), 1);
-        let backend = choices[0]
+        assert_eq!(choices.len(), 2);
+        let jetson = choices[0]
+            .backend
+            .expect("linux-arm64 Jetson backend is available");
+        assert_eq!(jetson.name, "ort-jetson-cuda");
+        assert_eq!(jetson.release_profile, "linux-arm64-jetson");
+        let backend = choices[1]
             .backend
             .expect("linux-arm64 backend is available");
         assert_eq!(backend.name, "cpu-only");

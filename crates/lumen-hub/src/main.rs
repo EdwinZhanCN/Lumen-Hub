@@ -214,7 +214,7 @@ fn build_service_hub_from_config(
         feature = "ppocr",
         feature = "siglip"
     ))]
-    let context = MLContext::new(MLContextOptions::default()).map_err(StartupError::ContextInit)?;
+    let context = MLContext::new(default_context_options()).map_err(StartupError::ContextInit)?;
 
     let requested_services = config
         .deployment_service_names()
@@ -357,6 +357,30 @@ fn build_service_hub_from_config(
     }
 
     Ok(hub)
+}
+
+#[cfg(any(
+    feature = "clip",
+    feature = "insightface",
+    feature = "ppocr",
+    feature = "siglip"
+))]
+fn default_context_options() -> MLContextOptions {
+    if cfg!(any(
+        feature = "ort-cuda",
+        feature = "ort-tensorrt",
+        feature = "ort-directml",
+        feature = "ort-coreml",
+        feature = "ort-openvino",
+        feature = "ort-xnnpack",
+        feature = "mnn",
+        feature = "candle-cuda",
+        feature = "candle-metal"
+    )) {
+        MLContextOptions::accelerated()
+    } else {
+        MLContextOptions::default()
+    }
 }
 
 fn home_dir() -> Option<String> {

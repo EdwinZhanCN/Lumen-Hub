@@ -337,7 +337,7 @@ fn copy_dir_filtered(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 fn needs_runtime_launcher(profile: &DistProfile) -> bool {
-    profile.openvino_bundle || profile.mnn_bundle
+    profile.openvino_bundle || profile.mnn_bundle || profile.jetson_dynamic_ort
 }
 
 fn write_unix_launcher(path: &Path, profile: &DistProfile) -> Result<(), String> {
@@ -351,6 +351,21 @@ fn write_unix_launcher(path: &Path, profile: &DistProfile) -> Result<(), String>
         lines.push(r#"export LUMNN_ORT_DYLIB_PATH="$APP_HOME/lib/libonnxruntime.so""#.to_owned());
     }
 
+    if profile.jetson_dynamic_ort {
+        lines.push(r#"if [[ -z "${LUMNN_ORT_DYLIB_PATH:-}" ]]; then"#.to_owned());
+        lines.push(r#"  for candidate in "$APP_HOME/lib/libonnxruntime.so" /usr/local/lib/libonnxruntime.so /usr/lib/aarch64-linux-gnu/libonnxruntime.so /usr/local/lib/python*/dist-packages/onnxruntime/capi/libonnxruntime.so /usr/lib/python*/dist-packages/onnxruntime/capi/libonnxruntime.so "${VIRTUAL_ENV:-}"/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so "$HOME"/.local/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so; do"#.to_owned());
+        lines.push(r#"    if [[ -f "$candidate" ]]; then"#.to_owned());
+        lines.push(r#"      export LUMNN_ORT_DYLIB_PATH="$candidate""#.to_owned());
+        lines.push(r#"      break"#.to_owned());
+        lines.push(r#"    fi"#.to_owned());
+        lines.push(r#"  done"#.to_owned());
+        lines.push(r#"fi"#.to_owned());
+        lines.push(r#"if [[ -n "${LUMNN_ORT_DYLIB_PATH:-}" ]]; then"#.to_owned());
+        lines.push(r#"  ORT_HOME="$(cd "$(dirname "$LUMNN_ORT_DYLIB_PATH")" && pwd)""#.to_owned());
+        lines.push(r#"  export LD_LIBRARY_PATH="$ORT_HOME:${LD_LIBRARY_PATH:-}""#.to_owned());
+        lines.push(r#"fi"#.to_owned());
+    }
+
     if profile.openvino_bundle || profile.mnn_bundle {
         if profile.target.contains("apple") {
             lines.push(
@@ -359,6 +374,10 @@ fn write_unix_launcher(path: &Path, profile: &DistProfile) -> Result<(), String>
         } else {
             lines.push(r#"export LD_LIBRARY_PATH="$APP_HOME/lib:${LD_LIBRARY_PATH:-}""#.to_owned());
         }
+    }
+
+    if profile.jetson_dynamic_ort {
+        lines.push(r#"export LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/lib/aarch64-linux-gnu/tegra:/usr/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH:-}""#.to_owned());
     }
 
     lines.push(r#"exec "$APP_HOME/bin/lumen-hub-bin" "$@""#.to_owned());
@@ -724,6 +743,15 @@ fn write_readme(profile: &DistProfile, archive_dir: &Path) -> Result<(), String>
             );
         }
     }
+    if profile.jetson_dynamic_ort {
+        runtime_notes.push(
+            "Jetson profile uses dynamic ONNX Runtime. Install a JetPack 6+ compatible onnxruntime-gpu package, or set `LUMNN_ORT_DYLIB_PATH` to its `libonnxruntime.so`.".to_owned(),
+        );
+        runtime_notes.push(
+            "On Unix, use `bin/lumen-hub`; it discovers common Jetson/Python wheel runtime paths and configures `LD_LIBRARY_PATH` before launching `bin/lumen-hub-bin`."
+                .to_owned(),
+        );
+    }
     let runtime_note = if runtime_notes.is_empty() {
         String::new()
     } else {
@@ -1050,6 +1078,7 @@ struct DistProfile {
     features: &'static [&'static str],
     openvino_bundle: bool,
     mnn_bundle: bool,
+    jetson_dynamic_ort: bool,
 }
 
 const PROFILES: &[DistProfile] = &[
@@ -1060,6 +1089,7 @@ const PROFILES: &[DistProfile] = &[
         features: &["profile-universal-cpu"],
         openvino_bundle: false,
         mnn_bundle: false,
+        jetson_dynamic_ort: false,
     },
     DistProfile {
         name: "darwin-arm64",
@@ -1068,6 +1098,7 @@ const PROFILES: &[DistProfile] = &[
         features: &["profile-darwin-arm64"],
         openvino_bundle: false,
         mnn_bundle: true,
+        jetson_dynamic_ort: false,
     },
     DistProfile {
         name: "linux-x64-cuda",
@@ -1076,6 +1107,7 @@ const PROFILES: &[DistProfile] = &[
         features: &["profile-linux-x64-cuda"],
         openvino_bundle: false,
         mnn_bundle: false,
+        jetson_dynamic_ort: false,
     },
     DistProfile {
         name: "linux-arm64",
@@ -1084,6 +1116,16 @@ const PROFILES: &[DistProfile] = &[
         features: &["profile-linux-arm64"],
         openvino_bundle: false,
         mnn_bundle: false,
+        jetson_dynamic_ort: false,
+    },
+    DistProfile {
+        name: "linux-arm64-jetson",
+        archive_name: "lumen-hub-linux-arm64-jetson",
+        target: "aarch64-unknown-linux-gnu",
+        features: &["profile-linux-arm64-jetson"],
+        openvino_bundle: false,
+        mnn_bundle: false,
+        jetson_dynamic_ort: true,
     },
     DistProfile {
         name: "windows-x64-dml",
@@ -1092,6 +1134,7 @@ const PROFILES: &[DistProfile] = &[
         features: &["profile-windows-x64-dml"],
         openvino_bundle: false,
         mnn_bundle: false,
+        jetson_dynamic_ort: false,
     },
     DistProfile {
         name: "linux-x64-openvino",
@@ -1100,6 +1143,7 @@ const PROFILES: &[DistProfile] = &[
         features: &["profile-linux-x64-openvino"],
         openvino_bundle: true,
         mnn_bundle: false,
+        jetson_dynamic_ort: false,
     },
 ];
 
