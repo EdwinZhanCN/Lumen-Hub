@@ -1018,6 +1018,9 @@ fn backend_choices(platform: PlatformProfile) -> Vec<BackendChoice> {
             ),
             BackendChoice::available(Backend::cpu_only()),
         ],
+        "linux-arm64" => vec![BackendChoice::available(Backend::cpu_only_profile(
+            "linux-arm64",
+        ))],
         _ => vec![BackendChoice::available(Backend::cpu_only())],
     }
 }
@@ -1031,6 +1034,9 @@ fn platform_profile(system: &SystemInfo) -> Result<PlatformProfile, CliError> {
             name: "windows-x64",
         }),
         (OsKind::Linux, "x86_64" | "amd64") => Ok(PlatformProfile { name: "linux-x64" }),
+        (OsKind::Linux, "aarch64" | "arm64") => Ok(PlatformProfile {
+            name: "linux-arm64",
+        }),
         _ => Err(CliError::UnsupportedPlatform(format!(
             "{} / {} is not in the beta matrix",
             system.os_label(),
@@ -1350,9 +1356,13 @@ impl Backend {
     }
 
     fn cpu_only() -> Self {
+        Self::cpu_only_profile("universal-cpu")
+    }
+
+    fn cpu_only_profile(release_profile: &'static str) -> Self {
         Self {
             name: "cpu-only",
-            release_profile: "universal-cpu",
+            release_profile,
             cv_runtime: "onnx",
             semantic_runtime: "onnx",
             semantic_precision: "fp32",
@@ -1636,12 +1646,38 @@ mod tests {
                 Backend::mnn_metal(),
                 Backend::ort_cuda(),
                 Backend::ort_openvino(),
+                Backend::cpu_only_profile("linux-arm64"),
                 Backend::cpu_only(),
             ] {
                 let config = render_config(*preset, "other", backend, Path::new("/tmp/lumen"));
                 validate_yaml_config(&config).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn detects_linux_arm64_platform_profile() {
+        let profile = platform_profile(&SystemInfo {
+            os: OsKind::Linux,
+            arch: "aarch64".to_owned(),
+        })
+        .unwrap();
+
+        assert_eq!(profile.name, "linux-arm64");
+    }
+
+    #[test]
+    fn linux_arm64_uses_native_cpu_release_profile() {
+        let choices = backend_choices(PlatformProfile {
+            name: "linux-arm64",
+        });
+
+        assert_eq!(choices.len(), 1);
+        let backend = choices[0]
+            .backend
+            .expect("linux-arm64 backend is available");
+        assert_eq!(backend.name, "cpu-only");
+        assert_eq!(backend.release_profile, "linux-arm64");
     }
 
     #[test]

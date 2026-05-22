@@ -75,7 +75,6 @@ async fn exported_bioclip_model_latency() {
             ModelConfig {
                 model: model_name.clone(),
                 runtime,
-                rknn_device: None,
                 dataset: Some(dataset.clone()),
                 precision: Some(precision.clone()),
             },

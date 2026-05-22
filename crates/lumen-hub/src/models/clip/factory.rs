@@ -28,7 +28,7 @@ use crate::service::{ServiceError, ServiceResult};
 /// ...
 /// ```
 ///
-/// The extension is derived from the runtime: `.onnx` for ONNX, `.rknn` for RKNN.
+/// The extension is derived from the runtime: `.onnx` for ONNX, `.mnn` for MNN.
 pub struct ClipModelFactory {
     cache_dir: String,
 }
@@ -157,15 +157,11 @@ impl ClipModelFactory {
     ) -> PathBuf {
         let runtime_dir = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-            Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
-            Runtime::MnnLlm => "mnn-llm",
         };
         let ext = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-            Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
-            Runtime::MnnLlm => "json",
         };
         let filename = format!("{component}.{precision}.{ext}");
         self.model_dir(model_name).join(runtime_dir).join(filename)
@@ -201,9 +197,6 @@ impl ClipModelFactory {
                 "CLIP Candle ONNX runtime is not enabled in this lumen-hub build; use runtime=onnx"
                     .to_owned(),
             )),
-            Runtime::Rknn => Err(ServiceError::InvalidArgument(
-                "CLIP RKNN runtime is not implemented yet".to_owned(),
-            )),
             #[cfg(feature = "mnn")]
             Runtime::Mnn => MnnNode::new(context.as_ref(), path_str, name)
                 .map(|node| Box::new(node) as Box<dyn MLNode>)
@@ -211,9 +204,6 @@ impl ClipModelFactory {
             #[cfg(not(feature = "mnn"))]
             Runtime::Mnn => Err(ServiceError::InvalidArgument(
                 "CLIP MNN runtime is not enabled in this lumen-hub build".to_owned(),
-            )),
-            Runtime::MnnLlm => Err(ServiceError::InvalidArgument(
-                "CLIP MNN-LLM runtime is not supported".to_owned(),
             )),
         }
     }

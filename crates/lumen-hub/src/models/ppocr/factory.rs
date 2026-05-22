@@ -65,15 +65,11 @@ impl PpocrModelFactory {
     ) -> PathBuf {
         let runtime_dir = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-            Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
-            Runtime::MnnLlm => "mnn-llm",
         };
         let ext = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-            Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
-            Runtime::MnnLlm => "json",
         };
         let filename = format!("{component}.{precision}.{ext}");
         self.model_dir(model_name).join(runtime_dir).join(filename)
@@ -110,12 +106,6 @@ impl PpocrModelFactory {
             )),
             Runtime::CandleOnnx => Err(ServiceError::InvalidArgument(
                 "PP-OCR Candle ONNX runtime is not implemented yet; use runtime=onnx".to_owned(),
-            )),
-            Runtime::Rknn => Err(ServiceError::InvalidArgument(
-                "PP-OCR RKNN runtime is not implemented yet".to_owned(),
-            )),
-            Runtime::MnnLlm => Err(ServiceError::InvalidArgument(
-                "PP-OCR MNN-LLM runtime is not supported".to_owned(),
             )),
         }
     }

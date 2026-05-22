@@ -38,7 +38,7 @@ pub struct Capability {
     /// Supported model IDs/versions
     #[prost(string, repeated, tag = "2")]
     pub model_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// "onnxrt-cuda","tensorrt","coreml","rknn","qnn","cpu"
+    /// "onnxrt-cuda","tensorrt","coreml","cpu"
     #[prost(string, tag = "3")]
     pub runtime: ::prost::alloc::string::String,
     /// Suggested max concurrency

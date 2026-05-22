@@ -58,7 +58,6 @@ async fn exported_insightface_model_latency() {
             ModelConfig {
                 model: model_name.clone(),
                 runtime,
-                rknn_device: None,
                 dataset: None,
                 precision: Some(precision.clone()),
             },

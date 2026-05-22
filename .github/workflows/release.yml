@@ -26,6 +26,9 @@ jobs:
                     - profile: linux-x64-cuda
                       os: ubuntu-24.04
                       archive: lumen-hub-linux-x64-cuda.tar.gz
+                    - profile: linux-arm64
+                      os: ubuntu-24.04-arm
+                      archive: lumen-hub-linux-arm64.tar.gz
                     - profile: windows-x64-dml
                       os: windows-2025
                       archive: lumen-hub-windows-x64-dml.zip
@@ -113,6 +116,9 @@ jobs:
                     - target: x86_64-unknown-linux-gnu
                       os: ubuntu-22.04
                       archive: lumen-cli-x86_64-unknown-linux-gnu.tar.xz
+                    - target: aarch64-unknown-linux-gnu
+                      os: ubuntu-24.04-arm
+                      archive: lumen-cli-aarch64-unknown-linux-gnu.tar.xz
                     - target: x86_64-pc-windows-msvc
                       os: windows-2022
                       archive: lumen-cli-x86_64-pc-windows-msvc.zip
@@ -186,6 +192,7 @@ jobs:
                   set -euo pipefail
                   test -s target/distrib/sha256.sum
                   grep -Fq "lumen-cli-aarch64-apple-darwin.tar.xz" target/distrib/sha256.sum
+                  grep -Fq "lumen-cli-aarch64-unknown-linux-gnu.tar.xz" target/distrib/sha256.sum
                   grep -Fq "lumen-cli-x86_64-unknown-linux-gnu.tar.xz" target/distrib/sha256.sum
                   grep -Fq "lumen-cli-x86_64-pc-windows-msvc.zip" target/distrib/sha256.sum
                   grep -Fq '_checksum_value=' target/distrib/lumen-cli-installer.sh
@@ -260,10 +267,13 @@ jobs:
                   test -f release-assets/lumen-hub-universal-cpu.tar.gz
                   test -f release-assets/lumen-hub-darwin-arm64.tar.gz
                   test -f release-assets/lumen-hub-linux-x64-cuda.tar.gz
+                  test -f release-assets/lumen-hub-linux-arm64.tar.gz
                   test -f release-assets/lumen-hub-windows-x64-dml.zip
                   test -f release-assets/lumen-hub-linux-x64-openvino.tar.gz
                   test -f release-assets/lumen-cli-aarch64-apple-darwin.tar.xz
                   test -f release-assets/lumen-cli-aarch64-apple-darwin.tar.xz.sha256
+                  test -f release-assets/lumen-cli-aarch64-unknown-linux-gnu.tar.xz
+                  test -f release-assets/lumen-cli-aarch64-unknown-linux-gnu.tar.xz.sha256
                   test -f release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz
                   test -f release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz.sha256
                   test -f release-assets/lumen-cli-x86_64-pc-windows-msvc.zip
@@ -313,9 +323,11 @@ jobs:
                   | Hub | \`universal-cpu\` | \`lumen-hub-universal-cpu.tar.gz\` |
                   | Hub | \`darwin-arm64\` | \`lumen-hub-darwin-arm64.tar.gz\` |
                   | Hub | \`linux-x64-cuda\` | \`lumen-hub-linux-x64-cuda.tar.gz\` |
+                  | Hub | \`linux-arm64\` | \`lumen-hub-linux-arm64.tar.gz\` |
                   | Hub | \`windows-x64-dml\` | \`lumen-hub-windows-x64-dml.zip\` |
                   | Hub | \`linux-x64-openvino\` | \`lumen-hub-linux-x64-openvino.tar.gz\` |
                   | CLI | \`aarch64-apple-darwin\` | \`lumen-cli-aarch64-apple-darwin.tar.xz\` |
+                  | CLI | \`aarch64-unknown-linux-gnu\` | \`lumen-cli-aarch64-unknown-linux-gnu.tar.xz\` |
                   | CLI | \`x86_64-unknown-linux-gnu\` | \`lumen-cli-x86_64-unknown-linux-gnu.tar.xz\` |
                   | CLI | \`x86_64-pc-windows-msvc\` | \`lumen-cli-x86_64-pc-windows-msvc.zip\` |
                   | CLI installer | macOS/Linux | \`lumen-cli-installer.sh\` |
@@ -335,10 +347,13 @@ jobs:
                       release-assets/lumen-hub-universal-cpu.tar.gz
                       release-assets/lumen-hub-darwin-arm64.tar.gz
                       release-assets/lumen-hub-linux-x64-cuda.tar.gz
+                      release-assets/lumen-hub-linux-arm64.tar.gz
                       release-assets/lumen-hub-windows-x64-dml.zip
                       release-assets/lumen-hub-linux-x64-openvino.tar.gz
                       release-assets/lumen-cli-aarch64-apple-darwin.tar.xz
                       release-assets/lumen-cli-aarch64-apple-darwin.tar.xz.sha256
+                      release-assets/lumen-cli-aarch64-unknown-linux-gnu.tar.xz
+                      release-assets/lumen-cli-aarch64-unknown-linux-gnu.tar.xz.sha256
                       release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz
                       release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz.sha256
                       release-assets/lumen-cli-x86_64-pc-windows-msvc.zip

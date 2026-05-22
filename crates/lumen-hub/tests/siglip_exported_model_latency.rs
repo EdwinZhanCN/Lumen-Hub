@@ -53,7 +53,6 @@ async fn exported_siglip_model_latency() {
             ModelConfig {
                 model: model_name,
                 runtime,
-                rknn_device: None,
                 dataset: None,
                 precision: Some(precision.clone()),
             },

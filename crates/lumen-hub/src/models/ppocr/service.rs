@@ -14,8 +14,9 @@ use crate::service::{
 /// PP-OCR inference service.
 ///
 /// Created from a `ServiceConfig` and `model_info.json`. Each model alias in
-/// the config may expose an `ocr` task that performs end-to-end text detection
-/// and recognition.
+/// the config may expose an `ocr` task (name taken from `model_info.json`
+/// `task_metadata.tasks`, typically `ocr`) that performs end-to-end text
+/// detection and recognition.
 pub struct PpocrService {
     name: String,
     tasks: TaskRegistry,
@@ -120,7 +121,7 @@ impl PpocrService {
 
                 // --- Create the task ---
                 let task = PpocrTask::new(
-                    format!("{}_{}", alias, task_key),
+                    task_key.clone(),
                     Arc::clone(&context),
                     model_name.clone(),
                     task_config.detection.clone(),

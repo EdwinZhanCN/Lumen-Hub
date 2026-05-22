@@ -59,6 +59,13 @@ profile-linux-x64-cuda = [
   "ort-download-binaries",
   "ort-cuda",
 ]
+profile-linux-arm64 = [
+  "clip",
+  "insightface",
+  "ppocr",
+  "siglip",
+  "ort-download-binaries",
+]
 profile-windows-x64-dml = [
   "clip",
   "insightface",

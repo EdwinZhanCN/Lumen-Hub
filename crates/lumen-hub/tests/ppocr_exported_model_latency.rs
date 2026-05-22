@@ -15,7 +15,7 @@ use lumen_schema::{ModelConfig, OCRV1, Runtime, ServiceConfig};
 use lumnn::core::context::{MLContext, MLContextOptions};
 
 const PPOCR_TASK_ALIAS: &str = "ppocr";
-const PPOCR_TASK_NAME: &str = "ppocr_ocr";
+const PPOCR_TASK_NAME: &str = "ocr";
 
 #[tokio::test]
 #[ignore = "requires an exported PP-OCR model directory; defaults to ./out/pp-ocrv5"]
@@ -68,7 +68,6 @@ async fn exported_ppocr_model_latency() {
             ModelConfig {
                 model: model_name.clone(),
                 runtime,
-                rknn_device: None,
                 dataset: None,
                 precision: Some(precision.clone()),
             },

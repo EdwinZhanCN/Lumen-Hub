@@ -108,23 +108,18 @@ fn ensure_model<C: ModelRepoClient>(
 
     let mut remote_paths = BTreeSet::from([MODEL_INFO_FILE.to_owned()]);
 
-    if requirement.runtime == Runtime::MnnLlm {
-        remote_paths.insert("mnn-llm/config.json".to_owned());
-    } else {
-        let runtime_dir = runtime_asset_dir(requirement.runtime);
-        let runtime_ext = runtime_asset_ext(requirement.runtime);
-        for component in &runtime_spec.components {
-            remote_paths.insert(format!(
-                "{runtime_dir}/{component}.{}.{runtime_ext}",
-                requirement.precision
-            ));
-        }
+    let runtime_dir = runtime_asset_dir(requirement.runtime);
+    let runtime_ext = runtime_asset_ext(requirement.runtime);
+    for component in &runtime_spec.components {
+        remote_paths.insert(format!(
+            "{runtime_dir}/{component}.{}.{runtime_ext}",
+            requirement.precision
+        ));
     }
 
     for repo_file in client.list_repo_files(&requirement.model)? {
-        if (requirement.runtime == Runtime::MnnLlm && is_mnn_llm_file(&repo_file))
-            || (is_default_root_file(&repo_file)
-                && !is_root_dataset_file(&repo_file, &requirement.dataset))
+        if (is_default_root_file(&repo_file)
+            && !is_root_dataset_file(&repo_file, &requirement.dataset))
             || is_dataset_file(&repo_file, &requirement.dataset)
         {
             remote_paths.insert(repo_file);
@@ -224,22 +219,10 @@ fn is_root_dataset_file(path: &str, dataset: &Option<String>) -> bool {
     !path.contains('/') && path.starts_with(&format!("{dataset}."))
 }
 
-fn is_mnn_llm_file(path: &str) -> bool {
-    let Some(file_name) = path.strip_prefix("mnn-llm/") else {
-        return false;
-    };
-    !file_name.is_empty()
-        && !file_name.contains('/')
-        && file_name != ".DS_Store"
-        && !file_name.starts_with('.')
-}
-
 fn runtime_asset_key(runtime: Runtime) -> &'static str {
     match runtime {
         Runtime::Onnx | Runtime::CandleOnnx => "onnx",
         Runtime::Mnn => "mnn",
-        Runtime::MnnLlm => "mnn-llm",
-        Runtime::Rknn => "rknn",
     }
 }
 
@@ -251,8 +234,6 @@ fn runtime_asset_ext(runtime: Runtime) -> &'static str {
     match runtime {
         Runtime::Onnx | Runtime::CandleOnnx => "onnx",
         Runtime::Mnn => "mnn",
-        Runtime::MnnLlm => "json",
-        Runtime::Rknn => "rknn",
     }
 }
 
@@ -319,9 +300,7 @@ impl ModelRepoClient for HfHubClient {
             .into_iter()
             .filter(|entry| {
                 entry.kind == "file"
-                    && (!entry.path.contains('/')
-                        || entry.path.starts_with("datasets/")
-                        || entry.path.starts_with("mnn-llm/"))
+                    && (!entry.path.contains('/') || entry.path.starts_with("datasets/"))
             })
             .map(|entry| entry.path)
             .collect())
@@ -678,51 +657,6 @@ mod tests {
         cleanup_cache(cache);
     }
 
-    #[test]
-    fn downloads_mnn_llm_package_files() {
-        let cache = temp_cache_dir("mnn-llm");
-        let client = FakeClient::new(
-            vec![
-                "config.json",
-                "tokenizer.json",
-                "mnn-llm/config.json",
-                "mnn-llm/llm_config.json",
-                "mnn-llm/llm.mnn",
-                "mnn-llm/llm.mnn.weight",
-                "mnn-llm/visual.mnn",
-                "mnn-llm/visual.mnn.weight",
-                "mnn-llm/embeddings_bf16.bin",
-                "mnn-llm/.DS_Store",
-                "mnn-llm/nested/ignored.bin",
-            ],
-            mnn_llm_model_info_json(),
-        );
-        let config = mnn_llm_test_config();
-
-        ensure_models_with_client(&config, &cache, &client).unwrap();
-
-        assert_eq!(
-            client.downloaded_paths(),
-            vec![
-                "antelopev2:model_info.json",
-                "antelopev2:config.json",
-                "antelopev2:mnn-llm/config.json",
-                "antelopev2:mnn-llm/embeddings_bf16.bin",
-                "antelopev2:mnn-llm/llm.mnn",
-                "antelopev2:mnn-llm/llm.mnn.weight",
-                "antelopev2:mnn-llm/llm_config.json",
-                "antelopev2:mnn-llm/visual.mnn",
-                "antelopev2:mnn-llm/visual.mnn.weight",
-                "antelopev2:tokenizer.json",
-            ]
-        );
-        assert!(cache.join("antelopev2/mnn-llm/config.json").is_file());
-        assert!(!cache.join("antelopev2/mnn-llm/.DS_Store").exists());
-        assert!(!cache.join("antelopev2/mnn-llm/nested/ignored.bin").exists());
-
-        cleanup_cache(cache);
-    }
-
     fn test_config(dataset: Option<&str>, precision: Option<&str>) -> LumenConfig {
         LumenConfig::from_json_str(
             &json!({
@@ -758,40 +692,6 @@ mod tests {
         .unwrap()
     }
 
-    fn mnn_llm_test_config() -> LumenConfig {
-        LumenConfig::from_json_str(
-            &json!({
-                "metadata": {
-                    "version": "0.1.0",
-                    "region": "other",
-                    "cache_dir": "/tmp/lumen-test"
-                },
-                "deployment": {
-                    "mode": "hub",
-                    "services": ["clip_service"]
-                },
-                "server": {
-                    "port": 50051
-                },
-                "services": {
-                    "clip_service": {
-                        "enabled": true,
-                        "package": "clip",
-                        "models": {
-                            "default": {
-                                "model": "antelopev2",
-                                "runtime": "mnn-llm",
-                                "precision": "mixed"
-                            }
-                        }
-                    }
-                }
-            })
-            .to_string(),
-        )
-        .unwrap()
-    }
-
     fn model_info_json(precisions: &[&str], available: bool) -> String {
         json!({
             "name": "antelopev2",
@@ -807,27 +707,6 @@ mod tests {
                     "available": available,
                     "components": ["vision", "text"],
                     "precisions": precisions
-                }
-            }
-        })
-        .to_string()
-    }
-
-    fn mnn_llm_model_info_json() -> String {
-        json!({
-            "name": "antelopev2",
-            "version": "1.0.0",
-            "description": "Test MNN-LLM package for downloader tests.",
-            "model_type": "clip",
-            "source": {
-                "format": "huggingface",
-                "repo_id": "Lumilio-Photos/antelopev2"
-            },
-            "runtimes": {
-                "mnn-llm": {
-                    "available": true,
-                    "components": ["config"],
-                    "precisions": ["mixed"]
                 }
             }
         })

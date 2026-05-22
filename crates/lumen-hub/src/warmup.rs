@@ -253,8 +253,6 @@ fn is_ocr_task(task: &TaskSpec) -> bool {
         .get("output_schema")
         .is_some_and(|schema| schema == "ocr_v1")
         || task.name == "ocr"
-        || task.name.ends_with("_ocr")
-        || task.name.contains("ocr")
 }
 
 #[derive(Debug, Error)]
@@ -307,7 +305,7 @@ mod tests {
     #[test]
     fn ocr_task_detection_uses_schema_or_name() {
         let by_schema = TaskSpec::new("text", "").with_metadata("output_schema", "ocr_v1");
-        let by_name = TaskSpec::new("default_ocr", "");
+        let by_name = TaskSpec::new("ocr", "");
         let other = TaskSpec::new("semantic_image_embed", "");
 
         assert!(is_ocr_task(&by_schema));

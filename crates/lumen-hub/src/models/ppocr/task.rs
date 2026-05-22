@@ -914,15 +914,6 @@ fn indices_to_text(indices: &[i64], vocab: &[String], blank_id: i64) -> String {
         .join("")
 }
 
-fn image_input_mimes_with_tensor() -> Vec<String> {
-    SUPPORTED_IMAGE_MIMES
-        .iter()
-        .copied()
-        .chain(std::iter::once(DEFAULT_TENSOR_MIME))
-        .map(str::to_owned)
-        .collect()
-}
-
 fn denormalize_nchw_to_rgb(
     values: &[f32],
     height: usize,
@@ -956,10 +947,12 @@ fn source_box_to_det_canvas(box_coords: &[f32; 8], ratio_w: f32, ratio_h: f32) -
     mapped
 }
 
-fn image_input_mimes() -> Vec<String> {
+fn image_input_mimes_with_tensor() -> Vec<String> {
     SUPPORTED_IMAGE_MIMES
         .iter()
-        .map(|mime| (*mime).to_owned())
+        .copied()
+        .chain(std::iter::once(DEFAULT_TENSOR_MIME))
+        .map(str::to_owned)
         .collect()
 }
 
@@ -1025,14 +1018,18 @@ mod tests {
 
     #[test]
     fn test_source_box_to_det_canvas_scales_coordinates() {
-        let mapped = source_box_to_det_canvas(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0], 2.0, 0.5);
+        let mapped =
+            source_box_to_det_canvas(&[10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0], 2.0, 0.5);
         assert_eq!(mapped, [20.0, 10.0, 60.0, 20.0, 100.0, 30.0, 140.0, 40.0]);
     }
 
     #[test]
     fn test_image_input_mimes_only_advertise_decodable_formats() {
         assert_eq!(
-            image_input_mimes(),
+            image_input_mimes_with_tensor()
+                .into_iter()
+                .filter(|mime| mime != DEFAULT_TENSOR_MIME)
+                .collect::<Vec<_>>(),
             vec![
                 "image/jpeg".to_owned(),
                 "image/png".to_owned(),

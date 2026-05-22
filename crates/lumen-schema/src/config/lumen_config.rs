@@ -13,8 +13,6 @@ static MDNS_SERVICE_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9-]*$").expect("valid mDNS service name regex"));
 static PACKAGE_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9_]*$").expect("valid package name regex"));
-static RKNN_DEVICE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^rk\d+$").expect("valid RKNN device regex"));
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigValidationError {
@@ -174,10 +172,7 @@ impl Default for BatchingConfig {
 pub enum Runtime {
     Onnx,
     CandleOnnx,
-    Rknn,
     Mnn,
-    #[serde(rename = "mnn-llm")]
-    MnnLlm,
 }
 
 impl Runtime {
@@ -185,9 +180,7 @@ impl Runtime {
         match self {
             Self::Onnx => "onnx",
             Self::CandleOnnx => "candle_onnx",
-            Self::Rknn => "rknn",
             Self::Mnn => "mnn",
-            Self::MnnLlm => "mnn-llm",
         }
     }
 }
@@ -201,11 +194,6 @@ pub struct ModelConfig {
 
     /// Model runtime type.
     pub runtime: Runtime,
-
-    /// RKNN device identifier, required when `runtime` is `rknn`.
-    #[validate(regex(path = "*RKNN_DEVICE_RE"))]
-    #[serde(default)]
-    pub rknn_device: Option<String>,
 
     /// Dataset name for zero-shot classification.
     #[serde(default)]
@@ -262,7 +250,6 @@ impl LumenConfig {
         self.validate_model_aliases()?;
         self.validate_deployment()?;
         self.validate_mdns()?;
-        self.validate_runtime_requirements()?;
         Ok(())
     }
 
@@ -386,20 +373,6 @@ impl LumenConfig {
                     "server.mdns.service_name is required when server.mdns.enabled is true"
                         .to_owned(),
                 ));
-            }
-        }
-
-        Ok(())
-    }
-
-    fn validate_runtime_requirements(&self) -> Result<(), ConfigValidationError> {
-        for (service_name, service) in &self.services {
-            for (alias, model) in &service.models {
-                if model.runtime == Runtime::Rknn && model.rknn_device.is_none() {
-                    return Err(ConfigValidationError::Invalid(format!(
-                        "services.{service_name}.models.{alias}.rknn_device is required when runtime is rknn"
-                    )));
-                }
             }
         }
 
@@ -735,81 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn requires_rknn_device_for_rknn_runtime() {
-        let config = LumenConfig::from_json_str(
-            &json!({
-                "metadata": {
-                    "version": "1.0.0",
-                    "region": "cn",
-                    "cache_dir": "~/.lumen/models"
-                },
-                "deployment": {
-                    "mode": "single",
-                    "service": "clip"
-                },
-                "server": {
-                    "port": 50051
-                },
-                "services": {
-                    "clip": {
-                        "enabled": true,
-                        "package": "lumen_clip",
-                        "models": {
-                            "default": {
-                                "model": "ViT-B-32",
-                                "runtime": "rknn"
-                            }
-                        }
-                    }
-                }
-            })
-            .to_string(),
-        );
-
-        assert!(config.is_err());
-    }
-
-    #[test]
-    fn accepts_valid_rknn_runtime() {
-        let config = LumenConfig::from_json_str(
-            &json!({
-                "metadata": {
-                    "version": "1.0.0",
-                    "region": "cn",
-                    "cache_dir": "~/.lumen/models"
-                },
-                "deployment": {
-                    "mode": "single",
-                    "service": "clip"
-                },
-                "server": {
-                    "port": 50051
-                },
-                "services": {
-                    "clip": {
-                        "enabled": true,
-                        "package": "lumen_clip",
-                        "models": {
-                            "default": {
-                                "model": "ViT-B-32",
-                                "runtime": "rknn",
-                                "rknn_device": "rk3588"
-                            }
-                        }
-                    }
-                }
-            })
-            .to_string(),
-        )
-        .expect("valid rknn config parses");
-
-        let model = &config.services["clip"].models["default"];
-        assert_eq!(model.runtime, Runtime::Rknn);
-        assert_eq!(model.rknn_device.as_deref(), Some("rk3588"));
-    }
-
-    #[test]
-    fn accepts_candle_onnx_runtime_without_rknn_device() {
+    fn accepts_candle_onnx_runtime() {
         let config = LumenConfig::from_json_str(
             &json!({
                 "metadata": {
@@ -844,7 +743,6 @@ mod tests {
         let model = &config.services["siglip"].models["default"];
         assert_eq!(model.runtime, Runtime::CandleOnnx);
         assert_eq!(model.runtime.as_str(), "candle_onnx");
-        assert!(model.rknn_device.is_none());
     }
 
     #[test]

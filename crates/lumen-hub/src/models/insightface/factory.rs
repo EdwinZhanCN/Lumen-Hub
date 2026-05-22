@@ -50,15 +50,11 @@ impl InsightFaceModelFactory {
     ) -> PathBuf {
         let runtime_dir = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-            Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
-            Runtime::MnnLlm => "mnn-llm",
         };
         let ext = match runtime {
             Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-            Runtime::Rknn => "rknn",
             Runtime::Mnn => "mnn",
-            Runtime::MnnLlm => "json",
         };
         self.model_dir(model_name)
             .join(runtime_dir)
@@ -96,12 +92,6 @@ impl InsightFaceModelFactory {
             Runtime::CandleOnnx => Err(ServiceError::InvalidArgument(
                 "InsightFace Candle ONNX runtime is not implemented yet; use runtime=onnx"
                     .to_owned(),
-            )),
-            Runtime::Rknn => Err(ServiceError::InvalidArgument(
-                "InsightFace RKNN runtime is not implemented yet".to_owned(),
-            )),
-            Runtime::MnnLlm => Err(ServiceError::InvalidArgument(
-                "InsightFace MNN-LLM runtime is not supported".to_owned(),
             )),
         }
     }

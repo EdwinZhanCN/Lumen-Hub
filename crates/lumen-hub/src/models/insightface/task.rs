@@ -12,10 +12,10 @@ use serde::Deserialize;
 
 use super::metadata::{InsightFaceDetectionSpec, InsightFacePackSpec, InsightFaceRecognitionSpec};
 use crate::service::{
-    DEFAULT_TENSOR_MIME, FixedShapeTensorValidationOptions, IMAGE_TENSOR_LAYOUT, LetterboxTransform,
-    META_MODEL_ID, PREPROCESS_INSIGHTFACE_DET, ServiceError, ServiceResult, TaskHandler, TaskRequest,
-    TaskResult, TaskSpec, bytes_to_f32_le, is_tensor_input_request, parse_letterbox_transform,
-    parse_source_dimensions, validate_fixed_shape_tensor_request,
+    DEFAULT_TENSOR_MIME, FixedShapeTensorValidationOptions, IMAGE_TENSOR_LAYOUT,
+    LetterboxTransform, META_MODEL_ID, PREPROCESS_INSIGHTFACE_DET, ServiceError, ServiceResult,
+    TaskHandler, TaskRequest, TaskResult, TaskSpec, bytes_to_f32_le, is_tensor_input_request,
+    parse_letterbox_transform, parse_source_dimensions, validate_fixed_shape_tensor_request,
 };
 
 const SUPPORTED_IMAGE_MIMES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/avif"];

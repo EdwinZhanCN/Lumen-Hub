@@ -6,7 +6,7 @@ use super::L2NormalizeNode;
 
 /// Builds a SigLIP embedding pipeline from a replaceable model-forward node.
 ///
-/// The forward node can be `OrtNode`, a future `RknnNode`, or any other
+/// The forward node can be `OrtNode`, an accelerator-backed node, or any other
 /// `MLNode` that exposes a Float32 or Float16 embedding output. The pipeline
 /// appends L2 normalization and returns normalized Float32 embeddings under
 /// `embedding_output_name`.

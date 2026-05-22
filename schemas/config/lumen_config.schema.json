@@ -167,15 +167,6 @@
           ],
           "default": null
         },
-        "rknn_device": {
-          "description": "RKNN device identifier, required when `runtime` is `rknn`.",
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null,
-          "pattern": "^rk\\d+$"
-        },
         "runtime": {
           "description": "Model runtime type.",
           "$ref": "#/$defs/Runtime"
@@ -201,9 +192,7 @@
       "enum": [
         "onnx",
         "candle_onnx",
-        "rknn",
-        "mnn",
-        "mnn-llm"
+        "mnn"
       ]
     },
     "ServerConfig": {

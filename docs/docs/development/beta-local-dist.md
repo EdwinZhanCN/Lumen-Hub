@@ -6,6 +6,10 @@ sidebar_position: 2
 
 Hub runtime profiles are built with `cargo xtask dist`. The public `lumen-cli` release archives and shell/PowerShell installers are built with `cargo-dist`.
 
+Rust 1.88+ is required by the current dependency set. The repository pins
+`rust-toolchain.toml`, so `rustup` will install/use the right toolchain when it
+is available in the build environment.
+
 ## Profiles
 
 | Dist profile | Backend route | Notes |
@@ -13,6 +17,7 @@ Hub runtime profiles are built with `cargo xtask dist`. The public `lumen-cli` r
 | `universal-cpu` | ORT CPU | Portable CPU baseline. |
 | `darwin-arm64` | ORT CPU/XNNPACK + MNN Metal | No CoreML, no Candle. |
 | `linux-x64-cuda` | ORT CUDA | CUDA package is ORT-only for beta. MNN CUDA is not bundled. |
+| `linux-arm64` | ORT CPU | Native Linux ARM64 / aarch64 package. |
 | `windows-x64-dml` | ORT DirectML + ORT CPU | No MNN. |
 | `linux-x64-openvino` | ORT OpenVINO + dynamic ORT loading | Bundles OpenVINO-enabled ONNX Runtime libraries. |
 
@@ -24,6 +29,7 @@ All beta profiles include `clip`, `siglip`, `insightface`, and `ppocr`.
 cargo xtask dist --profile universal-cpu
 cargo xtask dist --profile darwin-arm64
 cargo xtask dist --profile linux-x64-cuda
+cargo xtask dist --profile linux-arm64
 cargo xtask dist --profile windows-x64-dml
 cargo xtask dist --profile linux-x64-openvino
 ```

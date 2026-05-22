@@ -32,6 +32,9 @@ jobs:
           - name: linux-x64-cuda
             os: ubuntu-24.04
             features: profile-linux-x64-cuda
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            features: profile-linux-arm64
           - name: windows-x64-dml
             os: windows-2025
             features: profile-windows-x64-dml

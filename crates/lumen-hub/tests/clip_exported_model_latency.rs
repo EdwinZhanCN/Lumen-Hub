@@ -53,7 +53,6 @@ async fn exported_clip_model_latency() {
             ModelConfig {
                 model: model_name.clone(),
                 runtime: Runtime::Onnx,
-                rknn_device: None,
                 dataset: None,
                 precision: Some(precision.clone()),
             },

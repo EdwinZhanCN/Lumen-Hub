@@ -37,7 +37,6 @@ fn main() {
 
         println!("cargo:rerun-if-env-changed=MNN_LIB_DIR");
         println!("cargo:rerun-if-env-changed=MNN_INCLUDE_DIR");
-        println!("cargo:rerun-if-env-changed=MNN_LLM_INCLUDE_DIR");
         println!(
             "cargo:warning=Using MNN dynamic libraries from MNN_LIB_DIR: {}",
             lib_dir.display()
@@ -71,7 +70,6 @@ fn main() {
         }
 
         verify_dynamic_libraries(&lib_dir, &os);
-        warn_if_llm_headers_missing(&include_dir);
 
         println!(
             "cargo:warning=Using prebuilt MNN {} for {}/{}",
@@ -96,14 +94,11 @@ fn get_mnn_include_dirs(manifest_dir: &PathBuf) -> Vec<PathBuf> {
     if let Ok(include_dir) = env::var("MNN_INCLUDE_DIR") {
         let include_path = PathBuf::from(&include_dir);
         if include_path.exists() {
-            let mut include_dirs = vec![include_path.clone()];
-            append_env_llm_include_dir(&mut include_dirs);
-            warn_if_llm_headers_missing(&include_path);
             println!(
                 "cargo:warning=Using MNN headers from MNN_INCLUDE_DIR: {}",
                 include_path.display()
             );
-            return include_dirs;
+            return vec![include_path];
         }
         panic!(
             "MNN_INCLUDE_DIR='{}' does not exist",
@@ -114,13 +109,11 @@ fn get_mnn_include_dirs(manifest_dir: &PathBuf) -> Vec<PathBuf> {
     if let Ok(mnn_dir) = env::var("MNN_SOURCE_DIR") {
         let mnn_path = PathBuf::from(&mnn_dir);
         if mnn_path.exists() {
-            let mut include_dirs = mnn_source_include_dirs(manifest_dir, &mnn_path);
-            ensure_mnn_llm_public_headers(manifest_dir, &mut include_dirs);
             println!(
                 "cargo:warning=Using MNN headers from MNN_SOURCE_DIR: {}",
                 mnn_path.display()
             );
-            return include_dirs;
+            return mnn_source_include_dirs(manifest_dir, &mnn_path);
         }
         panic!("MNN_SOURCE_DIR='{}' does not exist", mnn_path.display());
     }
@@ -128,13 +121,11 @@ fn get_mnn_include_dirs(manifest_dir: &PathBuf) -> Vec<PathBuf> {
     let local_mnn = manifest_dir.join("3rd_party/MNN");
     let local_include = local_mnn.join("include");
     if local_include.exists() {
-        let mut include_dirs = mnn_source_include_dirs(manifest_dir, &local_mnn);
-        ensure_mnn_llm_public_headers(manifest_dir, &mut include_dirs);
         println!(
             "cargo:warning=Using MNN headers from local source: {}",
             local_include.display()
         );
-        return include_dirs;
+        return mnn_source_include_dirs(manifest_dir, &local_mnn);
     }
 
     if env::var("MNN_LIB_DIR").is_ok() {
@@ -150,29 +141,9 @@ fn get_mnn_include_dirs(manifest_dir: &PathBuf) -> Vec<PathBuf> {
     panic!(
         "MNN headers not found. Please set one of:\n\
          - MNN_INCLUDE_DIR: path to directory containing MNN headers\n\
-         - MNN_LLM_INCLUDE_DIR: optional path to MNN transformers/llm/engine/include\n\
          - MNN_SOURCE_DIR: path to MNN source tree\n\
          Or ensure 3rd_party/MNN exists in the project root."
     );
-}
-
-fn has_mnn_llm_public_header(include_dirs: &[PathBuf]) -> bool {
-    include_dirs
-        .iter()
-        .any(|dir| dir.join("MNN/llm/llm.hpp").exists())
-}
-
-fn ensure_mnn_llm_public_headers(manifest_dir: &Path, include_dirs: &mut Vec<PathBuf>) {
-    if has_mnn_llm_public_header(include_dirs) {
-        return;
-    }
-    if let Some(prebuilt_include) = find_bundled_prebuilt_include(manifest_dir) {
-        println!(
-            "cargo:warning=Supplementing MNN_SOURCE_DIR headers with bundled prebuilt MNN/llm/llm.hpp from {}",
-            prebuilt_include.display()
-        );
-        include_dirs.push(prebuilt_include);
-    }
 }
 
 fn find_bundled_prebuilt_include(manifest_dir: &Path) -> Option<PathBuf> {
@@ -185,7 +156,7 @@ fn find_bundled_prebuilt_include(manifest_dir: &Path) -> Option<PathBuf> {
     if let Ok(entries) = fs::read_dir(&prebuilt_root) {
         for entry in entries.flatten() {
             let include_dir = entry.path().join("include");
-            if include_dir.join("MNN/llm/llm.hpp").is_file() {
+            if include_dir.join("MNN/Interpreter.hpp").is_file() {
                 candidates.push(include_dir);
             }
         }
@@ -208,40 +179,7 @@ fn mnn_source_include_dirs(build_or_manifest_dir: &Path, mnn_source_dir: &Path) 
         include_dirs.push(source_include);
     }
 
-    let llm_include = mnn_source_dir.join("transformers/llm/engine/include");
-    if llm_include.exists() {
-        include_dirs.push(llm_include);
-    }
-
-    append_env_llm_include_dir(&mut include_dirs);
     include_dirs
-}
-
-fn append_env_llm_include_dir(include_dirs: &mut Vec<PathBuf>) {
-    if let Ok(llm_include_dir) = env::var("MNN_LLM_INCLUDE_DIR") {
-        let llm_include_path = PathBuf::from(&llm_include_dir);
-        if llm_include_path.exists() {
-            println!(
-                "cargo:warning=Using MNN LLM headers from MNN_LLM_INCLUDE_DIR: {}",
-                llm_include_path.display()
-            );
-            include_dirs.push(llm_include_path);
-        } else {
-            panic!(
-                "MNN_LLM_INCLUDE_DIR='{}' does not exist",
-                llm_include_path.display()
-            );
-        }
-    }
-}
-
-fn warn_if_llm_headers_missing(include_dir: &Path) {
-    if !include_dir.join("MNN/llm/llm.hpp").exists() && !include_dir.join("llm/llm.hpp").exists() {
-        println!(
-            "cargo:warning=MNN LLM headers were not found under {}; rebuild prebuilts with -DMNN_BUILD_LLM=ON before enabling MnnLlmNode",
-            include_dir.display()
-        );
-    }
 }
 
 fn get_prebuilt_asset_name(os: &str, arch: &str) -> Option<String> {
@@ -351,8 +289,7 @@ fn remove_static_libraries(extract_dir: &Path) {
 
         let is_static = name.ends_with(".a")
             || name.ends_with("_static.lib")
-            || (name.ends_with(".lib")
-                && !matches!(name, "MNN.lib" | "llm.lib" | "MNN_Express.lib"));
+            || (name.ends_with(".lib") && !matches!(name, "MNN.lib" | "MNN_Express.lib"));
 
         if is_static {
             let _ = fs::remove_file(&path);
@@ -467,7 +404,6 @@ fn link_libraries(lib_dirs: &[PathBuf], os: &str) {
     }
 
     println!("cargo:rustc-link-lib=dylib=MNN");
-    link_optional_dynamic_library(lib_dirs, os, "llm");
     link_optional_dynamic_library(lib_dirs, os, "MNN_Express");
 
     match os {
@@ -495,10 +431,6 @@ fn link_optional_dynamic_library(lib_dirs: &[PathBuf], os: &str, library: &str) 
 
     if has_library {
         println!("cargo:rustc-link-lib=dylib={library}");
-    } else if library == "llm" {
-        println!(
-            "cargo:warning=No standalone MNN llm library found; assuming LLM objects are linked into libMNN"
-        );
     }
 }
 

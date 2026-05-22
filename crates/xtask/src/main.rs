@@ -1078,6 +1078,14 @@ const PROFILES: &[DistProfile] = &[
         mnn_bundle: false,
     },
     DistProfile {
+        name: "linux-arm64",
+        archive_name: "lumen-hub-linux-arm64",
+        target: "aarch64-unknown-linux-gnu",
+        features: &["profile-linux-arm64"],
+        openvino_bundle: false,
+        mnn_bundle: false,
+    },
+    DistProfile {
         name: "windows-x64-dml",
         archive_name: "lumen-hub-windows-x64-dml",
         target: "x86_64-pc-windows-msvc",
