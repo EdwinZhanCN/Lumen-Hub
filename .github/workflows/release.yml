@@ -92,12 +92,13 @@ jobs:
                   if (!(Test-Path (Join-Path $artifact "licenses/openvino/README.md"))) { throw "missing OpenVINO notice" }
 
             - name: Check MNN dynamic runtime bundle
-              if: matrix.profile == 'darwin-arm64'
+              if: contains(fromJSON('["darwin-arm64", "linux-arm64"]'), matrix.profile)
               shell: pwsh
               run: |
                   $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
+                  $mnnLib = if ($env:RUNNER_OS -eq "macOS") { "lib/libMNN.dylib" } else { "lib/libMNN.so" }
                   if (!(Test-Path (Join-Path $artifact "bin/lumen-hub-bin"))) { throw "missing bin/lumen-hub-bin" }
-                  if (!(Test-Path (Join-Path $artifact "lib/libMNN.dylib"))) { throw "missing lib/libMNN.dylib" }
+                  if (!(Test-Path (Join-Path $artifact $mnnLib))) { throw "missing $mnnLib" }
                   if (!(Test-Path (Join-Path $artifact "licenses/mnn/README.md"))) { throw "missing MNN notice" }
 
             - uses: actions/upload-artifact@v4

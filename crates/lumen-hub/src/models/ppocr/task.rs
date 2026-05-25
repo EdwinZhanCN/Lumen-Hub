@@ -172,7 +172,7 @@ impl PpocrTask {
 
         let spec = TaskSpec::new(&name, "PP-OCR end-to-end text detection and recognition")
             .with_input_mimes(image_input_mimes_with_tensor())
-            .with_output_mime("application/json")
+            .with_output_mime("application/json;schema=ocr_v1")
             .with_metadata("output_schema", "ocr_v1")
             .with_metadata(META_MODEL_ID, &model_id)
             .with_limit("det_limit_side_len", det_config.limit_side_len.to_string())
@@ -213,9 +213,11 @@ impl TaskHandler for PpocrTask {
             .to_json_bytes()
             .map_err(|e| ServiceError::Internal(format!("failed to serialize OCR result: {e}")))?;
 
-        Ok(TaskResult::new(json_bytes, "application/json")
-            .with_result_schema("ocr_v1")
-            .with_meta(META_MODEL_ID, &self.model_id))
+        Ok(
+            TaskResult::new(json_bytes, "application/json;schema=ocr_v1")
+                .with_result_schema("ocr_v1")
+                .with_meta(META_MODEL_ID, &self.model_id),
+        )
     }
 }
 

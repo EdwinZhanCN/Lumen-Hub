@@ -19,7 +19,7 @@ use crate::service::{
 };
 
 const SUPPORTED_IMAGE_MIMES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/avif"];
-const JSON_MIME: &str = "application/json";
+const JSON_MIME: &str = "application/json;schema=face_v1";
 const NUM_ANCHORS: usize = 2;
 const ARCFACE_TEMPLATE: [[f32; 2]; 5] = [
     [38.2946, 51.6963],

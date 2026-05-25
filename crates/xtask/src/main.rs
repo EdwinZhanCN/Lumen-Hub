@@ -395,6 +395,7 @@ fn mnn_prebuilt_suffix(target: &str) -> Result<&'static str, String> {
     match target {
         "aarch64-apple-darwin" | "x86_64-apple-darwin" => Ok("macos-universal"),
         "x86_64-unknown-linux-gnu" => Ok("linux-x86_64"),
+        "aarch64-unknown-linux-gnu" => Ok("linux-aarch64"),
         "x86_64-pc-windows-msvc" => Ok("windows-x86_64"),
         other => Err(format!(
             "no MNN prebuilt mapping for target `{other}`; expected a supported desktop target"
@@ -1115,7 +1116,7 @@ const PROFILES: &[DistProfile] = &[
         target: "aarch64-unknown-linux-gnu",
         features: &["profile-linux-arm64"],
         openvino_bundle: false,
-        mnn_bundle: false,
+        mnn_bundle: true,
         jetson_dynamic_ort: false,
     },
     DistProfile {
@@ -1177,6 +1178,10 @@ mod tests {
         assert_eq!(
             mnn_prebuilt_suffix("x86_64-unknown-linux-gnu").unwrap(),
             "linux-x86_64"
+        );
+        assert_eq!(
+            mnn_prebuilt_suffix("aarch64-unknown-linux-gnu").unwrap(),
+            "linux-aarch64"
         );
         assert_eq!(
             mnn_prebuilt_suffix("x86_64-pc-windows-msvc").unwrap(),

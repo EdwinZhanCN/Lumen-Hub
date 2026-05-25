@@ -44,7 +44,7 @@ Other detection and recognition fields in the example file are part of the runti
 
 | Task | Input | Output | Uses |
 |------|-------|--------|------|
-| `ocr` | `image/jpeg`, `image/png`, `image/webp`, `image/avif` | `application/json` with schema `ocr_v1` | `detection.{precision}.onnx` + `recognition.{precision}.onnx` + vocabulary |
+| `ocr` | `image/jpeg`, `image/png`, `image/webp`, `image/avif` | `application/json;schema=ocr_v1` | `detection.{precision}.onnx` + `recognition.{precision}.onnx` + vocabulary |
 
 ## Limits
 

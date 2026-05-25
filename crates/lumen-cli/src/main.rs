@@ -1185,6 +1185,7 @@ fn backend_choices(platform: PlatformProfile) -> Vec<BackendChoice> {
             BackendChoice::available(Backend::cpu_only()),
         ],
         "linux-arm64" => vec![
+            BackendChoice::available(Backend::mnn_vulkan("linux-arm64")),
             BackendChoice::available(Backend::ort_jetson_cuda()),
             BackendChoice::available(Backend::cpu_only_profile("linux-arm64")),
         ],
@@ -1476,6 +1477,16 @@ impl Backend {
         Self {
             name: "mnn-metal",
             release_profile: "darwin-arm64",
+            cv_runtime: "mnn",
+            semantic_runtime: "mnn",
+            semantic_precision: "fp16",
+        }
+    }
+
+    fn mnn_vulkan(release_profile: &'static str) -> Self {
+        Self {
+            name: "mnn-vulkan",
+            release_profile,
             cv_runtime: "mnn",
             semantic_runtime: "mnn",
             semantic_precision: "fp16",
@@ -1821,6 +1832,7 @@ mod tests {
         for preset in Preset::all() {
             for backend in [
                 Backend::mnn_metal(),
+                Backend::mnn_vulkan("linux-arm64"),
                 Backend::ort_cuda(),
                 Backend::ort_openvino(),
                 Backend::ort_jetson_cuda(),
@@ -1845,18 +1857,23 @@ mod tests {
     }
 
     #[test]
-    fn linux_arm64_offers_jetson_and_native_cpu_profiles() {
+    fn linux_arm64_offers_vulkan_jetson_and_native_cpu_profiles() {
         let choices = backend_choices(PlatformProfile {
             name: "linux-arm64",
         });
 
-        assert_eq!(choices.len(), 2);
-        let jetson = choices[0]
+        assert_eq!(choices.len(), 3);
+        let vulkan = choices[0]
+            .backend
+            .expect("linux-arm64 Vulkan backend is available");
+        assert_eq!(vulkan.name, "mnn-vulkan");
+        assert_eq!(vulkan.release_profile, "linux-arm64");
+        let jetson = choices[1]
             .backend
             .expect("linux-arm64 Jetson backend is available");
         assert_eq!(jetson.name, "ort-jetson-cuda");
         assert_eq!(jetson.release_profile, "linux-arm64-jetson");
-        let backend = choices[1]
+        let backend = choices[2]
             .backend
             .expect("linux-arm64 backend is available");
         assert_eq!(backend.name, "cpu-only");

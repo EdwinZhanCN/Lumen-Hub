@@ -17,7 +17,7 @@ is available in the build environment.
 | `universal-cpu` | ORT CPU | Portable CPU baseline. |
 | `darwin-arm64` | ORT CPU/XNNPACK + MNN Metal | No CoreML, no Candle. |
 | `linux-x64-cuda` | ORT CUDA | CUDA package is ORT-only for beta. MNN CUDA is not bundled. |
-| `linux-arm64` | ORT CPU | Native Linux ARM64 / aarch64 package. |
+| `linux-arm64` | ORT CPU + MNN Vulkan | Native Linux ARM64 / aarch64 package. Vulkan-capable MNN runtime is bundled. |
 | `linux-arm64-jetson` | ORT CUDA via dynamic ONNX Runtime | JetPack 6+ / CUDA 12.6-oriented profile. Install a compatible Jetson ONNX Runtime GPU package or set `LUMNN_ORT_DYLIB_PATH`. |
 | `windows-x64-dml` | ORT DirectML + ORT CPU | No MNN. |
 | `linux-x64-openvino` | ORT OpenVINO + dynamic ORT loading | Bundles OpenVINO-enabled ONNX Runtime libraries. |

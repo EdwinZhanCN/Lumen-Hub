@@ -185,6 +185,7 @@ fn mnn_source_include_dirs(build_or_manifest_dir: &Path, mnn_source_dir: &Path) 
 fn get_prebuilt_asset_name(os: &str, arch: &str) -> Option<String> {
     let suffix = match (os, arch) {
         ("linux", "x86_64") => "linux-x86_64",
+        ("linux", "aarch64") => "linux-aarch64",
         ("windows", "x86_64") => "windows-x86_64",
         ("macos", _) => "macos-universal",
         _ => return None,

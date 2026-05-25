@@ -65,6 +65,7 @@ profile-linux-arm64 = [
   "ppocr",
   "siglip",
   "ort-download-binaries",
+  "mnn-vulkan",
 ]
 profile-linux-arm64-jetson = [
   "clip",

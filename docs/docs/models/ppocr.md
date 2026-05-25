@@ -48,7 +48,7 @@ Other detection and recognition fields in the example file are part of the runti
 
 | Task | Input | Output | Uses |
 |------|-------|--------|------|
-| `ocr` | `image/jpeg`, `image/png`, `image/webp`, `image/avif`, `application/octet-stream` | `application/json` with schema `ocr_v1` | `detection.{precision}.onnx` + `recognition.{precision}.onnx` + vocabulary |
+| `ocr` | `image/jpeg`, `image/png`, `image/webp`, `image/avif`, `application/octet-stream` | `application/json;schema=ocr_v1` | `detection.{precision}.onnx` + `recognition.{precision}.onnx` + vocabulary |
 
 Tensor input skips detection preprocess only. See [Task Input Contract](../architecture/task-input.md).
 

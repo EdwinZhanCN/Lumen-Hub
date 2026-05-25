@@ -1498,6 +1498,31 @@ fn bioclip_label_from_value(value: &serde_json::Value) -> Option<String> {
         }
     }
     let object = value.as_object()?;
+    if let Some(raw_label) = object.get("_raw_label") {
+        let mut parts = Vec::new();
+        collect_label_strings(raw_label, &mut parts);
+        if !parts.is_empty() {
+            return Some(parts.join(" / "));
+        }
+    }
+    let mut parts = Vec::new();
+    for key in [
+        "kingdom",
+        "phylum",
+        "class",
+        "order",
+        "family",
+        "genus",
+        "species",
+        "common_name",
+    ] {
+        if let Some(value) = object.get(key) {
+            collect_label_strings(value, &mut parts);
+        }
+    }
+    if !parts.is_empty() {
+        return Some(parts.join(" / "));
+    }
     for key in ["label", "name", "scientific_name", "common_name", "id"] {
         if let Some(value) = object.get(key) {
             if let Some(text) = value.as_str() {
@@ -1517,7 +1542,9 @@ fn collect_label_strings(value: &serde_json::Value, parts: &mut Vec<String>) {
     match value {
         serde_json::Value::String(value) => {
             let trimmed = value.trim();
-            if !trimmed.is_empty() {
+            if trimmed.is_empty() {
+                parts.push("*".to_owned());
+            } else {
                 parts.push(trimmed.to_owned());
             }
         }
@@ -2197,7 +2224,7 @@ mod tests {
         let path = temp_path("bioclip_labels.json");
         fs::write(
             &path,
-            r#"[{"scientific_name":"Acer rubrum"},"Panthera leo",{"id":42},[["Animalia","","Acanthodes","pristis"],""]]"#,
+            r#"[{"scientific_name":"Acer rubrum","_raw_label":[["Plantae","Tracheophyta","Magnoliopsida","Sapindales","Sapindaceae","Acer","rubrum"],"red maple"]},"Panthera leo",{"id":42},[["Animalia","","Acanthodes","pristis"],""]]"#,
         )
         .unwrap();
 
@@ -2206,10 +2233,10 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "Acer rubrum".to_owned(),
+                "Plantae / Tracheophyta / Magnoliopsida / Sapindales / Sapindaceae / Acer / rubrum / red maple".to_owned(),
                 "Panthera leo".to_owned(),
                 "42".to_owned(),
-                "Animalia / Acanthodes / pristis".to_owned()
+                "Animalia / * / Acanthodes / pristis / *".to_owned()
             ]
         );
 

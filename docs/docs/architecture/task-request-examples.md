@@ -220,7 +220,7 @@ Optional Top-K meta keys (any one): `TopK`, `topK`, `top_k`, `top-k`, `lumen.top
 
 ## `ocr` (PPOCR)
 
-**Output:** `application/json` (schema `ocr_v1`) · **Batching:** no
+**Output:** `application/json;schema=ocr_v1` · **Batching:** no
 
 ### Raw — image
 
@@ -268,7 +268,7 @@ Server still runs DB post-processing, per-box recognition, and CTC decode. Outpu
 
 ## `face_recognition` (InsightFace)
 
-**Output:** `application/json` (schema `face_v1`) · **Batching:** no
+**Output:** `application/json;schema=face_v1` · **Batching:** no
 
 ### Raw — image
 
