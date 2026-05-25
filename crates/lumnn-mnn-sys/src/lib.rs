@@ -19,6 +19,7 @@ mod normal_impl {
 
     use ndarray::{ArrayD, ArrayViewD, IxDyn};
     use std::ffi::{CStr, CString};
+    use std::os::raw::c_char;
     use std::ptr::NonNull;
 
     #[allow(non_camel_case_types)]
@@ -744,11 +745,11 @@ mod normal_impl {
             let code = unsafe {
                 ffi::mnnr_run_multi(
                     self.ptr.as_ptr(),
-                    in_names.as_ptr() as *mut *const i8,
+                    in_names.as_ptr() as *mut *const c_char,
                     in_data.as_ptr() as *mut *const f32,
                     in_sizes.as_ptr(),
                     in_names.len(),
-                    out_names.as_ptr() as *mut *const i8,
+                    out_names.as_ptr() as *mut *const c_char,
                     out_data.as_mut_ptr(),
                     out_sizes.as_ptr(),
                     out_names.len(),
