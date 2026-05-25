@@ -27,10 +27,10 @@ jobs:
                       os: ubuntu-24.04
                       archive: lumen-hub-linux-x64-cuda.tar.gz
                     - profile: linux-arm64
-                      os: ubuntu-24.04-arm
+                      os: ubuntu-22.04-arm
                       archive: lumen-hub-linux-arm64.tar.gz
                     - profile: linux-arm64-jetson
-                      os: ubuntu-24.04-arm
+                      os: ubuntu-22.04-arm
                       archive: lumen-hub-linux-arm64-jetson.tar.gz
                     - profile: windows-x64-dml
                       os: windows-2025
@@ -121,7 +121,7 @@ jobs:
                       os: ubuntu-22.04
                       archive: lumen-cli-x86_64-unknown-linux-gnu.tar.xz
                     - target: aarch64-unknown-linux-gnu
-                      os: ubuntu-24.04-arm
+                      os: ubuntu-22.04-arm
                       archive: lumen-cli-aarch64-unknown-linux-gnu.tar.xz
                     - target: x86_64-pc-windows-msvc
                       os: windows-2022
