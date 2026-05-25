@@ -9,7 +9,7 @@ use std::process::Command;
 use std::{env, fs};
 
 /// MNN prebuilt version to download from GitHub releases
-const MNN_PREBUILT_VERSION: &str = "3.5.0-lumnn.dyn";
+const MNN_PREBUILT_VERSION: &str = "3.5.0-lumnn.dyn.2";
 const MNN_PREBUILT_REPO: &str = "EdwinZhanCN/MNN";
 
 fn main() {
