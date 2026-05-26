@@ -7,7 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use half::f16;
-use hnswlib_rs::{Hnsw, InnerProduct, legacy::LegacyVectors};
+use hnswlib_rs::HnswIndex;
 use image::{
     RgbImage,
     imageops::{self, FilterType},
@@ -618,7 +618,7 @@ struct BioClipDataset {
     embeddings: MmapNpyMatrix,
     labels: Vec<String>,
     layout: BioClipEmbeddingLayout,
-    index: Option<(Hnsw<u64, InnerProduct>, LegacyVectors<'static>)>,
+    index: Option<HnswIndex<'static>>,
     #[allow(dead_code)]
     mmap: Option<memmap2::Mmap>,
 }
@@ -667,20 +667,29 @@ impl BioClipDataset {
             // Extend lifetime of the mmap reference to 'static.
             // This is safe because mmap is stored alongside the index inside BioClipDataset and stays alive.
             let mmap_static_ref: &'static [u8] = unsafe { std::mem::transmute(&mmap[..]) };
-            let (graph, vectors) =
-                hnswlib_rs::legacy::load_hnswlib(InnerProduct::new(), dim, mmap_static_ref)
-                    .map_err(|err| {
-                        ServiceError::Internal(format!(
-                            "failed to load legacy HNSW index at {}: {:?}",
-                            path.display(),
-                            err
-                        ))
-                    })?;
+            let mut graph = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                HnswIndex::load(dim, mmap_static_ref)
+            }))
+            .map_err(|_| {
+                ServiceError::Internal(format!(
+                    "failed to load legacy HNSW index at {}",
+                    path.display()
+                ))
+            })?;
 
-            graph.set_ef_search(256);
+            if graph.dim != dim {
+                return Err(ServiceError::InvalidArgument(format!(
+                    "BioCLIP HNSW index at {} has dimension {}, expected {}",
+                    path.display(),
+                    graph.dim,
+                    dim
+                )));
+            }
+
+            graph.ef = 256;
 
             mmap_owner = Some(mmap);
-            Some((graph, vectors))
+            Some(graph)
         } else {
             None
         };
@@ -717,15 +726,13 @@ impl BioClipDataset {
         }
 
         let limit = top_k.min(self.labels.len());
-        let best = if let Some((graph, vectors)) = &self.index {
+        let best = if let Some(graph) = &self.index {
             let search_k = BIOCLIP_HNSW_RERANK_K.min(self.labels.len());
-            let search_hits = graph
-                .search(vectors, query, search_k, None)
-                .map_err(|err| ServiceError::Internal(format!("HNSW search failed: {:?}", err)))?;
-            let candidates: Vec<usize> = search_hits
-                .into_iter()
-                .map(|hit| hit.key as usize)
-                .collect();
+            let search_hits = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                graph.search_knn(query, search_k, hnsw_inner_product_distance)
+            }))
+            .map_err(|_| ServiceError::Internal("HNSW search failed".to_owned()))?;
+            let candidates: Vec<usize> = search_hits.into_iter().map(|(label, _)| label).collect();
             self.rerank_candidates(query, query_norm, limit, candidates, logit_scale)?
         } else {
             match self.layout {
@@ -1300,6 +1307,15 @@ fn top_k_from_request(request: &TaskRequest, max_len: usize) -> ServiceResult<us
 
 fn l2_norm(values: &[f32]) -> f32 {
     values.iter().map(|value| value * value).sum::<f32>().sqrt()
+}
+
+fn hnsw_inner_product_distance(a: &[f32], b: &[f32]) -> f64 {
+    let dot = a
+        .iter()
+        .zip(b.iter())
+        .map(|(lhs, rhs)| lhs * rhs)
+        .sum::<f32>();
+    f64::from(1.0 - dot)
 }
 
 impl ClipImageEmbedTask {
