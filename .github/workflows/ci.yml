@@ -1,55 +1,55 @@
 name: CI
 
 on:
-  pull_request:
-  push:
-    branches: [main]
+    pull_request:
+    push:
+        branches: [main]
 
 jobs:
-  workspace:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Format
-        run: cargo fmt --all -- --check
-      - name: Test workspace
-        run: cargo test --workspace
+    workspace:
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - name: Format
+              run: cargo fmt --all -- --check
+            - name: Test workspace
+              run: cargo test --workspace
 
-  feature-profiles:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: universal-cpu
-            os: ubuntu-24.04
-            features: profile-universal-cpu
-          - name: darwin-arm64
-            os: macos-15
-            features: profile-darwin-arm64
-          - name: linux-x64-cuda
-            os: ubuntu-24.04
-            features: profile-linux-x64-cuda
-          - name: linux-arm64
-            os: ubuntu-24.04-arm
-            features: profile-linux-arm64
-          - name: linux-arm64-jetson
-            os: ubuntu-24.04-arm
-            features: profile-linux-arm64-jetson
-          - name: windows-x64-dml
-            os: windows-2025
-            features: profile-windows-x64-dml
-          - name: linux-x64-openvino
-            os: ubuntu-24.04
-            features: profile-linux-x64-openvino
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Check profile
-        env:
-          RUSTFLAGS: ${{ matrix.name == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
-          CFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
-          CXXFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
-        run: cargo check -p lumen-hub --no-default-features --features ${{ matrix.features }}
+    feature-profiles:
+        name: ${{ matrix.name }}
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - name: universal-cpu
+                      os: ubuntu-24.04
+                      features: profile-universal-cpu
+                    - name: darwin-arm64
+                      os: macos-15
+                      features: profile-darwin-arm64
+                    - name: linux-x64-cuda
+                      os: ubuntu-24.04
+                      features: profile-linux-x64-cuda
+                    - name: linux-arm64
+                      os: ubuntu-22.04-arm
+                      features: profile-linux-arm64
+                    - name: linux-arm64-jetson
+                      os: ubuntu-22.04-arm
+                      features: profile-linux-arm64-jetson
+                    - name: windows-x64-dml
+                      os: windows-2025
+                      features: profile-windows-x64-dml
+                    - name: linux-x64-openvino
+                      os: ubuntu-24.04
+                      features: profile-linux-x64-openvino
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@stable
+            - name: Check profile
+              env:
+                  RUSTFLAGS: ${{ matrix.name == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
+                  CFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
+                  CXXFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
+              run: cargo check -p lumen-hub --no-default-features --features ${{ matrix.features }}
