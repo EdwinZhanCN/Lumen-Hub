@@ -98,6 +98,7 @@ base64 = "0.22.1"
 bytes = "1.11.1"
 console = "0.16.1"
 half = "2.7.1"
+hnswlib-rs = "0.10.0"
 image = "0.25.10"
 indicatif = "0.18.3"
 imageproc = { version = "0.26", optional = true }

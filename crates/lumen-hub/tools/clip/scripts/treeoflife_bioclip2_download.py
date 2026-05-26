@@ -207,7 +207,123 @@ def convert_colmajor_npy_to_rowmajor_fp16(
     }
 
 
-def copy_label_json(src_json: Path, dst_json: Path, force: bool = False) -> None:
+from typing import Any
+
+def normalize_label_item(item: Any, idx: int) -> dict[str, Any]:
+    RANK_KEYS = [
+        "kingdom",
+        "phylum",
+        "class",
+        "order",
+        "family",
+        "genus",
+        "species",
+    ]
+    if isinstance(item, dict):
+        obj = dict(item)
+        if "class_name" in obj and "class" not in obj:
+            obj["class"] = obj["class_name"]
+        if "taxon_class" in obj and "class" not in obj:
+            obj["class"] = obj["taxon_class"]
+        species = (
+            obj.get("scientific_name")
+            or obj.get("name")
+            or obj.get("canonical_name")
+            or obj.get("species")
+            or ""
+        )
+        if species and "scientific_name" not in obj:
+            obj["scientific_name"] = str(species)
+        obj.setdefault("common_name", "")
+        return obj
+
+    if isinstance(item, (list, tuple)):
+        common_name = ""
+        ranks_raw: Any = item
+
+        if len(item) >= 1 and isinstance(item[0], (list, tuple)):
+            ranks_raw = item[0]
+            if len(item) >= 2 and item[1] is not None:
+                common_name = str(item[1])
+        else:
+            ranks_raw = item
+
+        if not isinstance(ranks_raw, (list, tuple)):
+            raise ValueError(
+                f"Unsupported nested label format at index {idx}: {item!r}"
+            )
+
+        obj: dict[str, Any] = {}
+        for key, value in zip(RANK_KEYS, list(ranks_raw)[:7]):
+            obj[key] = "" if value is None else str(value)
+
+        for key in RANK_KEYS:
+            obj.setdefault(key, "")
+
+        genus = obj.get("genus", "").strip()
+        species_epithet = obj.get("species", "").strip()
+
+        if genus and species_epithet:
+            scientific_name = f"{genus} {species_epithet}"
+        else:
+            scientific_name = ""
+            for key in reversed(RANK_KEYS):
+                value = obj.get(key, "").strip()
+                if value:
+                    scientific_name = value
+                    break
+
+        obj["scientific_name"] = scientific_name
+        obj["name"] = scientific_name
+        obj["common_name"] = common_name
+        return obj
+
+    if isinstance(item, str):
+        return {
+            "kingdom": "",
+            "phylum": "",
+            "class": "",
+            "order": "",
+            "family": "",
+            "genus": "",
+            "species": item,
+            "scientific_name": item,
+            "name": item,
+            "common_name": "",
+        }
+
+    raise ValueError(
+        f"Unsupported label item type at index {idx}: {type(item)}; value={item!r}"
+    )
+
+
+def load_labels(path: Path) -> list[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        if "labels" in raw and isinstance(raw["labels"], list):
+            items = raw["labels"]
+        elif "data" in raw and isinstance(raw["data"], list):
+            items = raw["data"]
+        else:
+            try:
+                pairs = sorted(raw.items(), key=lambda kv: int(kv[0]))
+                items = [v for _, v in pairs]
+            except Exception as e:
+                raise ValueError(
+                    "Unsupported labels json structure. Expected list, "
+                    "{'labels': [...]}, {'data': [...]}, or numeric-key dict."
+                ) from e
+    else:
+        raise ValueError(f"Unsupported labels json root type: {type(raw)}")
+
+    return [normalize_label_item(item, i) for i, item in enumerate(items)]
+
+
+def normalize_and_save_label_json(src_json: Path, dst_json: Path, force: bool = False) -> None:
     if dst_json.exists() and not force:
         raise FileExistsError(
             f"Output already exists: {dst_json}. Use --force to overwrite."
@@ -216,7 +332,25 @@ def copy_label_json(src_json: Path, dst_json: Path, force: bool = False) -> None
     if src_json.resolve() == dst_json.resolve():
         return
 
-    shutil.copy2(src_json, dst_json)
+    print(f"Normalizing labels from {src_json} to {dst_json}...")
+    normalized = load_labels(src_json)
+
+    # Output clean standard taxonomy keys + common_name
+    output_labels = []
+    for item in normalized:
+        output_labels.append({
+            "kingdom": item.get("kingdom", "").strip(),
+            "phylum": item.get("phylum", "").strip(),
+            "class": item.get("class", "").strip(),
+            "order": item.get("order", "").strip(),
+            "family": item.get("family", "").strip(),
+            "genus": item.get("genus", "").strip(),
+            "species": item.get("species", "").strip(),
+            "common_name": item.get("common_name", "").strip(),
+        })
+
+    with dst_json.open("w", encoding="utf-8") as f:
+        json.dump(output_labels, f, ensure_ascii=False, indent=2)
 
 
 def main() -> None:
@@ -328,8 +462,8 @@ def main() -> None:
         force=args.force,
     )
 
-    print("\nCopying txt_emb_species.json...")
-    copy_label_json(raw_json, dst_json, force=args.force)
+    print("\nNormalizing txt_emb_species.json...")
+    normalize_and_save_label_json(raw_json, dst_json, force=args.force)
 
     manifest = {
         "repo_id": args.repo_id,

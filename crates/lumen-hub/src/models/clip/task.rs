@@ -1,6 +1,5 @@
 use std::{
-    cmp::Ordering,
-    collections::{BinaryHeap, HashMap},
+    collections::HashMap,
     fs::File,
     path::{Path, PathBuf},
     sync::Arc,
@@ -8,6 +7,7 @@ use std::{
 
 use async_trait::async_trait;
 use half::f16;
+use hnswlib_rs::{Hnsw, InnerProduct, legacy::LegacyVectors};
 use image::{
     RgbImage,
     imageops::{self, FilterType},
@@ -328,6 +328,7 @@ pub struct BioClipClassifyTask {
     input_dtype: MLPacketDataType,
     output_name: String,
     preprocess: ClipImagePreprocessConfig,
+    logit_scale: f32,
     dataset: Arc<BioClipDataset>,
 }
 
@@ -342,6 +343,7 @@ impl BioClipClassifyTask {
         input_dtype: MLPacketDataType,
         output_name: impl Into<String>,
         preprocess: ClipImagePreprocessConfig,
+        logit_scale: f32,
         dataset_name: impl Into<String>,
         embeddings_path: impl Into<PathBuf>,
         labels_path: impl Into<PathBuf>,
@@ -375,6 +377,7 @@ impl BioClipClassifyTask {
             input_dtype,
             output_name,
             preprocess,
+            logit_scale,
             dataset: Arc::new(dataset),
         })
     }
@@ -463,7 +466,7 @@ impl BioClipClassifyTask {
         top_k: usize,
     ) -> ServiceResult<TaskResult> {
         let (values, _) = float32_values_and_shape(packet).await?;
-        let labels = self.dataset.top_k(&values, top_k)?;
+        let labels = self.dataset.top_k(&values, top_k, self.logit_scale)?;
         labels_json_result(LabelsV1::new(labels, &self.model_id))
     }
 
@@ -603,7 +606,7 @@ impl TaskHandler for BioClipClassifyTask {
             .chunks(row_width)
             .zip(top_k_values)
             .map(|(row, top_k)| {
-                let labels = self.dataset.top_k(row, top_k)?;
+                let labels = self.dataset.top_k(row, top_k, self.logit_scale)?;
                 labels_json_result(LabelsV1::new(labels, &self.model_id))
             })
             .collect()
@@ -615,7 +618,9 @@ struct BioClipDataset {
     embeddings: MmapNpyMatrix,
     labels: Vec<String>,
     layout: BioClipEmbeddingLayout,
-    index: Option<HnswIndex>,
+    index: Option<(Hnsw<u64, InnerProduct>, LegacyVectors<'static>)>,
+    #[allow(dead_code)]
+    mmap: Option<memmap2::Mmap>,
 }
 
 impl BioClipDataset {
@@ -642,9 +647,45 @@ impl BioClipDataset {
                 "BioCLIP dataset `{name}` embedding dimension must be greater than zero"
             )));
         }
-        let index = index_path
-            .map(|path| HnswIndex::open(&path, layout.embedding_dim(&embeddings), labels.len()))
-            .transpose()?;
+
+        let mut mmap_owner = None;
+        let index = if let Some(path) = index_path {
+            let file = std::fs::File::open(&path).map_err(|err| {
+                ServiceError::InvalidArgument(format!(
+                    "failed to open BioCLIP HNSW index at {}: {err}",
+                    path.display()
+                ))
+            })?;
+            let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|err| {
+                ServiceError::InvalidArgument(format!(
+                    "failed to mmap BioCLIP HNSW index at {}: {err}",
+                    path.display()
+                ))
+            })?;
+            let dim = layout.embedding_dim(&embeddings);
+
+            // Extend lifetime of the mmap reference to 'static.
+            // This is safe because mmap is stored alongside the index inside BioClipDataset and stays alive.
+            let mmap_static_ref: &'static [u8] = unsafe { std::mem::transmute(&mmap[..]) };
+            let (graph, vectors) = hnswlib_rs::legacy::load_hnswlib(
+                InnerProduct::<f32>::new(),
+                dim,
+                mmap_static_ref,
+            ).map_err(|err| {
+                ServiceError::Internal(format!(
+                    "failed to load legacy HNSW index at {}: {:?}",
+                    path.display(),
+                    err
+                ))
+            })?;
+
+            graph.set_ef_search(256);
+
+            mmap_owner = Some(mmap);
+            Some((graph, vectors))
+        } else {
+            None
+        };
 
         Ok(Self {
             name,
@@ -652,6 +693,7 @@ impl BioClipDataset {
             labels,
             layout,
             index,
+            mmap: mmap_owner,
         })
     }
 
@@ -659,7 +701,7 @@ impl BioClipDataset {
         self.labels.len()
     }
 
-    fn top_k(&self, query: &[f32], top_k: usize) -> ServiceResult<Vec<Label>> {
+    fn top_k(&self, query: &[f32], top_k: usize, logit_scale: f32) -> ServiceResult<Vec<Label>> {
         let embedding_dim = self.layout.embedding_dim(&self.embeddings);
         if query.len() != embedding_dim {
             return Err(ServiceError::Internal(format!(
@@ -677,16 +719,20 @@ impl BioClipDataset {
         }
 
         let limit = top_k.min(self.labels.len());
-        let best = if let Some(index) = &self.index {
-            let candidates = index.search(query, BIOCLIP_HNSW_RERANK_K.min(self.labels.len()))?;
-            self.rerank_candidates(query, query_norm, limit, candidates.iter().copied())?
+        let best = if let Some((graph, vectors)) = &self.index {
+            let search_k = BIOCLIP_HNSW_RERANK_K.min(self.labels.len());
+            let search_hits = graph.search(vectors, &query.to_vec(), search_k, None).map_err(|err| {
+                ServiceError::Internal(format!("HNSW search failed: {:?}", err))
+            })?;
+            let candidates: Vec<usize> = search_hits.into_iter().map(|hit| hit.key as usize).collect();
+            self.rerank_candidates(query, query_norm, limit, candidates, logit_scale)?
         } else {
             match self.layout {
                 BioClipEmbeddingLayout::LabelRows => {
-                    self.top_k_label_rows(query, query_norm, limit)?
+                    self.top_k_label_rows(query, query_norm, limit, logit_scale)?
                 }
                 BioClipEmbeddingLayout::LabelColumns => {
-                    self.top_k_label_columns(query, query_norm, limit)?
+                    self.top_k_label_columns(query, query_norm, limit, logit_scale)?
                 }
             }
         };
@@ -705,33 +751,62 @@ impl BioClipDataset {
         query: &[f32],
         query_norm: f32,
         limit: usize,
+        logit_scale: f32,
     ) -> ServiceResult<Vec<(usize, f32)>> {
-        let mut best: Vec<(usize, f32)> = Vec::with_capacity(limit);
-        for label_index in 0..self.embeddings.rows() {
-            let score = self
+        let rows = self.embeddings.rows();
+        let scale = logit_scale.exp();
+
+        let mut similarities = Vec::with_capacity(rows);
+        let mut max_similarity = f32::NEG_INFINITY;
+        for label_index in 0..rows {
+            let sim = self
                 .embeddings
                 .row_cosine_similarity(label_index, query, query_norm)?;
-            push_top_k(&mut best, limit, label_index, score);
+            similarities.push(sim);
+            if sim > max_similarity && sim.is_finite() {
+                max_similarity = sim;
+            }
+        }
+
+        if max_similarity == f32::NEG_INFINITY {
+            return Ok(Vec::new());
+        }
+
+        let max_scaled = max_similarity * scale;
+        let mut sum_exp = 0.0f32;
+        for &sim in &similarities {
+            if sim.is_finite() {
+                sum_exp += ((sim * scale) - max_scaled).exp();
+            }
+        }
+
+        let mut best: Vec<(usize, f32)> = Vec::with_capacity(limit);
+        for (label_index, &sim) in similarities.iter().enumerate() {
+            if sim.is_finite() && sum_exp > 0.0 {
+                let softmax_score = ((sim * scale) - max_scaled).exp() / sum_exp;
+                push_top_k(&mut best, limit, label_index, softmax_score);
+            }
         }
         Ok(best)
     }
 
-    fn rerank_candidates<I>(
+    fn rerank_candidates(
         &self,
         query: &[f32],
         query_norm: f32,
         limit: usize,
-        candidates: I,
-    ) -> ServiceResult<Vec<(usize, f32)>>
-    where
-        I: IntoIterator<Item = usize>,
-    {
-        let mut best: Vec<(usize, f32)> = Vec::with_capacity(limit);
+        candidates: Vec<usize>,
+        logit_scale: f32,
+    ) -> ServiceResult<Vec<(usize, f32)>> {
+        let scale = logit_scale.exp();
+        let mut candidate_sims = Vec::with_capacity(candidates.len());
+        let mut max_similarity = f32::NEG_INFINITY;
+
         for label_index in candidates {
             if label_index >= self.labels.len() {
                 continue;
             }
-            let score = match self.layout {
+            let sim = match self.layout {
                 BioClipEmbeddingLayout::LabelRows => {
                     self.embeddings
                         .row_cosine_similarity(label_index, query, query_norm)?
@@ -741,7 +816,30 @@ impl BioClipDataset {
                         .column_cosine_similarity(label_index, query, query_norm)?
                 }
             };
-            push_top_k(&mut best, limit, label_index, score);
+            candidate_sims.push((label_index, sim));
+            if sim > max_similarity && sim.is_finite() {
+                max_similarity = sim;
+            }
+        }
+
+        if max_similarity == f32::NEG_INFINITY {
+            return Ok(Vec::new());
+        }
+
+        let max_scaled = max_similarity * scale;
+        let mut sum_exp = 0.0f32;
+        for &(_, sim) in &candidate_sims {
+            if sim.is_finite() {
+                sum_exp += ((sim * scale) - max_scaled).exp();
+            }
+        }
+
+        let mut best: Vec<(usize, f32)> = Vec::with_capacity(limit);
+        for &(label_index, sim) in &candidate_sims {
+            if sim.is_finite() && sum_exp > 0.0 {
+                let softmax_score = ((sim * scale) - max_scaled).exp() / sum_exp;
+                push_top_k(&mut best, limit, label_index, softmax_score);
+            }
         }
         Ok(best)
     }
@@ -751,6 +849,7 @@ impl BioClipDataset {
         query: &[f32],
         query_norm: f32,
         limit: usize,
+        logit_scale: f32,
     ) -> ServiceResult<Vec<(usize, f32)>> {
         let label_count = self.labels.len();
         let mut dots = vec![0.0f32; label_count];
@@ -779,18 +878,40 @@ impl BioClipDataset {
             }
         }
 
-        let mut best: Vec<(usize, f32)> = Vec::with_capacity(limit);
+        let mut similarities = Vec::with_capacity(label_count);
+        let mut max_similarity = f32::NEG_INFINITY;
         for label_index in 0..label_count {
             let norm_sq = norms_sq[label_index];
             if norm_sq == 0.0 {
+                similarities.push(f32::NAN);
                 continue;
             }
-            push_top_k(
-                &mut best,
-                limit,
-                label_index,
-                dots[label_index] / (norm_sq.sqrt() * query_norm),
-            );
+            let sim = dots[label_index] / (norm_sq.sqrt() * query_norm);
+            similarities.push(sim);
+            if sim > max_similarity && sim.is_finite() {
+                max_similarity = sim;
+            }
+        }
+
+        if max_similarity == f32::NEG_INFINITY {
+            return Ok(Vec::new());
+        }
+
+        let scale = logit_scale.exp();
+        let max_scaled = max_similarity * scale;
+        let mut sum_exp = 0.0f32;
+        for &sim in &similarities {
+            if sim.is_finite() {
+                sum_exp += ((sim * scale) - max_scaled).exp();
+            }
+        }
+
+        let mut best: Vec<(usize, f32)> = Vec::with_capacity(limit);
+        for (label_index, &sim) in similarities.iter().enumerate() {
+            if sim.is_finite() && sum_exp > 0.0 {
+                let softmax_score = ((sim * scale) - max_scaled).exp() / sum_exp;
+                push_top_k(&mut best, limit, label_index, softmax_score);
+            }
         }
         Ok(best)
     }
@@ -945,379 +1066,7 @@ impl MmapNpyMatrix {
     }
 }
 
-struct HnswIndex {
-    mmap: memmap2::Mmap,
-    cur_element_count: usize,
-    size_data_per_element: usize,
-    label_offset: usize,
-    offset_data: usize,
-    max_level: i32,
-    enterpoint_node: usize,
-    max_m: usize,
-    max_m0: usize,
-    size_links_per_element: usize,
-    data_level0_offset: usize,
-    upper_link_offsets: Vec<Option<(usize, usize)>>,
-    dim: usize,
-}
 
-impl HnswIndex {
-    fn open(path: &Path, dim: usize, expected_labels: usize) -> ServiceResult<Self> {
-        let file = File::open(path).map_err(|err| {
-            ServiceError::InvalidArgument(format!(
-                "failed to open BioCLIP HNSW index at {}: {err}",
-                path.display()
-            ))
-        })?;
-        let mmap = unsafe { memmap2::MmapOptions::new().map(&file) }.map_err(|err| {
-            ServiceError::InvalidArgument(format!(
-                "failed to mmap BioCLIP HNSW index at {}: {err}",
-                path.display()
-            ))
-        })?;
-        let header = HnswHeader::parse(&mmap, path)?;
-        if header.cur_element_count != expected_labels {
-            return Err(ServiceError::InvalidArgument(format!(
-                "BioCLIP HNSW index at {} has {} elements, but labels contain {}",
-                path.display(),
-                header.cur_element_count,
-                expected_labels
-            )));
-        }
-        if header.offset_data + dim * std::mem::size_of::<f32>() > header.label_offset {
-            return Err(ServiceError::InvalidArgument(format!(
-                "BioCLIP HNSW index at {} cannot hold dim={dim} float32 vectors",
-                path.display()
-            )));
-        }
-        let upper_links_offset = HnswHeader::BYTE_LEN
-            .checked_add(
-                header
-                    .cur_element_count
-                    .checked_mul(header.size_data_per_element)
-                    .ok_or_else(|| {
-                        ServiceError::InvalidArgument(format!(
-                            "BioCLIP HNSW index at {} level0 block is too large",
-                            path.display()
-                        ))
-                    })?,
-            )
-            .ok_or_else(|| {
-                ServiceError::InvalidArgument(format!(
-                    "BioCLIP HNSW index at {} level0 block overflows",
-                    path.display()
-                ))
-            })?;
-        if mmap.len() < upper_links_offset {
-            return Err(ServiceError::InvalidArgument(format!(
-                "BioCLIP HNSW index at {} is truncated",
-                path.display()
-            )));
-        }
-        let upper_link_offsets =
-            parse_hnsw_upper_link_offsets(&mmap, upper_links_offset, header.cur_element_count)?;
-
-        Ok(Self {
-            mmap,
-            cur_element_count: header.cur_element_count,
-            size_data_per_element: header.size_data_per_element,
-            label_offset: header.label_offset,
-            offset_data: header.offset_data,
-            max_level: header.max_level,
-            enterpoint_node: header.enterpoint_node,
-            max_m: header.max_m,
-            max_m0: header.max_m0,
-            size_links_per_element: header.max_m * std::mem::size_of::<u32>()
-                + std::mem::size_of::<u32>(),
-            data_level0_offset: HnswHeader::BYTE_LEN,
-            upper_link_offsets,
-            dim,
-        })
-    }
-
-    fn search(&self, query: &[f32], k: usize) -> ServiceResult<Vec<usize>> {
-        if query.len() != self.dim {
-            return Err(ServiceError::Internal(format!(
-                "BioCLIP HNSW query dimension {} does not match index dimension {}",
-                query.len(),
-                self.dim
-            )));
-        }
-        if k == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut current = self.enterpoint_node;
-        let mut current_score = self.score(current, query);
-        for level in (1..=self.max_level).rev() {
-            let mut changed = true;
-            while changed {
-                changed = false;
-                for neighbor in self.neighbors(current, level)? {
-                    let score = self.score(neighbor, query);
-                    if score > current_score {
-                        current = neighbor;
-                        current_score = score;
-                        changed = true;
-                    }
-                }
-            }
-        }
-
-        let ef = BIOCLIP_HNSW_RERANK_K.max(k).min(self.cur_element_count);
-        let mut visited = vec![false; self.cur_element_count];
-        let mut candidates = BinaryHeap::new();
-        let mut top = BinaryHeap::new();
-        visited[current] = true;
-        candidates.push(ScoredNode {
-            score: current_score,
-            node: current,
-        });
-        top.push(WorstScoredNode {
-            score: current_score,
-            node: current,
-        });
-
-        while let Some(candidate) = candidates.pop() {
-            let worst_score = top
-                .peek()
-                .map(|node| node.score)
-                .unwrap_or(f32::NEG_INFINITY);
-            if top.len() >= ef && candidate.score < worst_score {
-                break;
-            }
-
-            for neighbor in self.neighbors(candidate.node, 0)? {
-                if visited[neighbor] {
-                    continue;
-                }
-                visited[neighbor] = true;
-                let score = self.score(neighbor, query);
-                let worst_score = top
-                    .peek()
-                    .map(|node| node.score)
-                    .unwrap_or(f32::NEG_INFINITY);
-                if top.len() < ef || score > worst_score {
-                    candidates.push(ScoredNode {
-                        score,
-                        node: neighbor,
-                    });
-                    top.push(WorstScoredNode {
-                        score,
-                        node: neighbor,
-                    });
-                    if top.len() > ef {
-                        top.pop();
-                    }
-                }
-            }
-        }
-
-        let mut scored = top
-            .into_iter()
-            .map(|node| (self.label(node.node), node.score))
-            .collect::<Vec<_>>();
-        scored.sort_by(|left, right| right.1.partial_cmp(&left.1).unwrap_or(Ordering::Equal));
-        scored.truncate(k);
-        Ok(scored.into_iter().map(|(label, _)| label).collect())
-    }
-
-    fn score(&self, node: usize, query: &[f32]) -> f32 {
-        let vector = self.vector(node);
-        vector
-            .chunks_exact(4)
-            .zip(query.iter())
-            .map(|(chunk, query_value)| {
-                f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) * query_value
-            })
-            .sum()
-    }
-
-    fn label(&self, node: usize) -> usize {
-        let offset = self.element_offset(node) + self.label_offset;
-        u64::from_le_bytes(self.mmap[offset..offset + 8].try_into().unwrap()) as usize
-    }
-
-    fn vector(&self, node: usize) -> &[u8] {
-        let offset = self.element_offset(node) + self.offset_data;
-        &self.mmap[offset..offset + self.dim * std::mem::size_of::<f32>()]
-    }
-
-    fn neighbors(&self, node: usize, level: i32) -> ServiceResult<Vec<usize>> {
-        let (offset, max_links) = if level == 0 {
-            (self.element_offset(node), self.max_m0)
-        } else {
-            let Some(upper) = self.upper_link_offset(node, level)? else {
-                return Ok(Vec::new());
-            };
-            (upper, self.max_m)
-        };
-        let count = u32::from_le_bytes(self.mmap[offset..offset + 4].try_into().unwrap()) as usize;
-        if count > max_links {
-            return Err(ServiceError::Internal(format!(
-                "BioCLIP HNSW node {node} level {level} has {count} links, max {max_links}"
-            )));
-        }
-        let mut neighbors = Vec::with_capacity(count);
-        for index in 0..count {
-            let start = offset + 4 + index * 4;
-            let neighbor =
-                u32::from_le_bytes(self.mmap[start..start + 4].try_into().unwrap()) as usize;
-            if neighbor < self.cur_element_count {
-                neighbors.push(neighbor);
-            }
-        }
-        Ok(neighbors)
-    }
-
-    fn element_offset(&self, node: usize) -> usize {
-        self.data_level0_offset + node * self.size_data_per_element
-    }
-
-    fn upper_link_offset(&self, node: usize, level: i32) -> ServiceResult<Option<usize>> {
-        if level <= 0 {
-            return Ok(Some(self.element_offset(node)));
-        }
-        let Some((data_start, byte_len)) = self.upper_link_offsets.get(node).copied().flatten()
-        else {
-            return Ok(None);
-        };
-        let level_offset = (level as usize - 1) * self.size_links_per_element;
-        if level_offset + self.size_links_per_element > byte_len {
-            return Ok(None);
-        }
-        Ok(Some(data_start + level_offset))
-    }
-}
-
-fn parse_hnsw_upper_link_offsets(
-    bytes: &[u8],
-    mut cursor: usize,
-    count: usize,
-) -> ServiceResult<Vec<Option<(usize, usize)>>> {
-    let mut offsets = Vec::with_capacity(count);
-    for _ in 0..count {
-        if cursor + 4 > bytes.len() {
-            return Err(ServiceError::InvalidArgument(
-                "BioCLIP HNSW upper link section is truncated".to_owned(),
-            ));
-        }
-        let byte_len = u32::from_le_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
-        let data_start = cursor + 4;
-        let data_end = data_start + byte_len;
-        if data_end > bytes.len() {
-            return Err(ServiceError::InvalidArgument(
-                "BioCLIP HNSW upper link payload is truncated".to_owned(),
-            ));
-        }
-        offsets.push((byte_len > 0).then_some((data_start, byte_len)));
-        cursor = data_end;
-    }
-    Ok(offsets)
-}
-
-struct HnswHeader {
-    cur_element_count: usize,
-    size_data_per_element: usize,
-    label_offset: usize,
-    offset_data: usize,
-    max_level: i32,
-    enterpoint_node: usize,
-    max_m: usize,
-    max_m0: usize,
-}
-
-impl HnswHeader {
-    const BYTE_LEN: usize = 96;
-
-    fn parse(bytes: &[u8], path: &Path) -> ServiceResult<Self> {
-        if bytes.len() < Self::BYTE_LEN {
-            return Err(ServiceError::InvalidArgument(format!(
-                "BioCLIP HNSW index at {} is too small",
-                path.display()
-            )));
-        }
-        let read_u64 = |offset: usize| -> usize {
-            u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize
-        };
-        let read_i32 = |offset: usize| -> i32 {
-            i32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
-        };
-        let read_u32 = |offset: usize| -> usize {
-            u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize
-        };
-
-        Ok(Self {
-            cur_element_count: read_u64(16),
-            size_data_per_element: read_u64(24),
-            label_offset: read_u64(32),
-            offset_data: read_u64(40),
-            max_level: read_i32(48),
-            enterpoint_node: read_u32(52),
-            max_m: read_u64(56),
-            max_m0: read_u64(64),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ScoredNode {
-    score: f32,
-    node: usize,
-}
-
-impl PartialEq for ScoredNode {
-    fn eq(&self, other: &Self) -> bool {
-        self.score == other.score && self.node == other.node
-    }
-}
-
-impl Eq for ScoredNode {}
-
-impl PartialOrd for ScoredNode {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for ScoredNode {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.score
-            .partial_cmp(&other.score)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| self.node.cmp(&other.node))
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct WorstScoredNode {
-    score: f32,
-    node: usize,
-}
-
-impl PartialEq for WorstScoredNode {
-    fn eq(&self, other: &Self) -> bool {
-        self.score == other.score && self.node == other.node
-    }
-}
-
-impl Eq for WorstScoredNode {}
-
-impl PartialOrd for WorstScoredNode {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for WorstScoredNode {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .score
-            .partial_cmp(&self.score)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| other.node.cmp(&self.node))
-    }
-}
 
 struct NpyHeader {
     data_offset: usize,
@@ -1454,6 +1203,37 @@ fn parse_npy_header(bytes: &[u8], path: &Path) -> ServiceResult<NpyHeader> {
     })
 }
 
+const BIOCLIP_TAXONOMY_PLACEHOLDER: &str = "*";
+
+#[derive(serde::Deserialize)]
+struct BioClipLabel {
+    #[serde(default)]
+    kingdom: String,
+    #[serde(default)]
+    phylum: String,
+    #[serde(default)]
+    class: String,
+    #[serde(default)]
+    order: String,
+    #[serde(default)]
+    family: String,
+    #[serde(default)]
+    genus: String,
+    #[serde(default)]
+    species: String,
+    #[serde(default)]
+    common_name: String,
+}
+
+fn clean_rank(s: &str) -> String {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        BIOCLIP_TAXONOMY_PLACEHOLDER.to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 fn load_bioclip_labels(path: &Path) -> ServiceResult<Vec<String>> {
     let contents = std::fs::read_to_string(path).map_err(|err| {
         ServiceError::InvalidArgument(format!(
@@ -1461,101 +1241,29 @@ fn load_bioclip_labels(path: &Path) -> ServiceResult<Vec<String>> {
             path.display()
         ))
     })?;
-    let value: serde_json::Value = serde_json::from_str(&contents).map_err(|err| {
+    let items: Vec<BioClipLabel> = serde_json::from_str(&contents).map_err(|err| {
         ServiceError::InvalidArgument(format!(
             "failed to parse BioCLIP labels at {}: {err}",
             path.display()
         ))
     })?;
-    let items = value.as_array().ok_or_else(|| {
-        ServiceError::InvalidArgument(format!(
-            "BioCLIP labels at {} must be a JSON array",
-            path.display()
-        ))
-    })?;
 
-    items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| bioclip_label_from_value(item).ok_or_else(|| {
-            ServiceError::InvalidArgument(format!(
-                "BioCLIP label at {} index {index} must be a string or object with label/name fields",
-                path.display()
-            ))
-        }))
-        .collect()
-}
+    let labels = items
+        .into_iter()
+        .map(|item| {
+            let clean_k = clean_rank(&item.kingdom);
+            let clean_p = clean_rank(&item.phylum);
+            let clean_c = clean_rank(&item.class);
+            let clean_o = clean_rank(&item.order);
+            let clean_f = clean_rank(&item.family);
+            let clean_g = clean_rank(&item.genus);
+            let clean_s = clean_rank(&item.species);
+            let clean_cn = clean_rank(&item.common_name);
+            format!("{clean_k}/{clean_p}/{clean_c}/{clean_o}/{clean_f}/{clean_g}/{clean_s}/{clean_cn}")
+        })
+        .collect();
 
-fn bioclip_label_from_value(value: &serde_json::Value) -> Option<String> {
-    if let Some(label) = value.as_str() {
-        return Some(label.to_owned());
-    }
-    if value.is_array() {
-        let mut parts = Vec::new();
-        collect_label_strings(value, &mut parts);
-        if !parts.is_empty() {
-            return Some(parts.join(" / "));
-        }
-    }
-    let object = value.as_object()?;
-    if let Some(raw_label) = object.get("_raw_label") {
-        let mut parts = Vec::new();
-        collect_label_strings(raw_label, &mut parts);
-        if !parts.is_empty() {
-            return Some(parts.join(" / "));
-        }
-    }
-    let mut parts = Vec::new();
-    for key in [
-        "kingdom",
-        "phylum",
-        "class",
-        "order",
-        "family",
-        "genus",
-        "species",
-        "common_name",
-    ] {
-        if let Some(value) = object.get(key) {
-            collect_label_strings(value, &mut parts);
-        }
-    }
-    if !parts.is_empty() {
-        return Some(parts.join(" / "));
-    }
-    for key in ["label", "name", "scientific_name", "common_name", "id"] {
-        if let Some(value) = object.get(key) {
-            if let Some(text) = value.as_str() {
-                return Some(text.to_owned());
-            }
-            if value.is_number() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    object
-        .values()
-        .find_map(|value| value.as_str().map(str::to_owned))
-}
-
-fn collect_label_strings(value: &serde_json::Value, parts: &mut Vec<String>) {
-    match value {
-        serde_json::Value::String(value) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                parts.push("*".to_owned());
-            } else {
-                parts.push(trimmed.to_owned());
-            }
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                collect_label_strings(value, parts);
-            }
-        }
-        serde_json::Value::Number(value) => parts.push(value.to_string()),
-        _ => {}
-    }
+    Ok(labels)
 }
 
 fn push_top_k(best: &mut Vec<(usize, f32)>, limit: usize, label_index: usize, score: f32) {
@@ -2224,7 +1932,23 @@ mod tests {
         let path = temp_path("bioclip_labels.json");
         fs::write(
             &path,
-            r#"[{"scientific_name":"Acer rubrum","_raw_label":[["Plantae","Tracheophyta","Magnoliopsida","Sapindales","Sapindaceae","Acer","rubrum"],"red maple"]},"Panthera leo",{"id":42},[["Animalia","","Acanthodes","pristis"],""]]"#,
+            r#"[
+              {
+                "kingdom": "Plantae",
+                "phylum": "Tracheophyta",
+                "class": "Magnoliopsida",
+                "order": "Sapindales",
+                "family": "Sapindaceae",
+                "genus": "Acer",
+                "species": "rubrum",
+                "common_name": "red maple"
+              },
+              {
+                "kingdom": "Animalia",
+                "genus": "Acanthodes",
+                "species": "pristis"
+              }
+            ]"#,
         )
         .unwrap();
 
@@ -2233,10 +1957,9 @@ mod tests {
         assert_eq!(
             labels,
             vec![
-                "Plantae / Tracheophyta / Magnoliopsida / Sapindales / Sapindaceae / Acer / rubrum / red maple".to_owned(),
-                "Panthera leo".to_owned(),
-                "42".to_owned(),
-                "Animalia / * / Acanthodes / pristis / *".to_owned()
+                "Plantae/Tracheophyta/Magnoliopsida/Sapindales/Sapindaceae/Acer/rubrum/red maple"
+                    .to_owned(),
+                "Animalia/*/*/*/*/Acanthodes/pristis/*".to_owned()
             ]
         );
 

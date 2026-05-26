@@ -587,8 +587,21 @@ def main() -> None:
         force=args.force,
     )
 
+    clean_labels = []
+    for item in selected_labels:
+        clean_labels.append({
+            "kingdom": item.get("kingdom", "").strip(),
+            "phylum": item.get("phylum", "").strip(),
+            "class": item.get("class", "").strip(),
+            "order": item.get("order", "").strip(),
+            "family": item.get("family", "").strip(),
+            "genus": item.get("genus", "").strip(),
+            "species": item.get("species", "").strip(),
+            "common_name": item.get("common_name", "").strip(),
+        })
+
     out_labels.write_text(
-        json.dumps(selected_labels, ensure_ascii=False, indent=2),
+        json.dumps(clean_labels, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 

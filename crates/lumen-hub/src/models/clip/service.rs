@@ -35,6 +35,9 @@ struct ClipTaskConfig {
     /// Image preprocessing metadata for vision tasks.
     #[serde(default)]
     preprocess: Option<ClipImagePreprocessConfig>,
+    /// CLIP learned temperature parameter logit_scale.
+    #[serde(default)]
+    logit_scale: Option<f32>,
 }
 
 /// CLIP inference service.
@@ -113,6 +116,7 @@ impl ClipService {
                     input_dtype,
                     "embedding",
                     preprocess,
+                    task_config.logit_scale.unwrap_or(4.60517),
                     dataset,
                     dataset_paths.embeddings_path,
                     dataset_paths.labels_path,

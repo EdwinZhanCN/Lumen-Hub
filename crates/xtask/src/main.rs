@@ -215,6 +215,7 @@ fn build_profile(profile: &DistProfile, root: &Path) -> Result<(), String> {
 }
 
 fn configure_profile_build_env(profile: &DistProfile, command: &mut Command) {
+    command.env("RUSTC_BOOTSTRAP", "1");
     if profile.target.contains("windows") {
         command.env("RUSTFLAGS", rustflags_without_static_crt());
         command.env("CFLAGS", "/MD");

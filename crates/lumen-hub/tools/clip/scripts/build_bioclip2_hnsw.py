@@ -93,19 +93,19 @@ def main() -> None:
     parser.add_argument(
         "--m",
         type=int,
-        default=32,
+        default=48,
         help="HNSW M. Higher = better recall, more memory. Common: 16/32/48.",
     )
     parser.add_argument(
         "--ef-construction",
         type=int,
-        default=200,
-        help="HNSW ef_construction. Higher = better recall, slower build. Common: 100-400.",
+        default=800,
+        help="HNSW ef_construction. Higher = better recall, slower build. Common: 100-800.",
     )
     parser.add_argument(
         "--ef-search",
         type=int,
-        default=80,
+        default=256,
         help="Default search ef saved in metadata. Must usually be > k. Common: 50-300.",
     )
     parser.add_argument(
