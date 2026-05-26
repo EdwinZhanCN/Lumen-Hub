@@ -17,3 +17,5 @@ tmp/
 data/
 .cache/
 /bioclip2-onnx
+
+.antigravitycli

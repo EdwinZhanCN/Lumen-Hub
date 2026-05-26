@@ -297,7 +297,7 @@ fn start(args: &[String]) -> Result<(), CliError> {
         source,
     })?;
     if !status.success() {
-        return Err(CliError::HubExited(status.code()));
+        return Err(CliError::HubExited(FormattedExitStatus(status)));
     }
     Ok(())
 }
@@ -1769,8 +1769,8 @@ enum CliError {
     #[error("failed to spawn lumen-hub `{}`: {source}", path.display())]
     SpawnHub { path: PathBuf, source: io::Error },
 
-    #[error("lumen-hub exited with status {0:?}")]
-    HubExited(Option<i32>),
+    #[error("lumen-hub {0}")]
+    HubExited(FormattedExitStatus),
 
     #[error("checksum mismatch for `{}`: expected {expected}, got {actual}", path.display())]
     ChecksumMismatch {
@@ -1796,6 +1796,49 @@ enum CliError {
 
     #[error("generated config failed validation: {0}")]
     Config(#[from] lumen_schema::ConfigValidationError),
+}
+
+#[derive(Debug, Clone)]
+struct FormattedExitStatus(std::process::ExitStatus);
+
+impl std::fmt::Display for FormattedExitStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let status = self.0;
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if let Some(code) = status.code() {
+                write!(f, "exited with status code: {code}")
+            } else if let Some(signal) = status.signal() {
+                let signal_desc = match signal {
+                    1 => "SIGHUP (hangup)",
+                    2 => "SIGINT (interrupt)",
+                    3 => "SIGQUIT (quit)",
+                    4 => "SIGILL (illegal instruction)",
+                    5 => "SIGTRAP (trace trap)",
+                    6 => "SIGABRT (abort)",
+                    8 => "SIGFPE (floating-point exception)",
+                    9 => "SIGKILL (kill)",
+                    11 => "SIGSEGV (segmentation fault)",
+                    13 => "SIGPIPE (broken pipe)",
+                    14 => "SIGALRM (alarm clock)",
+                    15 => "SIGTERM (termination)",
+                    _ => "unknown signal",
+                };
+                write!(f, "was terminated by signal {signal} ({signal_desc})")
+            } else {
+                write!(f, "exited for unknown reasons")
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if let Some(code) = status.code() {
+                write!(f, "exited with status code: {code}")
+            } else {
+                write!(f, "exited")
+            }
+        }
+    }
 }
 
 #[cfg(test)]
