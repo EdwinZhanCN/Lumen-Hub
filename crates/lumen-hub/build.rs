@@ -40,6 +40,6 @@ fn link_linux_ort_cxx_runtime() {
         return;
     }
 
-    println!("cargo:rustc-link-lib=stdc++");
-    println!("cargo:rustc-link-lib=supc++");
+    println!("cargo:rustc-link-arg-bins=-lstdc++");
+    println!("cargo:rustc-link-arg-bins=-lsupc++");
 }

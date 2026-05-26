@@ -52,4 +52,9 @@ jobs:
                   RUSTFLAGS: ${{ matrix.name == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
                   CFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
                   CXXFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
-              run: cargo check -p lumen-hub --no-default-features --features ${{ matrix.features }}
+              run: |
+                  if [ "${{ matrix.name }}" = "linux-arm64" ] || [ "${{ matrix.name }}" = "linux-arm64-jetson" ]; then
+                    cargo build -p lumen-hub --release --no-default-features --features ${{ matrix.features }}
+                  else
+                    cargo check -p lumen-hub --no-default-features --features ${{ matrix.features }}
+                  fi
