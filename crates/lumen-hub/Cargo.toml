@@ -59,7 +59,7 @@ profile-linux-arm64 = [
   "ppocr",
   "siglip",
   "ort-load-dynamic",
-  "mnn-vulkan",
+  "mnn-opencl",
 ]
 profile-linux-arm64-jetson = [
   "clip",

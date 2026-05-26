@@ -1185,7 +1185,7 @@ fn backend_choices(platform: PlatformProfile) -> Vec<BackendChoice> {
             BackendChoice::available(Backend::cpu_only()),
         ],
         "linux-arm64" => vec![
-            BackendChoice::available(Backend::mnn_vulkan("linux-arm64")),
+            BackendChoice::available(Backend::mnn_opencl("linux-arm64")),
             BackendChoice::available(Backend::ort_jetson_cuda()),
             BackendChoice::available(Backend::cpu_only_profile("linux-arm64")),
         ],
@@ -1483,9 +1483,9 @@ impl Backend {
         }
     }
 
-    fn mnn_vulkan(release_profile: &'static str) -> Self {
+    fn mnn_opencl(release_profile: &'static str) -> Self {
         Self {
-            name: "mnn-vulkan",
+            name: "mnn-opencl",
             release_profile,
             cv_runtime: "mnn",
             semantic_runtime: "mnn",
@@ -1832,7 +1832,7 @@ mod tests {
         for preset in Preset::all() {
             for backend in [
                 Backend::mnn_metal(),
-                Backend::mnn_vulkan("linux-arm64"),
+                Backend::mnn_opencl("linux-arm64"),
                 Backend::ort_cuda(),
                 Backend::ort_openvino(),
                 Backend::ort_jetson_cuda(),
@@ -1857,17 +1857,17 @@ mod tests {
     }
 
     #[test]
-    fn linux_arm64_offers_vulkan_jetson_and_native_cpu_profiles() {
+    fn linux_arm64_offers_opencl_jetson_and_native_cpu_profiles() {
         let choices = backend_choices(PlatformProfile {
             name: "linux-arm64",
         });
 
         assert_eq!(choices.len(), 3);
-        let vulkan = choices[0]
+        let opencl = choices[0]
             .backend
-            .expect("linux-arm64 Vulkan backend is available");
-        assert_eq!(vulkan.name, "mnn-vulkan");
-        assert_eq!(vulkan.release_profile, "linux-arm64");
+            .expect("linux-arm64 OpenCL backend is available");
+        assert_eq!(opencl.name, "mnn-opencl");
+        assert_eq!(opencl.release_profile, "linux-arm64");
         let jetson = choices[1]
             .backend
             .expect("linux-arm64 Jetson backend is available");
