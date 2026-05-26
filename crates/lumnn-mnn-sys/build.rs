@@ -46,9 +46,8 @@ fn main() {
     } else {
         let asset_name = get_prebuilt_asset_name(&os, &arch).unwrap_or_else(|| {
             panic!(
-                "No prebuilt MNN available for {}/{}.\n\
-                 Set MNN_LIB_DIR to a directory containing dynamic MNN libraries.",
-                os, arch
+                "No prebuilt MNN available for {os}/{arch}.\n\
+                 Set MNN_LIB_DIR to a directory containing dynamic MNN libraries."
             )
         });
         let prebuilt_dir = download_prebuilt_mnn(&manifest_dir_path, &asset_name, &os);
@@ -71,10 +70,7 @@ fn main() {
 
         verify_dynamic_libraries(&lib_dir, &os);
 
-        println!(
-            "cargo:warning=Using prebuilt MNN {} for {}/{}",
-            MNN_PREBUILT_VERSION, os, arch
-        );
+        println!("cargo:warning=Using prebuilt MNN {MNN_PREBUILT_VERSION} for {os}/{arch}");
 
         (vec![include_dir], vec![lib_dir])
     };
@@ -90,7 +86,7 @@ fn main() {
 /// 2. MNN_SOURCE_DIR/include (if MNN_SOURCE_DIR is set)
 /// 3. Local 3rd_party/MNN/include
 /// 4. Bundled prebuilt headers (when MNN_LIB_DIR is set)
-fn get_mnn_include_dirs(manifest_dir: &PathBuf) -> Vec<PathBuf> {
+fn get_mnn_include_dirs(manifest_dir: &Path) -> Vec<PathBuf> {
     if let Ok(include_dir) = env::var("MNN_INCLUDE_DIR") {
         let include_path = PathBuf::from(&include_dir);
         if include_path.exists() {
@@ -190,7 +186,7 @@ fn get_prebuilt_asset_name(os: &str, arch: &str) -> Option<String> {
         ("macos", _) => "macos-universal",
         _ => return None,
     };
-    Some(format!("mnn-{}-{}", MNN_PREBUILT_VERSION, suffix))
+    Some(format!("mnn-{MNN_PREBUILT_VERSION}-{suffix}"))
 }
 
 fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> PathBuf {
@@ -212,24 +208,22 @@ fn download_prebuilt_mnn(manifest_dir: &Path, asset_name: &str, os: &str) -> Pat
         (
             "zip",
             format!(
-                "https://github.com/{}/releases/download/{}/{}.zip",
-                MNN_PREBUILT_REPO, MNN_PREBUILT_VERSION, asset_name
+                "https://github.com/{MNN_PREBUILT_REPO}/releases/download/{MNN_PREBUILT_VERSION}/{asset_name}.zip"
             ),
         )
     } else {
         (
             "tar.gz",
             format!(
-                "https://github.com/{}/releases/download/{}/{}.tar.gz",
-                MNN_PREBUILT_REPO, MNN_PREBUILT_VERSION, asset_name
+                "https://github.com/{MNN_PREBUILT_REPO}/releases/download/{MNN_PREBUILT_VERSION}/{asset_name}.tar.gz"
             ),
         )
     };
 
-    let archive_path = cache_dir.join(format!("{}.{}", asset_name, ext));
+    let archive_path = cache_dir.join(format!("{asset_name}.{ext}"));
 
     if !archive_path.exists() {
-        println!("cargo:warning=Downloading prebuilt MNN from: {}", url);
+        println!("cargo:warning=Downloading prebuilt MNN from: {url}");
         download_file(&url, &archive_path);
     }
 
@@ -373,7 +367,7 @@ fn extract_zip(archive: &Path, dest_dir: &Path) {
     }
 }
 
-fn build_wrapper(manifest_dir: &PathBuf, mnn_include_dirs: &[PathBuf], os: &str) {
+fn build_wrapper(manifest_dir: &Path, mnn_include_dirs: &[PathBuf], os: &str) {
     let wrapper_file = manifest_dir.join("cpp/src/mnn_wrapper.cpp");
 
     println!("cargo:rerun-if-changed=cpp/src/mnn_wrapper.cpp");
@@ -443,7 +437,7 @@ fn dynamic_library_path(lib_dir: &Path, os: &str, library: &str) -> PathBuf {
     }
 }
 
-fn bind_gen(manifest_dir: &PathBuf, mnn_include_dirs: &[PathBuf], os: &str, arch: &str) {
+fn bind_gen(manifest_dir: &Path, mnn_include_dirs: &[PathBuf], os: &str, arch: &str) {
     let header_path = manifest_dir.join("cpp/include/mnn_wrapper.h");
 
     let mut builder = bindgen::Builder::default()

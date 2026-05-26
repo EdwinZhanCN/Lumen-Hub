@@ -667,17 +667,15 @@ impl BioClipDataset {
             // Extend lifetime of the mmap reference to 'static.
             // This is safe because mmap is stored alongside the index inside BioClipDataset and stays alive.
             let mmap_static_ref: &'static [u8] = unsafe { std::mem::transmute(&mmap[..]) };
-            let (graph, vectors) = hnswlib_rs::legacy::load_hnswlib(
-                InnerProduct::<f32>::new(),
-                dim,
-                mmap_static_ref,
-            ).map_err(|err| {
-                ServiceError::Internal(format!(
-                    "failed to load legacy HNSW index at {}: {:?}",
-                    path.display(),
-                    err
-                ))
-            })?;
+            let (graph, vectors) =
+                hnswlib_rs::legacy::load_hnswlib(InnerProduct::new(), dim, mmap_static_ref)
+                    .map_err(|err| {
+                        ServiceError::Internal(format!(
+                            "failed to load legacy HNSW index at {}: {:?}",
+                            path.display(),
+                            err
+                        ))
+                    })?;
 
             graph.set_ef_search(256);
 
@@ -721,10 +719,13 @@ impl BioClipDataset {
         let limit = top_k.min(self.labels.len());
         let best = if let Some((graph, vectors)) = &self.index {
             let search_k = BIOCLIP_HNSW_RERANK_K.min(self.labels.len());
-            let search_hits = graph.search(vectors, &query.to_vec(), search_k, None).map_err(|err| {
-                ServiceError::Internal(format!("HNSW search failed: {:?}", err))
-            })?;
-            let candidates: Vec<usize> = search_hits.into_iter().map(|hit| hit.key as usize).collect();
+            let search_hits = graph
+                .search(vectors, query, search_k, None)
+                .map_err(|err| ServiceError::Internal(format!("HNSW search failed: {:?}", err)))?;
+            let candidates: Vec<usize> = search_hits
+                .into_iter()
+                .map(|hit| hit.key as usize)
+                .collect();
             self.rerank_candidates(query, query_norm, limit, candidates, logit_scale)?
         } else {
             match self.layout {
@@ -1066,8 +1067,6 @@ impl MmapNpyMatrix {
     }
 }
 
-
-
 struct NpyHeader {
     data_offset: usize,
     rows: usize,
@@ -1259,7 +1258,9 @@ fn load_bioclip_labels(path: &Path) -> ServiceResult<Vec<String>> {
             let clean_g = clean_rank(&item.genus);
             let clean_s = clean_rank(&item.species);
             let clean_cn = clean_rank(&item.common_name);
-            format!("{clean_k}/{clean_p}/{clean_c}/{clean_o}/{clean_f}/{clean_g}/{clean_s}/{clean_cn}")
+            format!(
+                "{clean_k}/{clean_p}/{clean_c}/{clean_o}/{clean_f}/{clean_g}/{clean_s}/{clean_cn}"
+            )
         })
         .collect();
 

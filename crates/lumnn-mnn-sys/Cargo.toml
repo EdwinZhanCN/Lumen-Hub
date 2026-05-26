@@ -6,6 +6,9 @@ description = "Low-level FFI bindings to MNN (Mobile Neural Network) inference f
 license = "Apache-2.0"
 repository = "https://github.com/EdwinZhanCN/Lumen-Hub"
 
+[lib]
+test = false
+
 [features]
 default = []
 # GPU backends

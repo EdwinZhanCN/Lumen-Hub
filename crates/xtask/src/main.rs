@@ -13,7 +13,7 @@ const OPENVINO_WHEEL_SHA256: &str =
 const OPENVINO_WHEEL_FILE: &str =
     "onnxruntime_openvino-1.24.1-cp311-cp311-manylinux_2_28_x86_64.whl";
 const MNN_PREBUILT_VERSION: &str = "3.5.0-lumnn.dyn.2";
-const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.9";
+const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.10";
 const DEFAULT_RELEASE_BASE_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download";
 
@@ -691,7 +691,8 @@ fn extract_openvino_wheel(wheel_path: &Path, archive_dir: &Path) -> Result<(), S
                     .is_some_and(|name| name.starts_with("libonnxruntime.so."))
             })
             .ok_or_else(|| {
-                format!("OpenVINO wheel did not contain libonnxruntime.so or libonnxruntime.so.*")
+                "OpenVINO wheel did not contain libonnxruntime.so or libonnxruntime.so.*"
+                    .to_string()
             })?;
         fs::copy(versioned, &exact_ort).map_err(|err| {
             format!(

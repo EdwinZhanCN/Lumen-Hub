@@ -444,6 +444,8 @@ impl PacketPayload for HostTensor {
 /// // Later, in an async context:
 /// // let tensor = packet.to_host_tensor().await?;
 /// ```
+pub type MLPacketParts = (Arc<MLContext>, MLPacketDescriptor, Box<dyn PacketPayload>);
+
 pub struct MLPacket {
     pub descriptor: MLPacketDescriptor,
     context: Arc<MLContext>,
@@ -558,9 +560,7 @@ impl MLPacket {
     /// # Errors
     ///
     /// Returns `Err` if the payload has been [`destroy`](MLPacket::destroy)ed.
-    pub fn into_parts(
-        self,
-    ) -> Result<(Arc<MLContext>, MLPacketDescriptor, Box<dyn PacketPayload>), String> {
+    pub fn into_parts(self) -> Result<MLPacketParts, String> {
         let Self {
             descriptor,
             context,

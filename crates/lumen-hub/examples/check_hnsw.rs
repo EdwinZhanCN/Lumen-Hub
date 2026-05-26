@@ -1,10 +1,9 @@
-use hnswlib_rs::legacy::load_hnswlib;
 use hnswlib_rs::InnerProduct;
+use hnswlib_rs::legacy::load_hnswlib;
 
 fn main() {
-    let bytes = vec![0u8; 100];
-    if let Ok((mut graph, vectors)) = load_hnswlib(InnerProduct::<f32>::new(), 768, &bytes) {
-        // Test if set_ef exists
-        graph.set_ef(100);
+    let bytes = Vec::new();
+    if let Ok((graph, _vectors)) = load_hnswlib(InnerProduct::new(), 768, &bytes) {
+        graph.set_ef_search(100);
     }
 }

@@ -685,15 +685,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "corenn-kernels"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ecbf2972bcbe6c831fbe9e365c26da6e598d1a8d0a50d9631ea180f9e4b52b7"
-dependencies = [
- "half",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1826,17 +1817,15 @@ checksum = "ec9d92d097f4749b64e8cc33d924d9f40a2d4eb91402b458014b781f5733d60f"
 
 [[package]]
 name = "hnswlib-rs"
-version = "0.10.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1d32c3ed287ad35c7ca613388537569459a5d82aa25503d142824e32424bfdb"
+checksum = "827d39a4137796ccb2a775f62fa2b8e1bc43ba24474711d266986757028372a3"
 dependencies = [
  "ahash",
  "arc-swap",
  "bincode",
  "bytemuck",
- "corenn-kernels",
  "dashmap",
- "half",
  "off64",
  "ordered-float",
  "parking_lot",
@@ -2380,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-cli"
-version = "0.1.0-beta.9"
+version = "0.1.0-beta.10"
 dependencies = [
  "cliclack",
  "flate2",
