@@ -47,14 +47,14 @@ jobs:
         steps:
             - uses: actions/checkout@v4
             - uses: dtolnay/rust-toolchain@stable
+            - name: Build ARM profile
+              if: matrix.name == 'linux-arm64' || matrix.name == 'linux-arm64-jetson'
+              run: cargo build -p lumen-hub --release --no-default-features --features ${{ matrix.features }}
+
             - name: Check profile
+              if: matrix.name != 'linux-arm64' && matrix.name != 'linux-arm64-jetson'
               env:
                   RUSTFLAGS: ${{ matrix.name == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
                   CFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
                   CXXFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
-              run: |
-                  if [ "${{ matrix.name }}" = "linux-arm64" ] || [ "${{ matrix.name }}" = "linux-arm64-jetson" ]; then
-                    cargo build -p lumen-hub --release --no-default-features --features ${{ matrix.features }}
-                  else
-                    cargo check -p lumen-hub --no-default-features --features ${{ matrix.features }}
-                  fi
+              run: cargo check -p lumen-hub --no-default-features --features ${{ matrix.features }}

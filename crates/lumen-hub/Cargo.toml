@@ -50,7 +50,7 @@ profile-linux-x64-cuda = [
   "insightface",
   "ppocr",
   "siglip",
-  "ort-download-binaries",
+  "ort-load-dynamic",
   "ort-cuda",
 ]
 profile-linux-arm64 = [
@@ -58,7 +58,7 @@ profile-linux-arm64 = [
   "insightface",
   "ppocr",
   "siglip",
-  "ort-download-binaries",
+  "ort-load-dynamic",
   "mnn-vulkan",
 ]
 profile-linux-arm64-jetson = [

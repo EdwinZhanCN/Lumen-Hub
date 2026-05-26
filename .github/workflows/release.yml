@@ -91,6 +91,15 @@ jobs:
                   if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime_providers_openvino.so"))) { throw "missing OpenVINO provider library" }
                   if (!(Test-Path (Join-Path $artifact "licenses/openvino/README.md"))) { throw "missing OpenVINO notice" }
 
+            - name: Check ONNX Runtime dynamic runtime bundle
+              if: contains(fromJSON('["linux-x64-cuda", "linux-arm64"]'), matrix.profile)
+              shell: pwsh
+              run: |
+                  $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
+                  if (!(Test-Path (Join-Path $artifact "bin/lumen-hub-bin"))) { throw "missing bin/lumen-hub-bin" }
+                  if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime.so"))) { throw "missing lib/libonnxruntime.so" }
+                  if (!(Test-Path (Join-Path $artifact "licenses/onnxruntime/README.md"))) { throw "missing ONNX Runtime notice" }
+
             - name: Check MNN dynamic runtime bundle
               if: contains(fromJSON('["darwin-arm64", "linux-arm64"]'), matrix.profile)
               shell: pwsh

@@ -12,10 +12,59 @@ const OPENVINO_WHEEL_SHA256: &str =
     "3007c803634cc69c6d52af1dea7ce729d9bb62b9a11070fd2f959119199007a8";
 const OPENVINO_WHEEL_FILE: &str =
     "onnxruntime_openvino-1.24.1-cp311-cp311-manylinux_2_28_x86_64.whl";
+const ORT_VERSION: &str = "1.24.1";
+const ORT_CPU_LINUX_AARCH64_WHEEL_URL: &str = "https://files.pythonhosted.org/packages/7b/61/b3305c39144e19dbe8791802076b29b4b592b09de03d0e340c1314bfd408/onnxruntime-1.24.1-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl";
+const ORT_CPU_LINUX_AARCH64_WHEEL_SHA256: &str =
+    "86bc43e922b1f581b3de26a3dc402149c70e5542fceb5bec6b3a85542dbeb164";
+const ORT_CPU_LINUX_AARCH64_WHEEL_FILE: &str =
+    "onnxruntime-1.24.1-cp311-cp311-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl";
+const ORT_GPU_LINUX_X64_WHEEL_URL: &str = "https://files.pythonhosted.org/packages/ca/c7/07d06175f1124fc89e8b7da30d70eb8e0e1400d90961ae1cbea9da69e69b/onnxruntime_gpu-1.24.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl";
+const ORT_GPU_LINUX_X64_WHEEL_SHA256: &str =
+    "ac4bfc90c376516b13d709764ab257e4e3d78639bf6a2ccfc826e9db4a5c7ddf";
+const ORT_GPU_LINUX_X64_WHEEL_FILE: &str =
+    "onnxruntime_gpu-1.24.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl";
 const MNN_PREBUILT_VERSION: &str = "3.5.0-lumnn.dyn.2";
 const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.10";
 const DEFAULT_RELEASE_BASE_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download";
+
+#[derive(Clone, Copy)]
+enum OrtBundle {
+    CpuLinuxAarch64,
+    GpuLinuxX64,
+}
+
+struct OrtBundleSpec {
+    cache_key: &'static str,
+    package: &'static str,
+    wheel_file: &'static str,
+    wheel_url: &'static str,
+    wheel_sha256: &'static str,
+    platform: &'static str,
+}
+
+impl OrtBundle {
+    fn spec(self) -> OrtBundleSpec {
+        match self {
+            OrtBundle::CpuLinuxAarch64 => OrtBundleSpec {
+                cache_key: "cpu-linux-aarch64",
+                package: "onnxruntime",
+                wheel_file: ORT_CPU_LINUX_AARCH64_WHEEL_FILE,
+                wheel_url: ORT_CPU_LINUX_AARCH64_WHEEL_URL,
+                wheel_sha256: ORT_CPU_LINUX_AARCH64_WHEEL_SHA256,
+                platform: "Linux aarch64, manylinux_2_27 / glibc 2.27+",
+            },
+            OrtBundle::GpuLinuxX64 => OrtBundleSpec {
+                cache_key: "gpu-linux-x64",
+                package: "onnxruntime-gpu",
+                wheel_file: ORT_GPU_LINUX_X64_WHEEL_FILE,
+                wheel_url: ORT_GPU_LINUX_X64_WHEEL_URL,
+                wheel_sha256: ORT_GPU_LINUX_X64_WHEEL_SHA256,
+                platform: "Linux x64 CUDA, manylinux_2_27 / glibc 2.27+",
+            },
+        }
+    }
+}
 
 fn main() -> ExitCode {
     match run() {
@@ -98,6 +147,10 @@ fn dist(args: Vec<String>) -> Result<(), String> {
 
     if profile.openvino_bundle {
         download_openvino_bundle(&root, &archive_dir)?;
+    }
+
+    if let Some(bundle) = profile.ort_bundle {
+        download_ort_bundle(&root, &archive_dir, bundle)?;
     }
 
     if profile.mnn_bundle {
@@ -338,7 +391,10 @@ fn copy_dir_filtered(src: &Path, dst: &Path) -> io::Result<()> {
 }
 
 fn needs_runtime_launcher(profile: &DistProfile) -> bool {
-    profile.openvino_bundle || profile.mnn_bundle || profile.jetson_dynamic_ort
+    profile.openvino_bundle
+        || profile.ort_bundle.is_some()
+        || profile.mnn_bundle
+        || profile.jetson_dynamic_ort
 }
 
 fn write_unix_launcher(path: &Path, profile: &DistProfile) -> Result<(), String> {
@@ -348,7 +404,7 @@ fn write_unix_launcher(path: &Path, profile: &DistProfile) -> Result<(), String>
         r#"APP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)""#.to_owned(),
     ];
 
-    if profile.openvino_bundle {
+    if profile.openvino_bundle || profile.ort_bundle.is_some() {
         lines.push(r#"export LUMNN_ORT_DYLIB_PATH="$APP_HOME/lib/libonnxruntime.so""#.to_owned());
     }
 
@@ -367,7 +423,7 @@ fn write_unix_launcher(path: &Path, profile: &DistProfile) -> Result<(), String>
         lines.push(r#"fi"#.to_owned());
     }
 
-    if profile.openvino_bundle || profile.mnn_bundle {
+    if profile.openvino_bundle || profile.ort_bundle.is_some() || profile.mnn_bundle {
         if profile.target.contains("apple") {
             lines.push(
                 r#"export DYLD_LIBRARY_PATH="$APP_HOME/lib:${DYLD_LIBRARY_PATH:-}""#.to_owned(),
@@ -580,6 +636,164 @@ fn write_mnn_notice(archive_dir: &Path, profile: &DistProfile) -> Result<(), Str
     })
 }
 
+fn download_ort_bundle(root: &Path, archive_dir: &Path, bundle: OrtBundle) -> Result<(), String> {
+    let spec = bundle.spec();
+    let cache_dir = root
+        .join("target")
+        .join("xtask-cache")
+        .join("onnxruntime")
+        .join(spec.cache_key);
+    fs::create_dir_all(&cache_dir).map_err(|err| {
+        format!(
+            "failed to create ONNX Runtime wheel cache `{}`: {err}",
+            cache_dir.display()
+        )
+    })?;
+    let wheel_path = cache_dir.join(spec.wheel_file);
+    ensure_ort_wheel(&wheel_path, &spec)?;
+    extract_ort_wheel(&wheel_path, archive_dir)?;
+    write_ort_notice(archive_dir, &spec)
+}
+
+fn ensure_ort_wheel(wheel_path: &Path, spec: &OrtBundleSpec) -> Result<(), String> {
+    if wheel_path.is_file() {
+        let digest = sha256_file(wheel_path)?;
+        if digest == spec.wheel_sha256 {
+            return Ok(());
+        }
+    }
+
+    let tmp = wheel_path.with_extension("whl.tmp");
+    if tmp.exists() {
+        fs::remove_file(&tmp)
+            .map_err(|err| format!("failed to remove stale `{}`: {err}", tmp.display()))?;
+    }
+
+    let mut response = ureq::get(spec.wheel_url)
+        .call()
+        .map_err(|err| format!("failed to download ONNX Runtime wheel: {err}"))?;
+    let mut file = fs::File::create(&tmp)
+        .map_err(|err| format!("failed to create `{}`: {err}", tmp.display()))?;
+    io::copy(&mut response.body_mut().as_reader(), &mut file)
+        .map_err(|err| format!("failed to write `{}`: {err}", tmp.display()))?;
+    file.flush()
+        .map_err(|err| format!("failed to flush `{}`: {err}", tmp.display()))?;
+
+    let digest = sha256_file(&tmp)?;
+    if digest != spec.wheel_sha256 {
+        return Err(format!(
+            "ONNX Runtime wheel SHA256 mismatch: expected {}, got {digest}",
+            spec.wheel_sha256
+        ));
+    }
+
+    fs::rename(&tmp, wheel_path).map_err(|err| {
+        format!(
+            "failed to move `{}` to `{}`: {err}",
+            tmp.display(),
+            wheel_path.display()
+        )
+    })
+}
+
+fn extract_ort_wheel(wheel_path: &Path, archive_dir: &Path) -> Result<(), String> {
+    let file = fs::File::open(wheel_path)
+        .map_err(|err| format!("failed to open `{}`: {err}", wheel_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|err| {
+        format!(
+            "failed to read ONNX Runtime wheel `{}`: {err}",
+            wheel_path.display()
+        )
+    })?;
+    let lib_dir = archive_dir.join("lib");
+    let license_dir = archive_dir.join("licenses").join("onnxruntime");
+    fs::create_dir_all(&license_dir).map_err(|err| {
+        format!(
+            "failed to create ONNX Runtime licenses directory `{}`: {err}",
+            license_dir.display()
+        )
+    })?;
+
+    let mut extracted_libs = Vec::new();
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|err| format!("failed to read wheel entry {index}: {err}"))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_owned();
+
+        if is_shared_object(&name) {
+            let base_name = archive_base_name(&name).ok_or_else(|| {
+                format!("ONNX Runtime wheel entry `{name}` did not have a file name")
+            })?;
+            let target = lib_dir.join(base_name);
+            let mut output = fs::File::create(&target)
+                .map_err(|err| format!("failed to create `{}`: {err}", target.display()))?;
+            io::copy(&mut entry, &mut output)
+                .map_err(|err| format!("failed to extract `{name}`: {err}"))?;
+            make_executable(&target)?;
+            extracted_libs.push(target);
+        } else if is_license_entry(&name) {
+            let target = license_dir.join(sanitize_archive_name(&name));
+            let mut output = fs::File::create(&target)
+                .map_err(|err| format!("failed to create `{}`: {err}", target.display()))?;
+            io::copy(&mut entry, &mut output)
+                .map_err(|err| format!("failed to extract `{name}`: {err}"))?;
+        }
+    }
+
+    ensure_unversioned_onnxruntime(&lib_dir, &extracted_libs, "ONNX Runtime wheel")
+}
+
+fn ensure_unversioned_onnxruntime(
+    lib_dir: &Path,
+    extracted_libs: &[PathBuf],
+    source_name: &str,
+) -> Result<(), String> {
+    let exact_ort = lib_dir.join("libonnxruntime.so");
+    if exact_ort.is_file() {
+        return Ok(());
+    }
+
+    let versioned = extracted_libs
+        .iter()
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("libonnxruntime.so."))
+        })
+        .ok_or_else(|| {
+            format!("{source_name} did not contain libonnxruntime.so or libonnxruntime.so.*")
+        })?;
+    fs::copy(versioned, &exact_ort).map_err(|err| {
+        format!(
+            "failed to create `{}` from `{}`: {err}",
+            exact_ort.display(),
+            versioned.display()
+        )
+    })?;
+    make_executable(&exact_ort)
+}
+
+fn write_ort_notice(archive_dir: &Path, spec: &OrtBundleSpec) -> Result<(), String> {
+    let notice = format!(
+        "This package bundles ONNX Runtime from PyPI package `{}=={ORT_VERSION}`.\nWheel: `{}`\nSHA256: {}\nPlatform: {}.\n",
+        spec.package, spec.wheel_file, spec.wheel_sha256, spec.platform
+    );
+    let path = archive_dir
+        .join("licenses")
+        .join("onnxruntime")
+        .join("README.md");
+    fs::write(&path, notice).map_err(|err| {
+        format!(
+            "failed to write ONNX Runtime package notice `{}`: {err}",
+            path.display()
+        )
+    })
+}
+
 fn download_openvino_bundle(root: &Path, archive_dir: &Path) -> Result<(), String> {
     let cache_dir = root.join("target").join("xtask-cache").join("openvino");
     fs::create_dir_all(&cache_dir).map_err(|err| {
@@ -729,6 +943,13 @@ fn write_readme(profile: &DistProfile, archive_dir: &Path) -> Result<(), String>
         runtime_notes.push(
             "OpenVINO runtime libraries are bundled in `lib/`. `bin/lumen-hub` sets `LUMNN_ORT_DYLIB_PATH` and the bundled library path before launching the real binary.".to_owned(),
         );
+    }
+    if let Some(bundle) = profile.ort_bundle {
+        let spec = bundle.spec();
+        runtime_notes.push(format!(
+            "ONNX Runtime dynamic libraries (`{}=={ORT_VERSION}`) are bundled in `lib/`. `bin/lumen-hub` sets `LUMNN_ORT_DYLIB_PATH` and the bundled library path before launching the real binary.",
+            spec.package
+        ));
     }
     if profile.mnn_bundle {
         let location = if profile.target.contains("windows") {
@@ -1080,6 +1301,7 @@ struct DistProfile {
     target: &'static str,
     features: &'static [&'static str],
     openvino_bundle: bool,
+    ort_bundle: Option<OrtBundle>,
     mnn_bundle: bool,
     jetson_dynamic_ort: bool,
 }
@@ -1091,6 +1313,7 @@ const PROFILES: &[DistProfile] = &[
         target: "x86_64-unknown-linux-gnu",
         features: &["profile-universal-cpu"],
         openvino_bundle: false,
+        ort_bundle: None,
         mnn_bundle: false,
         jetson_dynamic_ort: false,
     },
@@ -1100,6 +1323,7 @@ const PROFILES: &[DistProfile] = &[
         target: "aarch64-apple-darwin",
         features: &["profile-darwin-arm64"],
         openvino_bundle: false,
+        ort_bundle: None,
         mnn_bundle: true,
         jetson_dynamic_ort: false,
     },
@@ -1109,6 +1333,7 @@ const PROFILES: &[DistProfile] = &[
         target: "x86_64-unknown-linux-gnu",
         features: &["profile-linux-x64-cuda"],
         openvino_bundle: false,
+        ort_bundle: Some(OrtBundle::GpuLinuxX64),
         mnn_bundle: false,
         jetson_dynamic_ort: false,
     },
@@ -1118,6 +1343,7 @@ const PROFILES: &[DistProfile] = &[
         target: "aarch64-unknown-linux-gnu",
         features: &["profile-linux-arm64"],
         openvino_bundle: false,
+        ort_bundle: Some(OrtBundle::CpuLinuxAarch64),
         mnn_bundle: true,
         jetson_dynamic_ort: false,
     },
@@ -1127,6 +1353,7 @@ const PROFILES: &[DistProfile] = &[
         target: "aarch64-unknown-linux-gnu",
         features: &["profile-linux-arm64-jetson"],
         openvino_bundle: false,
+        ort_bundle: None,
         mnn_bundle: false,
         jetson_dynamic_ort: true,
     },
@@ -1136,6 +1363,7 @@ const PROFILES: &[DistProfile] = &[
         target: "x86_64-pc-windows-msvc",
         features: &["profile-windows-x64-dml"],
         openvino_bundle: false,
+        ort_bundle: None,
         mnn_bundle: false,
         jetson_dynamic_ort: false,
     },
@@ -1145,6 +1373,7 @@ const PROFILES: &[DistProfile] = &[
         target: "x86_64-unknown-linux-gnu",
         features: &["profile-linux-x64-openvino"],
         openvino_bundle: true,
+        ort_bundle: None,
         mnn_bundle: false,
         jetson_dynamic_ort: false,
     },
