@@ -24,7 +24,7 @@ const ORT_GPU_LINUX_X64_WHEEL_SHA256: &str =
 const ORT_GPU_LINUX_X64_WHEEL_FILE: &str =
     "onnxruntime_gpu-1.24.1-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl";
 const MNN_PREBUILT_VERSION: &str = "3.5.0-lumnn.dyn.2";
-const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.10";
+const DEFAULT_RELEASE_VERSION: &str = "0.1.0-beta.11";
 const DEFAULT_RELEASE_BASE_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download";
 
