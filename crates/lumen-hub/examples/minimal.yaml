@@ -9,52 +9,52 @@
 #   GPU/Unified memory: 4 GB
 
 metadata:
-  version: "0.1.0"
-  region: other
-  cache_dir: "~/.lumen/models"
+    version: "0.1.0"
+    region: other
+    cache_dir: "~/.lumen/models"
 
 deployment:
-  mode: hub
-  services:
-    - ocr
-    - siglip
-    - face
+    mode: hub
+    services:
+        - ocr
+        - siglip
+        - face
 
 server:
-  host: "0.0.0.0"
-  port: 50051
-  batching:
-    enabled: true
-    max_batch_size: 8
-    queue_latency_ms: 2
+    host: "0.0.0.0"
+    port: 50051
+    batching:
+        enabled: true
+        max_batch_size: 8
+        queue_latency_ms: 2
 
 services:
-  # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.
-  ocr:
-    enabled: true
-    package: ppocr
-    models:
-      default:
-        model: pp-ocrv5
-        runtime: mnn
-        precision: fp32
+    # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.
+    ocr:
+        enabled: true
+        package: ppocr
+        models:
+            default:
+                model: pp-ocrv5
+                runtime: mnn
+                precision: fp32
 
-  # Minimum: RAM 3 GB, GPU/Unified memory 2 GB.
-  siglip:
-    enabled: true
-    package: siglip
-    models:
-      default:
-        model: siglip2-base-patch16-224
-        runtime: mnn
-        precision: fp16
+    # Minimum: RAM 3 GB, GPU/Unified memory 2 GB.
+    siglip:
+        enabled: true
+        package: siglip
+        models:
+            default:
+                model: siglip2-base-patch16-224
+                runtime: mnn
+                precision: q8
 
-  # Minimum: RAM 1 GB, GPU/Unified memory 1 GB.
-  face:
-    enabled: true
-    package: insightface
-    models:
-      default:
-        model: antelopev2
-        runtime: mnn
-        precision: fp32
+    # Minimum: RAM 1 GB, GPU/Unified memory 1 GB.
+    face:
+        enabled: true
+        package: insightface
+        models:
+            default:
+                model: antelopev2
+                runtime: mnn
+                precision: fp32
