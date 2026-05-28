@@ -55,7 +55,7 @@ impl MnnNode {
     pub fn new(context: &MLContext, model_path: &str, name: String) -> Result<Self, String> {
         let config = InferenceConfig {
             thread_count: 0, // auto
-            precision_mode: PrecisionMode::High,
+            precision_mode: PrecisionMode::Low,
             use_cache: true,
             data_format: DataFormat::Auto,
             backend: resolve_backend(context.accelerated()),

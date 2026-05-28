@@ -45,22 +45,8 @@ profile-darwin-arm64 = [
   "ort-xnnpack",
   "mnn-metal",
 ]
-profile-linux-x64-cuda = [
-  "clip",
-  "insightface",
-  "ppocr",
-  "siglip",
-  "ort-load-dynamic",
-  "ort-cuda",
-]
-profile-linux-arm64 = [
-  "clip",
-  "insightface",
-  "ppocr",
-  "siglip",
-  "ort-load-dynamic",
-  "mnn-opencl",
-]
+profile-linux-x64-cuda = ["clip", "insightface", "ppocr", "siglip", "ort-load-dynamic", "ort-cuda"]
+profile-linux-arm64 = ["clip", "insightface", "ppocr", "siglip", "ort-load-dynamic", "mnn-opencl"]
 profile-linux-arm64-jetson = [
   "clip",
   "insightface",
@@ -101,7 +87,7 @@ lumnn = { path = "../lumnn", default-features = false }
 memmap2 = "0.9.9"
 minijinja = "2.9.2"
 rand = "0.8.5"
-mdns-sd = "0.19.0"
+mdns-sd = "0.20.0"
 prost = "0.14.3"
 rten-imageproc = { version = "0.24", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
