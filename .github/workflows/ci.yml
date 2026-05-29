@@ -49,7 +49,7 @@ jobs:
             - name: Check backend
               run: >
                   cargo check -p lumen-hub --no-default-features
-                  --features ${{ matrix.backend }},siglip,ppocr,insightface
+                  --features ${{ matrix.backend }},siglip,ppocr,insightface,clip
 
     # CUDA / ROCm require vendor toolkits to compile (cubecl-cuda / cubecl-rocm)
     # and are not exercised on hosted runners; they are validated on
