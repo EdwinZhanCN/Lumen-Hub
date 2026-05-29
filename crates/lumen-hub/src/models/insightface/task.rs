@@ -1,16 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use image::{DynamicImage, Rgb, RgbImage, imageops::FilterType};
 use lumen_schema::{BboxItem, Face, FaceV1};
-use lumnn::core::{
-    context::MLContext,
-    node::{MLNode, MLNodeRef},
-    packet::{HostTensor, MLPacket, MLPacketDataType, MLPacketDescriptor},
-};
 use serde::Deserialize;
 
 use super::metadata::{InsightFaceDetectionSpec, InsightFacePackSpec, InsightFaceRecognitionSpec};
+use super::model::{InsightFaceDetectionModel, InsightFaceRecognitionModel, TensorOutput};
 use crate::service::{
     DEFAULT_TENSOR_MIME, FixedShapeTensorValidationOptions, IMAGE_TENSOR_LAYOUT,
     LetterboxTransform, META_MODEL_ID, PREPROCESS_INSIGHTFACE_DET, ServiceError, ServiceResult,
@@ -29,9 +25,15 @@ const ARCFACE_TEMPLATE: [[f32; 2]; 5] = [
     [70.7299, 92.2041],
 ];
 
+/// Detection/recognition component config from `model_info.json`.
+///
+/// With Burn, model IO node names are fixed by the compiled graph, so these
+/// fields are retained only for metadata compatibility (`component` selects the
+/// `.bpk` filename).
 #[derive(Debug, Clone, Deserialize)]
 pub struct InsightFaceComponentConfig {
     pub component: String,
+    #[serde(default)]
     pub input_name: String,
     #[serde(default)]
     pub output_name: Option<String>,
@@ -39,77 +41,26 @@ pub struct InsightFaceComponentConfig {
     pub output_names: Vec<String>,
 }
 
-pub struct InsightFaceTask {
-    spec: TaskSpec,
-    context: Arc<MLContext>,
+/// Owns the Burn models + spec and performs the synchronous face pipeline.
+struct InsightFaceEngine {
     model_id: String,
     pack: InsightFacePackSpec,
-    det_config: InsightFaceComponentConfig,
-    rec_config: InsightFaceComponentConfig,
-    det_node: MLNodeRef,
-    rec_node: MLNodeRef,
+    det_model: InsightFaceDetectionModel,
+    rec_model: InsightFaceRecognitionModel,
 }
 
-impl InsightFaceTask {
-    pub fn new(
-        name: impl Into<String>,
-        context: Arc<MLContext>,
-        model_id: String,
-        pack: InsightFacePackSpec,
-        det_config: InsightFaceComponentConfig,
-        rec_config: InsightFaceComponentConfig,
-        det_node: MLNodeRef,
-        rec_node: MLNodeRef,
-    ) -> ServiceResult<Self> {
-        if det_config.output_names.is_empty() {
-            return Err(ServiceError::InvalidArgument(
-                "InsightFace detection config requires output_names".to_owned(),
-            ));
-        }
-        if rec_config.output_name.is_none() {
-            return Err(ServiceError::InvalidArgument(
-                "InsightFace recognition config requires output_name".to_owned(),
-            ));
-        }
-
-        let name = name.into();
-        let spec = TaskSpec::new(
-            &name,
-            "InsightFace face detection, alignment, and embedding recognition",
-        )
-        .with_input_mimes(image_input_mimes_with_tensor())
-        .with_output_mime(JSON_MIME)
-        .with_metadata("output_schema", "face_v1")
-        .with_metadata(META_MODEL_ID, &model_id)
-        .with_limit("det_input_width", pack.detection.input_size[0].to_string())
-        .with_limit("det_input_height", pack.detection.input_size[1].to_string())
-        .with_limit("embedding_dim", pack.recognition.embedding_dim.to_string());
-
-        Ok(Self {
-            spec,
-            context,
-            model_id,
-            pack,
-            det_config,
-            rec_config,
-            det_node,
-            rec_node,
-        })
-    }
-
-    fn det_input_shape(&self) -> Vec<usize> {
-        vec![
-            1,
-            3,
+impl InsightFaceEngine {
+    fn det_input_size(&self) -> (usize, usize) {
+        (
             self.pack.detection.input_size[1],
             self.pack.detection.input_size[0],
-        ]
+        )
     }
 
-    async fn run_face_recognition_from_image(&self, image: &DynamicImage) -> ServiceResult<FaceV1> {
+    fn run_from_image(&self, image: &DynamicImage) -> ServiceResult<FaceV1> {
         let rgb = image.to_rgb8();
         let (det_input, transform) = det_preprocess(&rgb, &self.pack.detection);
-        self.run_face_pipeline(
+        self.run_pipeline(
             &rgb,
             &det_input,
             transform,
@@ -118,26 +69,15 @@ impl InsightFaceTask {
             |landmarks| *landmarks,
             |bbox| *bbox,
         )
-        .await
     }
 
-    async fn run_face_recognition_from_det_tensor(
+    fn run_from_det_tensor(
         &self,
-        request: &TaskRequest,
+        det_input: Vec<f32>,
+        transform: LetterboxTransform,
+        source_w: u32,
+        source_h: u32,
     ) -> ServiceResult<FaceV1> {
-        let expected_shape = self.det_input_shape();
-        validate_fixed_shape_tensor_request(
-            request,
-            FixedShapeTensorValidationOptions {
-                dtype: "fp32",
-                layout: IMAGE_TENSOR_LAYOUT,
-                preprocess_id: PREPROCESS_INSIGHTFACE_DET,
-                expected_shape: &expected_shape,
-            },
-        )?;
-        let source = parse_source_dimensions(request)?;
-        let transform = parse_letterbox_transform(request)?;
-        let det_input = bytes_to_f32_le(&request.payload)?;
         let canvas = denormalize_det_nchw_to_rgb(
             &det_input,
             self.pack.detection.input_size[1],
@@ -145,19 +85,19 @@ impl InsightFaceTask {
             &self.pack.detection.mean,
             &self.pack.detection.std,
         );
-        self.run_face_pipeline(
+        self.run_pipeline(
             &canvas,
             &det_input,
             transform,
-            source.width,
-            source.height,
+            source_w,
+            source_h,
             |landmarks| source_landmarks_to_canvas(landmarks, transform),
             |bbox| source_bbox_to_canvas(bbox, transform),
         )
-        .await
     }
 
-    async fn run_face_pipeline(
+    #[allow(clippy::too_many_arguments)]
+    fn run_pipeline(
         &self,
         crop_image: &RgbImage,
         det_input: &[f32],
@@ -167,17 +107,8 @@ impl InsightFaceTask {
         map_landmarks_for_crop: impl Fn(&[[f32; 2]; 5]) -> [[f32; 2]; 5],
         map_bbox_for_crop: impl Fn(&[f32; 4]) -> [f32; 4],
     ) -> ServiceResult<FaceV1> {
-        let det_outputs = run_detection_node(
-            self.det_node.as_ref(),
-            self.context.as_ref(),
-            &self.det_config.input_name,
-            &self.det_config.output_names,
-            det_input,
-            self.pack.detection.input_size[1],
-            self.pack.detection.input_size[0],
-        )
-        .await
-        .map_err(|e| ServiceError::Internal(format!("detection inference failed: {e}")))?;
+        let (det_h, det_w) = self.det_input_size();
+        let det_outputs = self.det_model.forward(det_input, det_h, det_w);
 
         let candidates = scrfd_postprocess(
             &det_outputs,
@@ -205,24 +136,11 @@ impl InsightFaceTask {
                 )
             };
             let rec_input = rec_preprocess(&aligned, &self.pack.recognition);
-            let embedding = match run_recognition_node(
-                self.rec_node.as_ref(),
-                self.context.as_ref(),
-                &self.rec_config.input_name,
-                self.rec_config.output_name.as_deref().unwrap_or_default(),
+            let embedding = l2_normalize(self.rec_model.forward(
                 &rec_input,
                 self.pack.recognition.input_size[1],
                 self.pack.recognition.input_size[0],
-            )
-            .await
-            {
-                Ok(values) => Some(l2_normalize(values)),
-                Err(err) => {
-                    return Err(ServiceError::Internal(format!(
-                        "recognition inference failed: {err}"
-                    )));
-                }
-            };
+            ));
 
             faces.push(Face {
                 bbox: det.bbox.iter().copied().map(BboxItem::from).collect(),
@@ -233,11 +151,60 @@ impl InsightFaceTask {
                         .flat_map(|point| [point[0], point[1]])
                         .collect(),
                 ),
-                embedding,
+                embedding: Some(embedding),
             });
         }
 
         Ok(FaceV1::new(faces, &self.model_id))
+    }
+}
+
+pub struct InsightFaceTask {
+    spec: TaskSpec,
+    model_id: String,
+    engine: Arc<InsightFaceEngine>,
+}
+
+impl InsightFaceTask {
+    pub fn new(
+        name: impl Into<String>,
+        model_id: String,
+        pack: InsightFacePackSpec,
+        det_model: InsightFaceDetectionModel,
+        rec_model: InsightFaceRecognitionModel,
+    ) -> ServiceResult<Self> {
+        let name = name.into();
+        let spec = TaskSpec::new(
+            &name,
+            "InsightFace face detection, alignment, and embedding recognition",
+        )
+        .with_input_mimes(image_input_mimes_with_tensor())
+        .with_output_mime(JSON_MIME)
+        .with_metadata("output_schema", "face_v1")
+        .with_metadata(META_MODEL_ID, &model_id)
+        .with_limit("det_input_width", pack.detection.input_size[0].to_string())
+        .with_limit("det_input_height", pack.detection.input_size[1].to_string())
+        .with_limit("embedding_dim", pack.recognition.embedding_dim.to_string());
+
+        Ok(Self {
+            spec,
+            model_id: model_id.clone(),
+            engine: Arc::new(InsightFaceEngine {
+                model_id,
+                pack,
+                det_model,
+                rec_model,
+            }),
+        })
+    }
+
+    fn det_input_shape(&self) -> Vec<usize> {
+        vec![
+            1,
+            3,
+            self.engine.pack.detection.input_size[1],
+            self.engine.pack.detection.input_size[0],
+        ]
     }
 }
 
@@ -248,12 +215,31 @@ impl TaskHandler for InsightFaceTask {
     }
 
     async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
+        let engine = Arc::clone(&self.engine);
+
         let result = if is_tensor_input_request(&request) {
-            self.run_face_recognition_from_det_tensor(&request).await?
+            let expected_shape = self.det_input_shape();
+            validate_fixed_shape_tensor_request(
+                &request,
+                FixedShapeTensorValidationOptions {
+                    dtype: "fp32",
+                    layout: IMAGE_TENSOR_LAYOUT,
+                    preprocess_id: PREPROCESS_INSIGHTFACE_DET,
+                    expected_shape: &expected_shape,
+                },
+            )?;
+            let source = parse_source_dimensions(&request)?;
+            let transform = parse_letterbox_transform(&request)?;
+            let det_input = bytes_to_f32_le(&request.payload)?;
+            run_blocking(move || {
+                engine.run_from_det_tensor(det_input, transform, source.width, source.height)
+            })
+            .await??
         } else {
             let image = decode_request_image(&request)?;
-            self.run_face_recognition_from_image(&image).await?
+            run_blocking(move || engine.run_from_image(&image)).await??
         };
+
         let json_bytes = result.to_json_bytes().map_err(|e| {
             ServiceError::Internal(format!("failed to serialize face_v1 result: {e}"))
         })?;
@@ -262,6 +248,17 @@ impl TaskHandler for InsightFaceTask {
             .with_result_schema("face_v1")
             .with_meta(META_MODEL_ID, &self.model_id))
     }
+}
+
+/// Runs a blocking inference closure on the tokio blocking pool.
+async fn run_blocking<F, T>(f: F) -> ServiceResult<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ServiceError::Internal(format!("inference task failed: {e}")))
 }
 
 fn image_input_mimes_with_tensor() -> Vec<String> {
@@ -375,85 +372,6 @@ fn det_preprocess(
             pad_y,
         },
     )
-}
-
-async fn run_detection_node(
-    node: &dyn MLNode,
-    context: &MLContext,
-    input_name: &str,
-    output_names: &[String],
-    input_data: &[f32],
-    input_h: usize,
-    input_w: usize,
-) -> Result<Vec<TensorOutput>, String> {
-    let _input_desc = node
-        .input_descriptors()
-        .get(input_name)
-        .ok_or_else(|| format!("detection node missing input `{input_name}`"))?;
-    let actual_shape = vec![1, 3, input_h, input_w];
-    let packet = MLPacket::from_host_tensor(
-        Arc::new(context.clone()),
-        MLPacketDescriptor::new(MLPacketDataType::Float32, actual_shape),
-        HostTensor::Float32(input_data.to_vec()),
-    )?;
-    let mut outputs = node
-        .execute(HashMap::from([(input_name.to_owned(), packet)]), context)
-        .await?;
-
-    output_names
-        .iter()
-        .map(|name| {
-            let packet = outputs
-                .remove(name)
-                .ok_or_else(|| format!("detection node missing output `{name}`"))?;
-            tensor_output_from_packet(packet)
-        })
-        .collect()
-}
-
-async fn run_recognition_node(
-    node: &dyn MLNode,
-    context: &MLContext,
-    input_name: &str,
-    output_name: &str,
-    input_data: &[f32],
-    input_h: usize,
-    input_w: usize,
-) -> Result<Vec<f32>, String> {
-    let _input_desc = node
-        .input_descriptors()
-        .get(input_name)
-        .ok_or_else(|| format!("recognition node missing input `{input_name}`"))?;
-    let packet = MLPacket::from_host_tensor(
-        Arc::new(context.clone()),
-        MLPacketDescriptor::new(MLPacketDataType::Float32, vec![1, 3, input_h, input_w]),
-        HostTensor::Float32(input_data.to_vec()),
-    )?;
-    let mut outputs = node
-        .execute(HashMap::from([(input_name.to_owned(), packet)]), context)
-        .await?;
-    let packet = outputs
-        .remove(output_name)
-        .ok_or_else(|| format!("recognition node missing output `{output_name}`"))?;
-    tensor_output_from_packet(packet).map(|output| output.values)
-}
-
-fn tensor_output_from_packet(packet: MLPacket) -> Result<TensorOutput, String> {
-    let (_ctx, desc, payload) = packet.into_parts()?;
-    let values = match payload.to_host_tensor() {
-        Ok(HostTensor::Float32(values)) => values,
-        Ok(other) => return Err(format!("unexpected output dtype: {other:?}")),
-        Err(e) => return Err(format!("output read failed: {e}")),
-    };
-    Ok(TensorOutput {
-        values,
-        shape: desc.shape,
-    })
-}
-
-struct TensorOutput {
-    values: Vec<f32>,
-    shape: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -800,7 +718,6 @@ mod tests {
     #[test]
     fn computes_iou_for_overlapping_boxes() {
         let value = iou([0.0, 0.0, 10.0, 10.0], [5.0, 5.0, 15.0, 15.0]);
-
         assert!((value - 25.0 / 175.0).abs() < 1e-6);
     }
 }

@@ -12,7 +12,7 @@ use std::{
 
 use console::style;
 #[cfg(feature = "clip")]
-use lumen_hub::models::clip::ClipService;
+use lumen_hub::models::bioclip::BioclipService;
 #[cfg(feature = "insightface")]
 use lumen_hub::models::insightface::InsightFaceService;
 #[cfg(feature = "ppocr")]
@@ -20,19 +20,13 @@ use lumen_hub::models::ppocr::PpocrService;
 #[cfg(feature = "siglip")]
 use lumen_hub::models::siglip::SiglipService;
 use lumen_hub::{
+    backend::default_device,
     daemon::{DaemonError, bind_addr, serve_grpc_with_shutdown},
     model_download::{ModelDownloadError, ensure_models_for_config},
     service::ServiceHub,
     warmup::{WarmupError, default_warmup_dir, run_startup_warmup},
 };
 use lumen_schema::{ConfigValidationError, LumenConfig, Mode, ServerConfig};
-#[cfg(any(
-    feature = "clip",
-    feature = "insightface",
-    feature = "ppocr",
-    feature = "siglip"
-))]
-use lumnn::core::context::{MLContext, MLContextOptions};
 use thiserror::Error;
 use tracing::{
     Event, Level, Metadata, Subscriber,
@@ -208,13 +202,16 @@ fn build_service_hub_from_config(
     config: &LumenConfig,
     cache_dir: &str,
 ) -> StartupResult<ServiceHub> {
-    #[cfg(any(
-        feature = "clip",
-        feature = "insightface",
-        feature = "ppocr",
-        feature = "siglip"
-    ))]
-    let context = MLContext::new(default_context_options()).map_err(StartupError::ContextInit)?;
+    #[cfg_attr(
+        not(any(
+            feature = "clip",
+            feature = "insightface",
+            feature = "ppocr",
+            feature = "siglip"
+        )),
+        allow(unused_variables)
+    )]
+    let device = Arc::new(default_device());
 
     let requested_services = config
         .deployment_service_names()
@@ -248,12 +245,12 @@ fn build_service_hub_from_config(
 
         match svc_config.package.as_str() {
             #[cfg(feature = "clip")]
-            "clip" | "lumen_clip" => {
-                let service = ClipService::from_config(
+            "clip" | "lumen_clip" | "bioclip" => {
+                let service = BioclipService::from_config(
                     service_name,
                     svc_config,
                     &cache_dir,
-                    Arc::clone(&context),
+                    Arc::clone(&device),
                 )
                 .map_err(|e| StartupError::ServiceConstruction {
                     service: service_name.to_owned(),
@@ -266,7 +263,7 @@ fn build_service_hub_from_config(
                     })?;
             }
             #[cfg(not(feature = "clip"))]
-            "clip" | "lumen_clip" => {
+            "clip" | "lumen_clip" | "bioclip" => {
                 return Err(StartupError::PackageDisabled {
                     package: svc_config.package.clone(),
                     feature: "clip",
@@ -278,7 +275,7 @@ fn build_service_hub_from_config(
                     service_name,
                     svc_config,
                     &cache_dir,
-                    Arc::clone(&context),
+                    Arc::clone(&device),
                 )
                 .map_err(|e| StartupError::ServiceConstruction {
                     service: service_name.to_owned(),
@@ -303,7 +300,7 @@ fn build_service_hub_from_config(
                     service_name,
                     svc_config,
                     &cache_dir,
-                    Arc::clone(&context),
+                    Arc::clone(&device),
                 )
                 .map_err(|e| StartupError::ServiceConstruction {
                     service: service_name.to_owned(),
@@ -328,7 +325,7 @@ fn build_service_hub_from_config(
                     service_name,
                     svc_config,
                     &cache_dir,
-                    Arc::clone(&context),
+                    Arc::clone(&device),
                 )
                 .map_err(|e| StartupError::ServiceConstruction {
                     service: service_name.to_owned(),
@@ -357,30 +354,6 @@ fn build_service_hub_from_config(
     }
 
     Ok(hub)
-}
-
-#[cfg(any(
-    feature = "clip",
-    feature = "insightface",
-    feature = "ppocr",
-    feature = "siglip"
-))]
-fn default_context_options() -> MLContextOptions {
-    if cfg!(any(
-        feature = "ort-cuda",
-        feature = "ort-tensorrt",
-        feature = "ort-directml",
-        feature = "ort-coreml",
-        feature = "ort-openvino",
-        feature = "ort-xnnpack",
-        feature = "mnn",
-        feature = "candle-cuda",
-        feature = "candle-metal"
-    )) {
-        MLContextOptions::accelerated()
-    } else {
-        MLContextOptions::default()
-    }
 }
 
 fn home_dir() -> Option<String> {
@@ -674,27 +647,15 @@ enum StartupError {
     #[error("failed to initialize logging: {0}")]
     Logging(#[from] SetGlobalDefaultError),
 
-    #[cfg(any(
-        feature = "clip",
-        feature = "insightface",
-        feature = "ppocr",
-        feature = "siglip"
-    ))]
-    #[error("failed to initialize ML context: {0}")]
-    ContextInit(String),
-
     #[error("this binary currently supports hub deployment mode only, got {mode:?}")]
     InvalidDeploymentMode { mode: Mode },
 
     #[error("unknown service package `{package}`")]
     UnknownPackage { package: String },
 
-    #[cfg(any(
-        not(feature = "clip"),
-        not(feature = "insightface"),
-        not(feature = "ppocr"),
-        not(feature = "siglip")
-    ))]
+    // Only constructed when a model feature is disabled; absent from the
+    // all-features default build.
+    #[allow(dead_code)]
     #[error(
         "service package `{package}` was not enabled at compile time; rebuild with feature `{feature}`"
     )]

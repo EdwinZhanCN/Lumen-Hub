@@ -167,20 +167,21 @@ impl Default for BatchingConfig {
 }
 
 /// Model runtime type.
+///
+/// lumen-hub runs all inference through the [Burn](https://burn.dev) framework,
+/// so `burn` is currently the only supported runtime. The concrete compute
+/// backend (cpu, metal, cuda, ...) is selected at build time via lumen-hub
+/// cargo features rather than per-model config.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Runtime {
-    Onnx,
-    CandleOnnx,
-    Mnn,
+    Burn,
 }
 
 impl Runtime {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Onnx => "onnx",
-            Self::CandleOnnx => "candle_onnx",
-            Self::Mnn => "mnn",
+            Self::Burn => "burn",
         }
     }
 }
@@ -426,7 +427,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "ViT-B-32",
-                                "runtime": "onnx",
+                                "runtime": "burn",
                                 "precision": "fp32"
                             }
                         }
@@ -474,7 +475,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "ViT-B-32",
-                                "runtime": "onnx"
+                                "runtime": "burn"
                             }
                         }
                     }
@@ -516,7 +517,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "ViT-B-32",
-                                "runtime": "onnx"
+                                "runtime": "burn"
                             }
                         }
                     }
@@ -551,7 +552,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "ViT-B-32",
-                                "runtime": "onnx"
+                                "runtime": "burn"
                             }
                         }
                     }
@@ -586,7 +587,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "ViT-B-32",
-                                "runtime": "onnx"
+                                "runtime": "burn"
                             }
                         }
                     }
@@ -622,7 +623,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "ViT-B-32",
-                                "runtime": "onnx"
+                                "runtime": "burn"
                             }
                         }
                     }
@@ -657,7 +658,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "ViT-B-32",
-                                "runtime": "onnx"
+                                "runtime": "burn"
                             }
                         }
                     }
@@ -695,7 +696,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "ViT-B-32",
-                                "runtime": "onnx"
+                                "runtime": "burn"
                             }
                         }
                     }
@@ -708,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_candle_onnx_runtime() {
+    fn accepts_burn_runtime() {
         let config = LumenConfig::from_json_str(
             &json!({
                 "metadata": {
@@ -730,7 +731,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "siglip-base",
-                                "runtime": "candle_onnx"
+                                "runtime": "burn"
                             }
                         }
                     }
@@ -738,11 +739,11 @@ mod tests {
             })
             .to_string(),
         )
-        .expect("valid candle_onnx config parses");
+        .expect("valid burn config parses");
 
         let model = &config.services["siglip"].models["default"];
-        assert_eq!(model.runtime, Runtime::CandleOnnx);
-        assert_eq!(model.runtime.as_str(), "candle_onnx");
+        assert_eq!(model.runtime, Runtime::Burn);
+        assert_eq!(model.runtime.as_str(), "burn");
     }
 
     #[test]

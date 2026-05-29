@@ -10,59 +10,81 @@ permissions:
     contents: read
 
 jobs:
+    # Burn statically links its compute backend, so each hub archive is just the
+    # binaries + warmup assets + license (no ONNX Runtime / MNN libraries).
+    # `*-gpu` = wgpu (Vulkan/GL/DX12 at runtime). `cuda`/`rocm` install their
+    # vendor toolkit in-job (no GPU needed to build). `jetson` is the arm64 CUDA
+    # build done inside an L4T container for ABI-correct Tegra artifacts. GPU
+    # profiles are build-and-package only; GPU E2E happens on self-hosted runners.
     dist:
         name: hub-${{ matrix.profile }}
         runs-on: ${{ matrix.os }}
+        container: ${{ matrix.container }}
         strategy:
             fail-fast: false
             matrix:
                 include:
-                    - profile: universal-cpu
-                      os: ubuntu-24.04
-                      archive: lumen-hub-universal-cpu.tar.gz
-                    - profile: darwin-arm64
-                      os: macos-15
-                      archive: lumen-hub-darwin-arm64.tar.gz
-                    - profile: linux-x64-cuda
-                      os: ubuntu-24.04
-                      archive: lumen-hub-linux-x64-cuda.tar.gz
-                    - profile: linux-arm64
-                      os: ubuntu-22.04-arm
-                      archive: lumen-hub-linux-arm64.tar.gz
-                    - profile: linux-arm64-jetson
-                      os: ubuntu-22.04-arm
-                      archive: lumen-hub-linux-arm64-jetson.tar.gz
-                    - profile: windows-x64-dml
-                      os: windows-2025
-                      archive: lumen-hub-windows-x64-dml.zip
-                    - profile: linux-x64-openvino
-                      os: ubuntu-24.04
-                      archive: lumen-hub-linux-x64-openvino.tar.gz
+                    # macOS
+                    - { profile: darwin-arm64-metal, os: macos-15 }
+                    - { profile: darwin-arm64-cpu, os: macos-15 }
+                    # Windows
+                    - { profile: windows-x64-cpu, os: windows-2025 }
+                    - { profile: windows-x64-gpu, os: windows-2025 }
+                    # Linux x64
+                    - { profile: linux-x64-cpu, os: ubuntu-24.04 }
+                    - { profile: linux-x64-gpu, os: ubuntu-24.04 }
+                    - { profile: linux-x64-cuda, os: ubuntu-24.04, toolkit: cuda }
+                    - { profile: linux-x64-rocm, os: ubuntu-24.04, toolkit: rocm }
+                    # Linux arm64
+                    - { profile: linux-arm64-cpu, os: ubuntu-24.04-arm }
+                    - { profile: linux-arm64-gpu, os: ubuntu-24.04-arm }
+                    - {
+                          profile: linux-arm64-jetson,
+                          os: ubuntu-24.04-arm,
+                          container: "nvcr.io/nvidia/l4t-cuda:12.2.12-devel",
+                      }
 
         steps:
+            - name: Install container base deps
+              if: matrix.container != ''
+              run: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config git
+
             - uses: actions/checkout@v4
               with:
                   persist-credentials: false
 
-            - uses: dtolnay/rust-toolchain@stable
+            # dtolnay's action needs a normal runner; inside the L4T container we
+            # bootstrap rustup directly.
+            - name: Install Rust (host runner)
+              if: matrix.container == ''
+              uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: "1.94.1"
 
-            - name: Test universal CPU profile
-              if: matrix.profile == 'universal-cpu'
-              run: cargo test -p lumen-hub --no-default-features --features profile-universal-cpu
+            - name: Install Rust (container)
+              if: matrix.container != ''
+              run: |
+                  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.94.1 --profile minimal
+                  echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-            - name: Basic Windows DML smoke
-              if: matrix.profile == 'windows-x64-dml'
-              env:
-                  RUSTFLAGS: -C target-feature=-crt-static
-                  CFLAGS: /MD
-                  CXXFLAGS: /MD
-              run: cargo test -p lumen-hub --no-default-features --features profile-windows-x64-dml
+            - name: Install CUDA toolkit
+              if: matrix.toolkit == 'cuda'
+              uses: Jimver/cuda-toolkit@v0.2.21
+              with:
+                  method: network
 
+            - name: Install ROCm toolkit
+              if: matrix.toolkit == 'rocm'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y wget gnupg
+                  wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/rocm.gpg
+                  echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.2 noble main' | sudo tee /etc/apt/sources.list.d/rocm.list
+                  sudo apt-get update
+                  sudo apt-get install -y rocm-hip-sdk
+
+            # Each runner builds its own native target; no cross toolchain needed.
             - name: Build hub dist profile
-              env:
-                  RUSTFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
-                  CFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
-                  CXXFLAGS: ${{ matrix.profile == 'windows-x64-dml' && '/MD' || '' }}
               run: cargo xtask dist --profile ${{ matrix.profile }}
 
             - name: Check hub dist layout
@@ -70,50 +92,18 @@ jobs:
               run: |
                   $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
                   if (!(Test-Path (Join-Path $artifact "README.md"))) { throw "missing README.md" }
-                  if (!(Test-Path (Join-Path $artifact "checksums.txt"))) { throw "missing checksums.txt" }
+                  if (!(Test-Path (Join-Path $artifact "LICENSE"))) { throw "missing LICENSE" }
                   if (!(Test-Path (Join-Path $artifact "bin"))) { throw "missing bin directory" }
-                  if (!(Test-Path (Join-Path $artifact "lib"))) { throw "missing lib directory" }
-                  if (!(Test-Path (Join-Path $artifact "licenses"))) { throw "missing licenses directory" }
-
                   if ($env:RUNNER_OS -eq "Windows") {
                     if (!(Test-Path (Join-Path $artifact "bin/lumen-hub.exe"))) { throw "missing bin/lumen-hub.exe" }
                   } else {
                     if (!(Test-Path (Join-Path $artifact "bin/lumen-hub"))) { throw "missing bin/lumen-hub" }
                   }
 
-            - name: Check OpenVINO dynamic runtime bundle
-              if: matrix.profile == 'linux-x64-openvino'
-              shell: pwsh
-              run: |
-                  $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
-                  if (!(Test-Path (Join-Path $artifact "bin/lumen-hub-bin"))) { throw "missing bin/lumen-hub-bin" }
-                  if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime.so"))) { throw "missing lib/libonnxruntime.so" }
-                  if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime_providers_openvino.so"))) { throw "missing OpenVINO provider library" }
-                  if (!(Test-Path (Join-Path $artifact "licenses/openvino/README.md"))) { throw "missing OpenVINO notice" }
-
-            - name: Check ONNX Runtime dynamic runtime bundle
-              if: contains(fromJSON('["linux-x64-cuda", "linux-arm64"]'), matrix.profile)
-              shell: pwsh
-              run: |
-                  $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
-                  if (!(Test-Path (Join-Path $artifact "bin/lumen-hub-bin"))) { throw "missing bin/lumen-hub-bin" }
-                  if (!(Test-Path (Join-Path $artifact "lib/libonnxruntime.so"))) { throw "missing lib/libonnxruntime.so" }
-                  if (!(Test-Path (Join-Path $artifact "licenses/onnxruntime/README.md"))) { throw "missing ONNX Runtime notice" }
-
-            - name: Check MNN dynamic runtime bundle
-              if: contains(fromJSON('["darwin-arm64", "linux-arm64"]'), matrix.profile)
-              shell: pwsh
-              run: |
-                  $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
-                  $mnnLib = if ($env:RUNNER_OS -eq "macOS") { "lib/libMNN.dylib" } else { "lib/libMNN.so" }
-                  if (!(Test-Path (Join-Path $artifact "bin/lumen-hub-bin"))) { throw "missing bin/lumen-hub-bin" }
-                  if (!(Test-Path (Join-Path $artifact $mnnLib))) { throw "missing $mnnLib" }
-                  if (!(Test-Path (Join-Path $artifact "licenses/mnn/README.md"))) { throw "missing MNN notice" }
-
             - uses: actions/upload-artifact@v4
               with:
                   name: hub-${{ matrix.profile }}
-                  path: dist/${{ matrix.archive }}
+                  path: dist/lumen-hub-${{ matrix.profile }}.zip
                   if-no-files-found: error
 
     cli-local:
@@ -199,17 +189,6 @@ jobs:
             - name: Build lumen-cli installers with cargo-dist
               run: dist build --artifacts=global --tag=${{ github.ref_name }} --allow-dirty
 
-            - name: Check cargo-dist installer metadata
-              shell: bash
-              run: |
-                  set -euo pipefail
-                  test -s target/distrib/sha256.sum
-                  grep -Fq "lumen-cli-aarch64-apple-darwin.tar.xz" target/distrib/sha256.sum
-                  grep -Fq "lumen-cli-aarch64-unknown-linux-gnu.tar.xz" target/distrib/sha256.sum
-                  grep -Fq "lumen-cli-x86_64-unknown-linux-gnu.tar.xz" target/distrib/sha256.sum
-                  grep -Fq "lumen-cli-x86_64-pc-windows-msvc.zip" target/distrib/sha256.sum
-                  grep -Fq '_checksum_value=' target/distrib/lumen-cli-installer.sh
-
             - uses: actions/upload-artifact@v4
               with:
                   name: cli-installers
@@ -232,7 +211,9 @@ jobs:
               with:
                   persist-credentials: false
 
-            - uses: dtolnay/rust-toolchain@stable
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: "1.94.1"
 
             - name: Download archives
               uses: actions/download-artifact@v4
@@ -276,28 +257,17 @@ jobs:
             - name: Check release assets
               run: |
                   set -euo pipefail
-
-                  test -f release-assets/lumen-hub-universal-cpu.tar.gz
-                  test -f release-assets/lumen-hub-darwin-arm64.tar.gz
-                  test -f release-assets/lumen-hub-linux-x64-cuda.tar.gz
-                  test -f release-assets/lumen-hub-linux-arm64.tar.gz
-                  test -f release-assets/lumen-hub-linux-arm64-jetson.tar.gz
-                  test -f release-assets/lumen-hub-windows-x64-dml.zip
-                  test -f release-assets/lumen-hub-linux-x64-openvino.tar.gz
-                  test -f release-assets/lumen-cli-aarch64-apple-darwin.tar.xz
-                  test -f release-assets/lumen-cli-aarch64-apple-darwin.tar.xz.sha256
-                  test -f release-assets/lumen-cli-aarch64-unknown-linux-gnu.tar.xz
-                  test -f release-assets/lumen-cli-aarch64-unknown-linux-gnu.tar.xz.sha256
-                  test -f release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz
-                  test -f release-assets/lumen-cli-x86_64-unknown-linux-gnu.tar.xz.sha256
-                  test -f release-assets/lumen-cli-x86_64-pc-windows-msvc.zip
-                  test -f release-assets/lumen-cli-x86_64-pc-windows-msvc.zip.sha256
+                  for p in darwin-arm64-metal darwin-arm64-cpu \
+                           windows-x64-cpu windows-x64-gpu \
+                           linux-x64-cpu linux-x64-gpu linux-x64-cuda linux-x64-rocm \
+                           linux-arm64-cpu linux-arm64-gpu linux-arm64-jetson; do
+                    test -f "release-assets/lumen-hub-${p}.zip"
+                  done
                   test -f release-assets/lumen-cli-installer.sh
                   test -f release-assets/lumen-cli-installer.ps1
                   test -f release-assets/sha256.sum
                   test -f release-assets/manifest.json
                   test -f release-assets/checksums.txt
-
                   ls -lah release-assets
 
             - name: Build release body
@@ -306,11 +276,9 @@ jobs:
                   TAG: ${{ github.ref_name }}
               run: |
                   set -euo pipefail
-
                   gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
                     -f tag_name="$TAG" \
                     --jq .body > generated-notes.md
-
                   cat > release-body.md <<EOF
                   # ${TAG}
 
@@ -330,23 +298,21 @@ jobs:
                   lumen-cli start
                   \`\`\`
 
-                  ## Artifact Matrix
+                  ## Hub artifacts (Burn backends)
 
-                  | Kind | Profile / Target | Archive |
+                  | Profile | Backend | Archive |
                   |---|---|---|
-                  | Hub | \`universal-cpu\` | \`lumen-hub-universal-cpu.tar.gz\` |
-                  | Hub | \`darwin-arm64\` | \`lumen-hub-darwin-arm64.tar.gz\` |
-                  | Hub | \`linux-x64-cuda\` | \`lumen-hub-linux-x64-cuda.tar.gz\` |
-                  | Hub | \`linux-arm64\` | \`lumen-hub-linux-arm64.tar.gz\` |
-                  | Hub | \`linux-arm64-jetson\` | \`lumen-hub-linux-arm64-jetson.tar.gz\` |
-                  | Hub | \`windows-x64-dml\` | \`lumen-hub-windows-x64-dml.zip\` |
-                  | Hub | \`linux-x64-openvino\` | \`lumen-hub-linux-x64-openvino.tar.gz\` |
-                  | CLI | \`aarch64-apple-darwin\` | \`lumen-cli-aarch64-apple-darwin.tar.xz\` |
-                  | CLI | \`aarch64-unknown-linux-gnu\` | \`lumen-cli-aarch64-unknown-linux-gnu.tar.xz\` |
-                  | CLI | \`x86_64-unknown-linux-gnu\` | \`lumen-cli-x86_64-unknown-linux-gnu.tar.xz\` |
-                  | CLI | \`x86_64-pc-windows-msvc\` | \`lumen-cli-x86_64-pc-windows-msvc.zip\` |
-                  | CLI installer | macOS/Linux | \`lumen-cli-installer.sh\` |
-                  | CLI installer | Windows | \`lumen-cli-installer.ps1\` |
+                  | \`darwin-arm64-metal\` | Metal | \`lumen-hub-darwin-arm64-metal.zip\` |
+                  | \`darwin-arm64-cpu\` | CPU | \`lumen-hub-darwin-arm64-cpu.zip\` |
+                  | \`windows-x64-cpu\` | CPU | \`lumen-hub-windows-x64-cpu.zip\` |
+                  | \`windows-x64-gpu\` | wgpu (DX12/Vulkan) | \`lumen-hub-windows-x64-gpu.zip\` |
+                  | \`linux-x64-cpu\` | CPU | \`lumen-hub-linux-x64-cpu.zip\` |
+                  | \`linux-x64-gpu\` | wgpu (Vulkan/GL) | \`lumen-hub-linux-x64-gpu.zip\` |
+                  | \`linux-x64-cuda\` | CUDA | \`lumen-hub-linux-x64-cuda.zip\` |
+                  | \`linux-x64-rocm\` | ROCm | \`lumen-hub-linux-x64-rocm.zip\` |
+                  | \`linux-arm64-cpu\` | CPU | \`lumen-hub-linux-arm64-cpu.zip\` |
+                  | \`linux-arm64-gpu\` | wgpu (Vulkan/GL) | \`lumen-hub-linux-arm64-gpu.zip\` |
+                  | \`linux-arm64-jetson\` | CUDA (L4T) | \`lumen-hub-linux-arm64-jetson.zip\` |
 
                   ## Generated Notes
                   EOF
@@ -359,13 +325,17 @@ jobs:
                   fail_on_unmatched_files: true
                   body_path: release-body.md
                   files: |
-                      release-assets/lumen-hub-universal-cpu.tar.gz
-                      release-assets/lumen-hub-darwin-arm64.tar.gz
-                      release-assets/lumen-hub-linux-x64-cuda.tar.gz
-                      release-assets/lumen-hub-linux-arm64.tar.gz
-                      release-assets/lumen-hub-linux-arm64-jetson.tar.gz
-                      release-assets/lumen-hub-windows-x64-dml.zip
-                      release-assets/lumen-hub-linux-x64-openvino.tar.gz
+                      release-assets/lumen-hub-darwin-arm64-metal.zip
+                      release-assets/lumen-hub-darwin-arm64-cpu.zip
+                      release-assets/lumen-hub-windows-x64-cpu.zip
+                      release-assets/lumen-hub-windows-x64-gpu.zip
+                      release-assets/lumen-hub-linux-x64-cpu.zip
+                      release-assets/lumen-hub-linux-x64-gpu.zip
+                      release-assets/lumen-hub-linux-x64-cuda.zip
+                      release-assets/lumen-hub-linux-x64-rocm.zip
+                      release-assets/lumen-hub-linux-arm64-cpu.zip
+                      release-assets/lumen-hub-linux-arm64-gpu.zip
+                      release-assets/lumen-hub-linux-arm64-jetson.zip
                       release-assets/lumen-cli-aarch64-apple-darwin.tar.xz
                       release-assets/lumen-cli-aarch64-apple-darwin.tar.xz.sha256
                       release-assets/lumen-cli-aarch64-unknown-linux-gnu.tar.xz

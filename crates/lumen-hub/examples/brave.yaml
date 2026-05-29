@@ -1,8 +1,8 @@
 # Lumen Hub brave beta config.
 #
 # Includes: OCR, SigLIP, InsightFace, BioCLIP.
-# Target package: darwin-arm64 beta build with MNN Metal.
-# For universal-cpu/linux-cuda/windows-dml/openvino builds, use `runtime: onnx` and `precision: fp16`.
+# Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
+# All models run on the Burn runtime.
 #
 # Total minimum requirement:
 #   RAM: 32 GB
@@ -39,7 +39,7 @@ services:
         models:
             default:
                 model: pp-ocrv5
-                runtime: mnn
+                runtime: burn
                 precision: fp32
 
     # Minimum: RAM 4 GB, GPU/Unified memory 3 GB.
@@ -49,8 +49,8 @@ services:
         models:
             default:
                 model: siglip2-so400m-patch14-384
-                runtime: mnn
-                precision: q4
+                runtime: burn
+                precision: fp32
 
     # Minimum: RAM 1 GB, GPU/Unified memory 1 GB.
     face:
@@ -59,7 +59,7 @@ services:
         models:
             default:
                 model: antelopev2
-                runtime: mnn
+                runtime: burn
                 precision: fp32
 
     # Minimum: RAM 16 GB, GPU/Unified memory 4 GB.
@@ -69,6 +69,6 @@ services:
         models:
             default:
                 model: bioclip-2
-                runtime: mnn
-                precision: q8
+                runtime: burn
+                precision: fp32
                 dataset: TreeOfLife200M

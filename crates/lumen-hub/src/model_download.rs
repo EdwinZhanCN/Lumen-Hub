@@ -221,8 +221,7 @@ fn is_root_dataset_file(path: &str, dataset: &Option<String>) -> bool {
 
 fn runtime_asset_key(runtime: Runtime) -> &'static str {
     match runtime {
-        Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-        Runtime::Mnn => "mnn",
+        Runtime::Burn => "burn",
     }
 }
 
@@ -232,8 +231,7 @@ fn runtime_asset_dir(runtime: Runtime) -> &'static str {
 
 fn runtime_asset_ext(runtime: Runtime) -> &'static str {
     match runtime {
-        Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-        Runtime::Mnn => "mnn",
+        Runtime::Burn => "bpk",
     }
 }
 
@@ -569,7 +567,7 @@ mod tests {
                 "datasets/TreeOfLife200M.bin",
                 "datasets/TreeOfLife200M.json",
                 "datasets/TreeOfLife200MCore.npy",
-                "onnx/ignored.onnx",
+                "burn/ignored.bpk",
                 "nested/ignored.json",
             ],
             model_info_json(&["fp32"], true),
@@ -583,12 +581,12 @@ mod tests {
             downloaded,
             vec![
                 "antelopev2:model_info.json",
+                "antelopev2:burn/text.fp32.bpk",
+                "antelopev2:burn/vision.fp32.bpk",
                 "antelopev2:config.json",
                 "antelopev2:datasets/TreeOfLife200M.bin",
                 "antelopev2:datasets/TreeOfLife200M.json",
                 "antelopev2:datasets/TreeOfLife200M.npy",
-                "antelopev2:onnx/text.fp32.onnx",
-                "antelopev2:onnx/vision.fp32.onnx",
                 "antelopev2:tokenizer.json",
             ]
         );
@@ -622,7 +620,7 @@ mod tests {
                 model,
                 runtime,
                 precision
-            } if model == "antelopev2" && runtime == "onnx" && precision == "fp16"
+            } if model == "antelopev2" && runtime == "burn" && precision == "fp16"
         ));
 
         cleanup_cache(cache);
@@ -632,13 +630,13 @@ mod tests {
     fn skips_files_that_already_exist() {
         let cache = temp_cache_dir("existing");
         let model_dir = cache.join("antelopev2");
-        std::fs::create_dir_all(model_dir.join("onnx")).unwrap();
+        std::fs::create_dir_all(model_dir.join("burn")).unwrap();
         std::fs::write(
             model_dir.join("model_info.json"),
             model_info_json(&["fp32"], true),
         )
         .unwrap();
-        std::fs::write(model_dir.join("onnx/vision.fp32.onnx"), "existing").unwrap();
+        std::fs::write(model_dir.join("burn/vision.fp32.bpk"), "existing").unwrap();
 
         let client = FakeClient::new(vec![], model_info_json(&["fp32"], true));
         let config = test_config(None, Some("fp32"));
@@ -646,12 +644,12 @@ mod tests {
         ensure_models_with_client(&config, &cache, &client).unwrap();
 
         assert_eq!(
-            std::fs::read_to_string(model_dir.join("onnx/vision.fp32.onnx")).unwrap(),
+            std::fs::read_to_string(model_dir.join("burn/vision.fp32.bpk")).unwrap(),
             "existing"
         );
         assert_eq!(
             client.downloaded_paths(),
-            vec!["antelopev2:onnx/text.fp32.onnx"]
+            vec!["antelopev2:burn/text.fp32.bpk"]
         );
 
         cleanup_cache(cache);
@@ -679,7 +677,7 @@ mod tests {
                         "models": {
                             "default": {
                                 "model": "antelopev2",
-                                "runtime": "onnx",
+                                "runtime": "burn",
                                 "dataset": dataset,
                                 "precision": precision
                             }
@@ -703,7 +701,7 @@ mod tests {
                 "repo_id": "Lumilio-Photos/antelopev2"
             },
             "runtimes": {
-                "onnx": {
+                "burn": {
                     "available": available,
                     "components": ["vision", "text"],
                     "precisions": precisions

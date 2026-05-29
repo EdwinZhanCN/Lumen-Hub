@@ -8,73 +8,37 @@ repository = "https://github.com/EdwinZhanCN/Lumen-Hub"
 dist = false
 
 [features]
-default = ["profile-universal-cpu"]
+# Default build: CPU backend with the production model set. CLIP is omitted
+# because its Burn model is not yet available.
+default = ["cpu", "clip", "insightface", "ppocr", "siglip"]
+
+# --- Model packages ---
 clip = []
 insightface = []
 ppocr = ["imageproc", "rten-imageproc"]
 siglip = []
-ort-download-binaries = ["lumnn/ort-download-binaries"]
-ort-load-dynamic = ["lumnn/ort-load-dynamic"]
-ort-pkg-config = ["lumnn/ort-pkg-config"]
-ort-cuda = ["lumnn/ort-cuda"]
-ort-tensorrt = ["lumnn/ort-tensorrt"]
-ort-directml = ["lumnn/ort-directml"]
-ort-coreml = ["lumnn/ort-coreml"]
-ort-xnnpack = ["lumnn/ort-xnnpack"]
-ort-openvino = ["lumnn/ort-openvino"]
-candle = ["lumnn/candle"]
-candle-cuda = ["candle", "lumnn/candle-cuda"]
-candle-cudnn = ["candle", "lumnn/candle-cudnn"]
-candle-metal = ["candle", "lumnn/candle-metal"]
-candle-accelerate = ["candle", "lumnn/candle-accelerate"]
-candle-mkl = ["candle", "lumnn/candle-mkl"]
-mnn = ["lumnn/mnn"]
-mnn-vulkan = ["mnn", "lumnn/mnn-vulkan"]
-mnn-cuda = ["mnn", "lumnn/mnn-cuda"]
-mnn-metal = ["mnn", "lumnn/mnn-metal"]
-mnn-opencl = ["mnn", "lumnn/mnn-opencl"]
-mnn-opengl = ["mnn", "lumnn/mnn-opengl"]
-mnn-coreml = ["mnn", "lumnn/mnn-coreml"]
-profile-universal-cpu = ["clip", "insightface", "ppocr", "siglip", "ort-download-binaries"]
-profile-darwin-arm64 = [
-  "clip",
-  "insightface",
-  "ppocr",
-  "siglip",
-  "ort-download-binaries",
-  "ort-xnnpack",
-  "mnn-metal",
-]
-profile-linux-x64-cuda = ["clip", "insightface", "ppocr", "siglip", "ort-load-dynamic", "ort-cuda"]
-profile-linux-arm64 = ["clip", "insightface", "ppocr", "siglip", "ort-load-dynamic", "mnn-opencl"]
-profile-linux-arm64-jetson = [
-  "clip",
-  "insightface",
-  "ppocr",
-  "siglip",
-  "ort-load-dynamic",
-  "ort-cuda",
-]
-profile-windows-x64-dml = [
-  "clip",
-  "insightface",
-  "ppocr",
-  "siglip",
-  "ort-download-binaries",
-  "ort-directml",
-]
-profile-linux-x64-openvino = [
-  "clip",
-  "insightface",
-  "ppocr",
-  "siglip",
-  "ort-openvino",
-  "ort-load-dynamic",
-]
+
+# --- Burn compute backends ---
+# Exactly one backend is selected at build time. When several are enabled the
+# highest-priority one wins (see `src/backend.rs`): cuda > rocm > vulkan > metal
+# > wgpu > cpu. `cpu` is part of the default set so `--features metal` simply
+# overrides it.
+# Fusion is enabled for GPU backends: the deep antelopev2 graph overflows the
+# stack in eager mode, and fusion also batches kernels for throughput. burn-store
+# keeps only the burnpack reader (no GPU features) to avoid a second, conflicting
+# burn-wgpu feature activation.
+cpu = ["burn/ndarray"]
+metal = ["burn/metal", "burn/fusion"]
+vulkan = ["burn/vulkan", "burn/fusion"]
+wgpu = ["burn/wgpu", "burn/fusion"]
+cuda = ["burn/cuda", "burn/fusion"]
+rocm = ["burn/rocm", "burn/fusion"]
 
 [dependencies]
 async-trait = "0.1.89"
 base64 = "0.22.1"
+burn = { version = "0.21.0", default-features = false, features = ["std"] }
+burn-store = { version = "0.21.0", default-features = false, features = ["burnpack", "std", "memmap"] }
 bytes = "1.11.1"
 console = "0.16.1"
 half = "2.7.1"
@@ -83,7 +47,6 @@ image = "0.25.10"
 indicatif = "0.18.3"
 imageproc = { version = "0.26", optional = true }
 lumen-schema = { path = "../lumen-schema" }
-lumnn = { path = "../lumnn", default-features = false }
 memmap2 = "0.9.9"
 minijinja = "2.9.2"
 rand = "0.8.5"
