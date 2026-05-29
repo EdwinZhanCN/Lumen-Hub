@@ -8,7 +8,7 @@ Models are exposed over gRPC behind a uniform task API, with dynamic request
 batching for tensor inputs.
 
 ## Models & tasks
-car
+
 | Service | Task | Input → Output |
 |---|---|---|
 | `siglip` | `semantic_text_embed` / `semantic_image_embed` | text / image → L2-normalized `embedding_v1` |

@@ -29,7 +29,7 @@ struct DistProfile {
     features: &'static [&'static str],
 }
 
-const MODEL_FEATURES: &[&str] = &["siglip", "ppocr", "insightface"];
+const MODEL_FEATURES: &[&str] = &["siglip", "ppocr", "insightface", "clip"];
 
 // The `*-gpu` profiles use the `wgpu` backend, which targets Vulkan/GL/DX12 at
 // runtime (so a single binary covers "vulkan + wgpu"). `cuda`/`rocm`/`jetson`
@@ -41,60 +41,60 @@ const PROFILES: &[DistProfile] = &[
     DistProfile {
         name: "darwin-arm64-metal",
         target: "aarch64-apple-darwin",
-        features: &["metal", "siglip", "ppocr", "insightface"],
+        features: &["metal", "siglip", "ppocr", "insightface", "clip"],
     },
     DistProfile {
         name: "darwin-arm64-cpu",
         target: "aarch64-apple-darwin",
-        features: &["cpu", "siglip", "ppocr", "insightface"],
+        features: &["cpu", "siglip", "ppocr", "insightface", "clip"],
     },
     // Windows
     DistProfile {
         name: "windows-x64-cpu",
         target: "x86_64-pc-windows-msvc",
-        features: &["cpu", "siglip", "ppocr", "insightface"],
+        features: &["cpu", "siglip", "ppocr", "insightface", "clip"],
     },
     DistProfile {
         name: "windows-x64-gpu",
         target: "x86_64-pc-windows-msvc",
-        features: &["wgpu", "siglip", "ppocr", "insightface"],
+        features: &["wgpu", "siglip", "ppocr", "insightface", "clip"],
     },
     // Linux x64
     DistProfile {
         name: "linux-x64-cpu",
         target: "x86_64-unknown-linux-gnu",
-        features: &["cpu", "siglip", "ppocr", "insightface"],
+        features: &["cpu", "siglip", "ppocr", "insightface", "clip"],
     },
     DistProfile {
         name: "linux-x64-gpu",
         target: "x86_64-unknown-linux-gnu",
-        features: &["wgpu", "siglip", "ppocr", "insightface"],
+        features: &["wgpu", "siglip", "ppocr", "insightface", "clip"],
     },
     DistProfile {
         name: "linux-x64-cuda",
         target: "x86_64-unknown-linux-gnu",
-        features: &["cuda", "siglip", "ppocr", "insightface"],
+        features: &["cuda", "siglip", "ppocr", "insightface", "clip"],
     },
     DistProfile {
         name: "linux-x64-rocm",
         target: "x86_64-unknown-linux-gnu",
-        features: &["rocm", "siglip", "ppocr", "insightface"],
+        features: &["rocm", "siglip", "ppocr", "insightface", "clip"],
     },
     // Linux arm64
     DistProfile {
         name: "linux-arm64-cpu",
         target: "aarch64-unknown-linux-gnu",
-        features: &["cpu", "siglip", "ppocr", "insightface"],
+        features: &["cpu", "siglip", "ppocr", "insightface", "clip"],
     },
     DistProfile {
         name: "linux-arm64-gpu",
         target: "aarch64-unknown-linux-gnu",
-        features: &["wgpu", "siglip", "ppocr", "insightface"],
+        features: &["wgpu", "siglip", "ppocr", "insightface", "clip"],
     },
     DistProfile {
         name: "linux-arm64-jetson",
         target: "aarch64-unknown-linux-gnu",
-        features: &["cuda", "siglip", "ppocr", "insightface"],
+        features: &["cuda", "siglip", "ppocr", "insightface", "clip"],
     },
 ];
 

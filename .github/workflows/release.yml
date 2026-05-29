@@ -73,19 +73,29 @@ jobs:
               with:
                   method: network
 
+            # cubecl-hip-sys 7.1.5280200 (pinned by cubecl-hip 0.10) ships HIP
+            # 52802 bindings, which require ROCm 7.1.1 — its build.rs reads
+            # `hipconfig --version` and enables the matching feature, so the
+            # installed ROCm must match exactly (7.1.0 bindings are unreleased).
             - name: Install ROCm toolkit
               if: matrix.toolkit == 'rocm'
               run: |
                   set -euo pipefail
                   sudo apt-get update
                   sudo apt-get install -y wget gnupg
-                  wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/rocm.gpg
-                  echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.2 noble main' | sudo tee /etc/apt/sources.list.d/rocm.list
+                  sudo mkdir -p /etc/apt/keyrings
+                  wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
+                  echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.1.1 noble main' | sudo tee /etc/apt/sources.list.d/rocm.list
                   # Ubuntu 24.04 universe ships conflicting rocminfo/rocm-cmake/hipcc
                   # versions; prefer the AMD repo so the SDK's pinned deps resolve.
                   printf 'Package: *\nPin: origin "repo.radeon.com"\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600
                   sudo apt-get update
                   sudo apt-get install -y rocm-hip-sdk
+                  # cubecl-hip-sys build.rs locates HIP via these + `hipconfig`.
+                  echo "/opt/rocm/bin" >> "$GITHUB_PATH"
+                  echo "HIP_PATH=/opt/rocm" >> "$GITHUB_ENV"
+                  echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
+                  /opt/rocm/bin/hipconfig --version
 
             # Each runner builds its own native target; no cross toolchain needed.
             - name: Build hub dist profile
