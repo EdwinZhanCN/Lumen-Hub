@@ -8,7 +8,9 @@ repository = "https://github.com/EdwinZhanCN/Lumen-Hub"
 dist = false
 
 [dependencies]
-serde_json = "1.0.149"
+# flate2 with its default pure-Rust (miniz_oxide) backend; required so that
+# zip's `deflate-flate2` has a deflate implementation when xtask is built on its
+# own (outside workspace feature unification).
+flate2 = "1.1.9"
 sha2 = "0.10"
-ureq = "3.3.0"
 zip = { version = "7.2.0", default-features = false, features = ["deflate-flate2"] }

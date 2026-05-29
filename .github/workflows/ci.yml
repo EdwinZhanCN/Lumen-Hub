@@ -7,54 +7,50 @@ on:
 
 jobs:
     workspace:
+        name: fmt + test (cpu)
         runs-on: ubuntu-24.04
         steps:
             - uses: actions/checkout@v4
-            - uses: dtolnay/rust-toolchain@stable
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: "1.94.1"
+                  components: rustfmt, clippy
+            - uses: Swatinem/rust-cache@v2
             - name: Format
               run: cargo fmt --all -- --check
+            # Default backend is `cpu` (burn-ndarray). E2E model tests skip
+            # gracefully when LUMEN_MODELS_DIR has no assets, so the workspace
+            # suite is self-contained on CI.
             - name: Test workspace
               run: cargo test --workspace
 
-    feature-profiles:
-        name: ${{ matrix.name }}
+    backends:
+        name: build ${{ matrix.backend }} (${{ matrix.os }})
         runs-on: ${{ matrix.os }}
         strategy:
             fail-fast: false
             matrix:
                 include:
-                    - name: universal-cpu
+                    - backend: cpu
                       os: ubuntu-24.04
-                      features: profile-universal-cpu
-                    - name: darwin-arm64
+                    - backend: wgpu
+                      os: ubuntu-24.04
+                    - backend: vulkan
+                      os: ubuntu-24.04
+                    - backend: metal
                       os: macos-15
-                      features: profile-darwin-arm64
-                    - name: linux-x64-cuda
-                      os: ubuntu-24.04
-                      features: profile-linux-x64-cuda
-                    - name: linux-arm64
-                      os: ubuntu-22.04-arm
-                      features: profile-linux-arm64
-                    - name: linux-arm64-jetson
-                      os: ubuntu-22.04-arm
-                      features: profile-linux-arm64-jetson
-                    - name: windows-x64-dml
-                      os: windows-2025
-                      features: profile-windows-x64-dml
-                    - name: linux-x64-openvino
-                      os: ubuntu-24.04
-                      features: profile-linux-x64-openvino
         steps:
             - uses: actions/checkout@v4
-            - uses: dtolnay/rust-toolchain@stable
-            - name: Build ARM profile
-              if: matrix.name == 'linux-arm64' || matrix.name == 'linux-arm64-jetson'
-              run: cargo build -p lumen-hub --release --no-default-features --features ${{ matrix.features }}
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: "1.94.1"
+            - uses: Swatinem/rust-cache@v2
+            # Verify lumen-hub compiles with the full model set on each backend.
+            - name: Check backend
+              run: >
+                  cargo check -p lumen-hub --no-default-features
+                  --features ${{ matrix.backend }},siglip,ppocr,insightface
 
-            - name: Check profile
-              if: matrix.name != 'linux-arm64' && matrix.name != 'linux-arm64-jetson'
-              env:
-                  RUSTFLAGS: ${{ matrix.name == 'windows-x64-dml' && '-C target-feature=-crt-static' || '' }}
-                  CFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
-                  CXXFLAGS: ${{ matrix.name == 'windows-x64-dml' && '/MD' || '' }}
-              run: cargo check -p lumen-hub --no-default-features --features ${{ matrix.features }}
+    # CUDA / ROCm require vendor toolkits to compile (cubecl-cuda / cubecl-rocm)
+    # and are not exercised on hosted runners; they are validated on
+    # self-hosted GPU machines out-of-band.

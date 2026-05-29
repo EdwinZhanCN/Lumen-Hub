@@ -1,12 +1,12 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use lumen_schema::ServiceConfig;
-use lumnn::core::{context::MLContext, node::MLNodeRef};
 use serde::Deserialize;
 
 use super::factory::InsightFaceModelFactory;
 use super::metadata::pack_spec;
 use super::task::{InsightFaceComponentConfig, InsightFaceTask};
+use crate::backend::{BACKEND_NAME, Device};
 use crate::service::{
     InferenceService, ServiceCapability, ServiceError, ServiceResult, TaskRegistry,
 };
@@ -15,7 +15,6 @@ pub struct InsightFaceService {
     name: String,
     tasks: TaskRegistry,
     model_ids: Vec<String>,
-    runtime: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -40,15 +39,15 @@ impl InsightFaceService {
         service_name: &str,
         service_config: &ServiceConfig,
         cache_dir: &str,
-        context: Arc<MLContext>,
+        device: Arc<Device>,
     ) -> ServiceResult<Self> {
         let factory = InsightFaceModelFactory::new(cache_dir);
         let mut tasks = TaskRegistry::new();
         let mut model_ids = Vec::new();
-        let mut runtime_str = String::new();
 
-        for (_alias, model_config) in &service_config.models {
+        for model_config in service_config.models.values() {
             let model_name = &model_config.model;
+            let runtime = model_config.runtime;
             let precision = model_config.precision.as_deref().unwrap_or("fp32");
             let model_info = factory.load_model_info(model_name)?;
             let raw_meta =
@@ -66,9 +65,6 @@ impl InsightFaceService {
                 })?;
 
             model_ids.push(model_name.to_owned());
-            if runtime_str.is_empty() {
-                runtime_str = model_config.runtime.as_str().to_owned();
-            }
 
             for (task_key, task_config) in &insightface_meta.tasks {
                 let pack = pack_spec(&task_config.pack).ok_or_else(|| {
@@ -78,33 +74,27 @@ impl InsightFaceService {
                     ))
                 })?;
 
-                let det_node = factory.create_component(
+                let det_model = factory.create_detection_model(
                     model_name,
-                    model_config.runtime,
+                    runtime,
                     &task_config.detection.component,
                     precision,
-                    &context,
+                    &device,
                 )?;
-                let det_node: MLNodeRef = Arc::from(det_node);
-
-                let rec_node = factory.create_component(
+                let rec_model = factory.create_recognition_model(
                     model_name,
-                    model_config.runtime,
+                    runtime,
                     &task_config.recognition.component,
                     precision,
-                    &context,
+                    &device,
                 )?;
-                let rec_node: MLNodeRef = Arc::from(rec_node);
 
                 let task = InsightFaceTask::new(
                     task_key.clone(),
-                    Arc::clone(&context),
                     model_name.clone(),
                     pack,
-                    task_config.detection.clone(),
-                    task_config.recognition.clone(),
-                    det_node,
-                    rec_node,
+                    det_model,
+                    rec_model,
                 )?;
 
                 tasks.register(task)?;
@@ -115,7 +105,6 @@ impl InsightFaceService {
             name: service_name.to_owned(),
             tasks,
             model_ids,
-            runtime: runtime_str,
         })
     }
 }
@@ -131,7 +120,7 @@ impl InferenceService for InsightFaceService {
 
     fn capability(&self) -> ServiceCapability {
         self.tasks
-            .build_capability(&self.name, self.model_ids.clone(), &self.runtime)
+            .build_capability(&self.name, self.model_ids.clone(), BACKEND_NAME)
     }
 }
 
@@ -153,9 +142,6 @@ mod tests {
         let task = meta.tasks.get("face_recognition").unwrap();
         assert_eq!(task.pack, "antelopev2");
         assert_eq!(task.detection.component, "detection");
-        assert_eq!(task.detection.input_name, "input.1");
-        assert_eq!(task.detection.output_names.len(), 9);
         assert_eq!(task.recognition.component, "recognition");
-        assert_eq!(task.recognition.output_name.as_deref(), Some("1333"));
     }
 }

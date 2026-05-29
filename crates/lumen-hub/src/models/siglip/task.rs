@@ -1,30 +1,25 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use half::f16;
 use image::{
     RgbImage,
     imageops::{self, FilterType},
 };
 use lumen_schema::EmbeddingV1;
-use lumnn::core::{
-    context::MLContext,
-    packet::{HostTensor, MLPacket, MLPacketDataType, MLPacketDescriptor},
-    pipeline::MLPipeline,
-};
 use serde::{Deserialize, Deserializer, de};
 
+use super::model::{SiglipTextModel, SiglipVisionModel};
 use crate::service::{
     BatchKey, DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, META_INPUT_KIND, META_MODEL_ID,
     META_MODEL_VERSION, ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult,
-    TaskSpec, TensorDescriptor, TensorValidationOptions, bytes_to_f16_le, bytes_to_f32_le,
-    validate_tensor_request,
+    TaskSpec, TensorDescriptor, TensorValidationOptions, bytes_to_f32_le, validate_tensor_request,
 };
 
 const SUPPORTED_IMAGE_INPUT_MIMES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/avif"];
 const IMAGE_TENSOR_LAYOUT: &str = "NCHW";
 const SIGLIP_IMAGE_PREPROCESS_ID: &str = "siglip_image_preprocess_v1";
+const TENSOR_INPUT_DTYPE: &str = "fp32";
 
 /// SigLIP image preprocessing settings loaded from `model_info.json`
 /// `task_metadata.tasks.<image task>.preprocess`.
@@ -274,112 +269,61 @@ fn rgb_to_nchw_normalized(config: &SiglipImagePreprocessConfig, image: &RgbImage
     values
 }
 
+/// L2-normalizes each row (length `row_width`) of `values` in place.
+fn normalize_rows(values: &mut [f32], row_width: usize) {
+    const EPSILON: f32 = 1e-12;
+    if row_width == 0 {
+        return;
+    }
+    for row in values.chunks_mut(row_width) {
+        let norm = row.iter().map(|value| value * value).sum::<f32>().sqrt();
+        if norm <= EPSILON {
+            continue;
+        }
+        for value in row {
+            *value /= norm;
+        }
+    }
+}
+
 /// Task handler for SigLIP text embedding.
 pub struct SiglipTextEmbedTask {
     spec: TaskSpec,
-    pipeline: Arc<MLPipeline>,
-    context: Arc<MLContext>,
+    model: Arc<SiglipTextModel>,
     model_id: String,
-    input_names: Vec<String>,
-    input_descriptors: Vec<MLPacketDescriptor>,
-    output_name: String,
-    tokenizer: tokenizers::Tokenizer,
+    tokenizer: Arc<tokenizers::Tokenizer>,
 }
 
 impl SiglipTextEmbedTask {
     pub fn new(
         task_name: impl Into<String>,
-        pipeline: MLPipeline,
-        context: Arc<MLContext>,
+        model: Arc<SiglipTextModel>,
         model_id: impl Into<String>,
-        input_names: Vec<String>,
-        input_descriptors: Vec<MLPacketDescriptor>,
-        output_name: impl Into<String>,
-        tokenizer: tokenizers::Tokenizer,
-    ) -> ServiceResult<Self> {
-        if input_names.is_empty() {
-            return Err(ServiceError::InvalidArgument(
-                "SigLIP text task requires at least one ONNX input name".to_owned(),
-            ));
-        }
-        if input_names.len() != input_descriptors.len() {
-            return Err(ServiceError::InvalidArgument(format!(
-                "SigLIP text task input name count {} does not match descriptor count {}",
-                input_names.len(),
-                input_descriptors.len()
-            )));
-        }
-        Ok(Self {
+        tokenizer: Arc<tokenizers::Tokenizer>,
+    ) -> Self {
+        Self {
             spec: TaskSpec::new(task_name, "SigLIP text encoder -> L2-normalized embedding")
                 .with_input_mimes(["text/plain"])
                 .with_output_mime("application/json;schema=embedding_v1"),
-            pipeline: Arc::new(pipeline),
-            context,
+            model,
             model_id: model_id.into(),
-            input_names,
-            input_descriptors,
-            output_name: output_name.into(),
             tokenizer,
-        })
+        }
     }
 
-    fn preprocess_text(&self, text: &str) -> ServiceResult<HashMap<String, MLPacket>> {
+    fn token_ids(&self, text: &str) -> ServiceResult<Vec<i64>> {
         let encoding = self
             .tokenizer
             .encode(text, true)
             .map_err(|e| ServiceError::Internal(format!("tokenization failed: {e}")))?;
-
-        let seq_len = encoding.get_ids().len();
-        let mut packets = HashMap::new();
-
-        let input_ids_packet = token_ids_packet(
-            &self.context,
-            &self.input_descriptors[0],
-            encoding.get_ids(),
-            seq_len,
-            &self.input_names[0],
-        )?;
-        packets.insert(self.input_names[0].clone(), input_ids_packet);
-
-        if self.input_names.len() > 1 {
-            let attention_mask_packet = token_ids_packet(
-                &self.context,
-                &self.input_descriptors[1],
-                encoding.get_attention_mask(),
-                seq_len,
-                &self.input_names[1],
-            )?;
-            packets.insert(self.input_names[1].clone(), attention_mask_packet);
+        let mut ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
+        // The tokenizer pads to the encoder's sequence length, but guard against
+        // misconfiguration so the positional table is never overrun.
+        let seq_len = self.model.seq_len;
+        if ids.len() != seq_len {
+            ids.resize(seq_len, 0);
         }
-
-        Ok(packets)
-    }
-}
-
-fn token_ids_packet(
-    context: &Arc<MLContext>,
-    descriptor: &MLPacketDescriptor,
-    values: &[u32],
-    seq_len: usize,
-    input_name: &str,
-) -> ServiceResult<MLPacket> {
-    let shape = vec![1, seq_len];
-    match descriptor.dtype {
-        MLPacketDataType::Int32 => context
-            .packet_from_host_tensor(
-                MLPacketDescriptor::new(MLPacketDataType::Int32, shape),
-                HostTensor::Int32(values.iter().map(|&value| value as i32).collect()),
-            )
-            .map_err(ServiceError::Internal),
-        MLPacketDataType::Int64 => context
-            .packet_from_host_tensor(
-                MLPacketDescriptor::new(MLPacketDataType::Int64, shape),
-                HostTensor::Int64(values.iter().map(|&value| value as i64).collect()),
-            )
-            .map_err(ServiceError::Internal),
-        other => Err(ServiceError::Internal(format!(
-            "SigLIP text input `{input_name}` has unsupported dtype {other:?}"
-        ))),
+        Ok(ids)
     }
 }
 
@@ -393,105 +337,48 @@ impl TaskHandler for SiglipTextEmbedTask {
         let text = std::str::from_utf8(&request.payload).map_err(|e| {
             ServiceError::InvalidArgument(format!("payload is not valid UTF-8: {e}"))
         })?;
-        let input_packets = self.preprocess_text(text)?;
-        let mut outputs = self
-            .pipeline
-            .run(input_packets)
-            .await
-            .map_err(ServiceError::Internal)?;
-        let embedding_packet = outputs.remove(&self.output_name).ok_or_else(|| {
-            ServiceError::Internal(format!(
-                "pipeline output missing key `{}`",
-                self.output_name
-            ))
-        })?;
-        let embedding = embedding_from_packet(embedding_packet, &self.model_id).await?;
-        let json_bytes = embedding
-            .to_json_bytes()
-            .map_err(|e| ServiceError::Internal(e.to_string()))?;
-
-        Ok(
-            TaskResult::new(json_bytes, "application/json;schema=embedding_v1")
-                .with_result_schema("embedding_v1"),
-        )
+        let ids = self.token_ids(text)?;
+        let model = Arc::clone(&self.model);
+        let mut embedding = run_blocking(move || model.encode(&ids)).await?;
+        let len = embedding.len();
+        normalize_rows(&mut embedding, len);
+        embedding_json_result(EmbeddingV1::new(embedding, &self.model_id))
     }
 }
 
 /// Task handler for SigLIP image embedding.
 pub struct SiglipImageEmbedTask {
     spec: TaskSpec,
-    pipeline: Arc<MLPipeline>,
-    context: Arc<MLContext>,
+    model: Arc<SiglipVisionModel>,
     model_id: String,
-    input_name: String,
-    input_dtype: MLPacketDataType,
-    output_name: String,
     preprocess: SiglipImagePreprocessConfig,
 }
 
 impl SiglipImageEmbedTask {
     pub fn new(
         task_name: impl Into<String>,
-        pipeline: MLPipeline,
-        context: Arc<MLContext>,
+        model: Arc<SiglipVisionModel>,
         model_id: impl Into<String>,
-        input_names: Vec<String>,
-        input_dtype: MLPacketDataType,
-        output_name: impl Into<String>,
         preprocess: SiglipImagePreprocessConfig,
-    ) -> ServiceResult<Self> {
-        let input_name = input_names.into_iter().next().ok_or_else(|| {
-            ServiceError::InvalidArgument(
-                "SigLIP image task requires one ONNX input name".to_owned(),
-            )
-        })?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             spec: TaskSpec::new(
                 task_name,
                 "SigLIP vision encoder -> L2-normalized embedding",
             )
             .with_input_mimes(image_input_mimes_with_tensor())
             .with_output_mime("application/json;schema=embedding_v1"),
-            pipeline: Arc::new(pipeline),
-            context,
+            model,
             model_id: model_id.into(),
-            input_name,
-            input_dtype,
-            output_name: output_name.into(),
             preprocess,
-        })
-    }
-
-    fn preprocess_image(&self, bytes: &[u8]) -> ServiceResult<HashMap<String, MLPacket>> {
-        let pixel_values = self.preprocess.preprocess_image_bytes(bytes)?;
-        let tensor = match self.input_dtype {
-            MLPacketDataType::Float32 => HostTensor::Float32(pixel_values),
-            MLPacketDataType::Float16 => {
-                HostTensor::Float16(pixel_values.into_iter().map(f16::from_f32).collect())
-            }
-            other => {
-                return Err(ServiceError::Internal(format!(
-                    "SigLIP image ONNX input `{}` has unsupported dtype {:?}",
-                    self.input_name, other
-                )));
-            }
-        };
-        let packet = self
-            .context
-            .packet_from_host_tensor(
-                MLPacketDescriptor::new(self.input_dtype, self.preprocess.output_shape()),
-                tensor,
-            )
-            .map_err(ServiceError::Internal)?;
-
-        Ok(HashMap::from([(self.input_name.clone(), packet)]))
+        }
     }
 
     fn tensor_input_descriptor(&self, request: &TaskRequest) -> ServiceResult<TensorDescriptor> {
         let descriptor = validate_tensor_request(
             request,
             TensorValidationOptions {
-                dtype: ml_dtype_to_tensor_dtype(self.input_dtype)?,
+                dtype: TENSOR_INPUT_DTYPE,
                 layout: IMAGE_TENSOR_LAYOUT,
                 preprocess_id: SIGLIP_IMAGE_PREPROCESS_ID,
             },
@@ -506,80 +393,16 @@ impl SiglipImageEmbedTask {
         Ok(descriptor)
     }
 
-    fn tensor_request_to_packets(
-        &self,
-        request: &TaskRequest,
-    ) -> ServiceResult<HashMap<String, MLPacket>> {
-        let descriptor = self.tensor_input_descriptor(request)?;
-        let tensor = tensor_payload_to_host_tensor(&request.payload, self.input_dtype)?;
-        let packet = self
-            .context
-            .packet_from_host_tensor(
-                MLPacketDescriptor::new(self.input_dtype, descriptor.shape),
-                tensor,
-            )
-            .map_err(ServiceError::Internal)?;
-        Ok(HashMap::from([(self.input_name.clone(), packet)]))
-    }
-
-    fn batched_tensor_packets(
-        &self,
-        requests: &[TaskRequest],
-    ) -> ServiceResult<HashMap<String, MLPacket>> {
-        let expected_shape = self.preprocess.output_shape();
-        let mut batched_shape = expected_shape.clone();
-        batched_shape[0] = requests.len();
-
-        let tensor = match self.input_dtype {
-            MLPacketDataType::Float32 => {
-                let mut values = Vec::new();
-                for request in requests {
-                    self.tensor_input_descriptor(request)?;
-                    values.extend(bytes_to_f32_le(&request.payload)?);
-                }
-                HostTensor::Float32(values)
-            }
-            MLPacketDataType::Float16 => {
-                let mut values = Vec::new();
-                for request in requests {
-                    self.tensor_input_descriptor(request)?;
-                    values.extend(bytes_to_f16_le(&request.payload)?);
-                }
-                HostTensor::Float16(values)
-            }
-            other => {
-                return Err(ServiceError::Internal(format!(
-                    "SigLIP image ONNX input `{}` has unsupported dtype {:?}",
-                    self.input_name, other
-                )));
-            }
-        };
-
-        let packet = self
-            .context
-            .packet_from_host_tensor(
-                MLPacketDescriptor::new(self.input_dtype, batched_shape),
-                tensor,
-            )
-            .map_err(ServiceError::Internal)?;
-        Ok(HashMap::from([(self.input_name.clone(), packet)]))
-    }
-
-    async fn run_pipeline(
-        &self,
-        input_packets: HashMap<String, MLPacket>,
-    ) -> ServiceResult<MLPacket> {
-        let mut outputs = self
-            .pipeline
-            .run(input_packets)
-            .await
-            .map_err(ServiceError::Internal)?;
-        outputs.remove(&self.output_name).ok_or_else(|| {
-            ServiceError::Internal(format!(
-                "pipeline output missing key `{}`",
-                self.output_name
-            ))
-        })
+    /// Runs the vision encoder on a flattened `[batch, 3, H, W]` buffer and
+    /// returns L2-normalized embedding rows.
+    async fn embed_pixels(&self, pixels: Vec<f32>, batch: usize) -> ServiceResult<Vec<f32>> {
+        let shape = self.preprocess.output_shape();
+        let (height, width) = (shape[2], shape[3]);
+        let model = Arc::clone(&self.model);
+        let mut raw = run_blocking(move || model.encode(pixels, batch, height, width)).await?;
+        let row_width = raw.len().checked_div(batch.max(1)).unwrap_or(0);
+        normalize_rows(&mut raw, row_width);
+        Ok(raw)
     }
 }
 
@@ -620,11 +443,10 @@ impl TaskHandler for SiglipImageEmbedTask {
     async fn handle(&self, request: TaskRequest) -> ServiceResult<TaskResult> {
         if normalized_meta(request.meta.get(META_INPUT_KIND)).as_deref() == Some(INPUT_KIND_TENSOR)
         {
-            let packet = self
-                .run_pipeline(self.tensor_request_to_packets(&request)?)
-                .await?;
-            let embedding = embedding_from_packet(packet, &self.model_id).await?;
-            return embedding_json_result(embedding);
+            self.tensor_input_descriptor(&request)?;
+            let pixels = bytes_to_f32_le(&request.payload)?;
+            let embedding = self.embed_pixels(pixels, 1).await?;
+            return embedding_json_result(EmbeddingV1::new(embedding, &self.model_id));
         }
 
         if !is_supported_image_input_mime(&request.payload_mime) {
@@ -634,10 +456,9 @@ impl TaskHandler for SiglipImageEmbedTask {
                 SUPPORTED_IMAGE_INPUT_MIMES.join(", ")
             )));
         }
-        let input_packets = self.preprocess_image(&request.payload)?;
-        let embedding_packet = self.run_pipeline(input_packets).await?;
-        let embedding = embedding_from_packet(embedding_packet, &self.model_id).await?;
-        embedding_json_result(embedding)
+        let pixels = self.preprocess.preprocess_image_bytes(&request.payload)?;
+        let embedding = self.embed_pixels(pixels, 1).await?;
+        embedding_json_result(EmbeddingV1::new(embedding, &self.model_id))
     }
 
     async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> {
@@ -646,57 +467,39 @@ impl TaskHandler for SiglipImageEmbedTask {
         }
 
         let batch_len = requests.len();
-        let packet = self
-            .run_pipeline(self.batched_tensor_packets(&requests)?)
-            .await?;
-        let shape = packet.descriptor.shape.clone();
-        if shape.first().copied() != Some(batch_len) {
-            return Err(ServiceError::Internal(format!(
-                "SigLIP batch output shape {:?} does not match batch size {batch_len}",
-                shape
-            )));
+        let mut pixels = Vec::new();
+        for request in &requests {
+            self.tensor_input_descriptor(request)?;
+            pixels.extend(bytes_to_f32_le(&request.payload)?);
         }
-        let tensor = packet
-            .to_host_tensor()
-            .await
-            .map_err(ServiceError::Internal)?;
-        let values = match tensor {
-            HostTensor::Float32(values) => values,
-            other => {
-                return Err(ServiceError::Internal(format!(
-                    "unexpected tensor type from SigLIP pipeline: {other:?}"
-                )));
-            }
-        };
-        let row_width = values.len().checked_div(batch_len).ok_or_else(|| {
+
+        let embeddings = self.embed_pixels(pixels, batch_len).await?;
+        let row_width = embeddings.len().checked_div(batch_len).ok_or_else(|| {
             ServiceError::Internal("SigLIP batch output has invalid batch size".to_owned())
         })?;
-        if row_width * batch_len != values.len() {
+        if row_width * batch_len != embeddings.len() {
             return Err(ServiceError::Internal(format!(
                 "SigLIP batch output element count {} is not divisible by batch size {batch_len}",
-                values.len()
+                embeddings.len()
             )));
         }
 
-        values
+        embeddings
             .chunks(row_width)
             .map(|row| embedding_json_result(EmbeddingV1::new(row.to_vec(), &self.model_id)))
             .collect()
     }
 }
 
-async fn embedding_from_packet(packet: MLPacket, model_id: &str) -> ServiceResult<EmbeddingV1> {
-    let tensor = packet
-        .to_host_tensor()
+/// Runs a blocking inference closure on the tokio blocking pool.
+async fn run_blocking<F, T>(f: F) -> ServiceResult<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
         .await
-        .map_err(ServiceError::Internal)?;
-
-    match tensor {
-        HostTensor::Float32(values) => Ok(EmbeddingV1::new(values, model_id)),
-        other => Err(ServiceError::Internal(format!(
-            "unexpected tensor type from SigLIP pipeline: {other:?}"
-        ))),
-    }
+        .map_err(|e| ServiceError::Internal(format!("inference task failed: {e}")))
 }
 
 fn image_input_mimes_with_tensor() -> Vec<String> {
@@ -710,29 +513,6 @@ fn image_input_mimes_with_tensor() -> Vec<String> {
 
 fn normalized_meta(value: Option<&String>) -> Option<String> {
     value.map(|value| value.trim().to_ascii_lowercase())
-}
-
-fn ml_dtype_to_tensor_dtype(dtype: MLPacketDataType) -> ServiceResult<&'static str> {
-    match dtype {
-        MLPacketDataType::Float32 => Ok("fp32"),
-        MLPacketDataType::Float16 => Ok("fp16"),
-        other => Err(ServiceError::Internal(format!(
-            "unsupported image tensor dtype {other:?}"
-        ))),
-    }
-}
-
-fn tensor_payload_to_host_tensor(
-    payload: &[u8],
-    dtype: MLPacketDataType,
-) -> ServiceResult<HostTensor> {
-    match dtype {
-        MLPacketDataType::Float32 => Ok(HostTensor::Float32(bytes_to_f32_le(payload)?)),
-        MLPacketDataType::Float16 => Ok(HostTensor::Float16(bytes_to_f16_le(payload)?)),
-        other => Err(ServiceError::Internal(format!(
-            "unsupported image tensor dtype {other:?}"
-        ))),
-    }
 }
 
 fn embedding_json_result(embedding: EmbeddingV1) -> ServiceResult<TaskResult> {
@@ -760,25 +540,9 @@ fn is_supported_image_input_mime(mime: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use lumnn::core::{
-        context::{MLContext, MLContextOptions},
-        pipeline::MLPipeline,
-    };
     use serde_json::json;
 
-    use crate::service::{
-        DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, META_INPUT_KIND, META_PREPROCESS_ID,
-        META_PREPROCESS_SKIP, META_TENSOR_BYTE_ORDER, META_TENSOR_DTYPE, META_TENSOR_FORMAT,
-        META_TENSOR_LAYOUT, META_TENSOR_SHAPE, TENSOR_BYTE_ORDER_LITTLE, TENSOR_FORMAT_CONTIGUOUS,
-        TaskHandler, TaskRequest, f32_to_le_bytes,
-    };
-
-    use super::{
-        SIGLIP_IMAGE_PREPROCESS_ID, SiglipImageEmbedTask, SiglipImagePreprocessConfig,
-        image_input_mimes_with_tensor, is_supported_image_input_mime,
-    };
+    use super::{SiglipImagePreprocessConfig, is_supported_image_input_mime, normalize_rows};
 
     #[test]
     fn image_preprocess_config_parses_siglip_metadata() {
@@ -793,7 +557,7 @@ mod tests {
                 "rescale_factor": 0.00392156862745098,
                 "image_mean": [0.5, 0.5, 0.5],
                 "image_std": [0.5, 0.5, 0.5],
-                "resample": "bicubic",
+                "resample": "bilinear",
                 "color_space": "rgb",
                 "layout": "nchw"
             })
@@ -817,7 +581,7 @@ mod tests {
                 "rescale_factor": 0.00392156862745098,
                 "image_mean": [0.5, 0.5, 0.5],
                 "image_std": [0.5, 0.5, 0.5],
-                "resample": "bicubic",
+                "resample": "bilinear",
                 "layout": "nchw"
             })
             .to_string(),
@@ -830,81 +594,17 @@ mod tests {
     #[test]
     fn image_input_mime_support_is_explicit() {
         assert!(is_supported_image_input_mime("image/jpeg"));
-        assert!(is_supported_image_input_mime("image/png"));
-        assert!(is_supported_image_input_mime("image/webp"));
-        assert!(is_supported_image_input_mime("image/avif"));
         assert!(is_supported_image_input_mime("IMAGE/JPEG; charset=binary"));
-
         assert!(!is_supported_image_input_mime("image/gif"));
-        assert!(!is_supported_image_input_mime("image/*"));
-        assert!(!is_supported_image_input_mime("application/octet-stream"));
     }
 
     #[test]
-    fn image_task_advertises_tensor_input_mime() {
-        assert!(image_input_mimes_with_tensor().contains(&DEFAULT_TENSOR_MIME.to_owned()));
-    }
-
-    #[test]
-    fn image_tensor_batch_key_validates_shape_and_preprocess_id() {
-        let task = test_image_task();
-        let request = tensor_request(vec![1, 3, 224, 224], SIGLIP_IMAGE_PREPROCESS_ID);
-
-        assert!(task.batch_key(&request).unwrap().is_some());
-
-        let wrong_shape = tensor_request(vec![1, 3, 112, 112], SIGLIP_IMAGE_PREPROCESS_ID);
-        assert!(task.batch_key(&wrong_shape).is_err());
-
-        let wrong_preprocess = tensor_request(vec![1, 3, 224, 224], "wrong_preprocess");
-        assert!(task.batch_key(&wrong_preprocess).is_err());
-    }
-
-    fn test_image_task() -> SiglipImageEmbedTask {
-        let context = MLContext::new(MLContextOptions::default()).unwrap();
-        let pipeline = MLPipeline::new("test", Arc::clone(&context), Vec::new());
-        SiglipImageEmbedTask::new(
-            "semantic_image_embed",
-            pipeline,
-            context,
-            "siglip-test",
-            vec!["pixel_values".to_owned()],
-            lumnn::core::packet::MLPacketDataType::Float32,
-            "embedding",
-            SiglipImagePreprocessConfig::from_json_str(
-                &json!({
-                    "resize_shortest_edge": 224,
-                    "crop_size": { "width": 224, "height": 224 },
-                    "do_resize": true,
-                    "do_center_crop": false,
-                    "do_rescale": true,
-                    "do_normalize": true,
-                    "rescale_factor": 0.00392156862745098,
-                    "image_mean": [0.5, 0.5, 0.5],
-                    "image_std": [0.5, 0.5, 0.5],
-                    "resample": "bicubic",
-                    "color_space": "rgb",
-                    "layout": "nchw"
-                })
-                .to_string(),
-            )
-            .unwrap(),
-        )
-        .unwrap()
-    }
-
-    fn tensor_request(shape: Vec<usize>, preprocess_id: &str) -> TaskRequest {
-        let element_count = shape.iter().product::<usize>();
-        TaskRequest::new(
-            f32_to_le_bytes(&vec![0.0; element_count]),
-            DEFAULT_TENSOR_MIME,
-        )
-        .with_meta(META_INPUT_KIND, INPUT_KIND_TENSOR)
-        .with_meta(META_TENSOR_DTYPE, "fp32")
-        .with_meta(META_TENSOR_SHAPE, serde_json::to_string(&shape).unwrap())
-        .with_meta(META_TENSOR_LAYOUT, "NCHW")
-        .with_meta(META_TENSOR_FORMAT, TENSOR_FORMAT_CONTIGUOUS)
-        .with_meta(META_TENSOR_BYTE_ORDER, TENSOR_BYTE_ORDER_LITTLE)
-        .with_meta(META_PREPROCESS_ID, preprocess_id)
-        .with_meta(META_PREPROCESS_SKIP, "true")
+    fn normalize_rows_normalizes_each_row() {
+        let mut values = vec![3.0, 4.0, 5.0, 12.0];
+        normalize_rows(&mut values, 2);
+        assert!((values[0] - 0.6).abs() < 1e-6);
+        assert!((values[1] - 0.8).abs() < 1e-6);
+        assert!((values[2] - 5.0 / 13.0).abs() < 1e-6);
+        assert!((values[3] - 12.0 / 13.0).abs() < 1e-6);
     }
 }

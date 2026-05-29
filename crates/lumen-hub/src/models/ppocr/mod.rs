@@ -1,10 +1,10 @@
 pub mod factory;
-pub mod nodes;
+pub mod model;
+pub mod postprocess;
 pub mod service;
 pub mod task;
 
 pub use factory::PpocrModelFactory;
-pub use nodes::CtcDecodeNode;
-pub use nodes::DBPostProcessNode;
+pub use model::{PpocrDetectionModel, PpocrRecognitionModel};
 pub use service::PpocrService;
 pub use task::PpocrTask;

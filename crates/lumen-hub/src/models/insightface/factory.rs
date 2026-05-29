@@ -1,15 +1,13 @@
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, path::PathBuf};
 
 use lumen_schema::{ModelInfo, Runtime};
-#[cfg(feature = "mnn")]
-use lumnn::mnn::MnnNode;
-use lumnn::{
-    core::{context::MLContext, node::MLNode},
-    ort::node::OrtNode,
-};
 
+use super::model::{InsightFaceDetectionModel, InsightFaceRecognitionModel};
+use crate::backend::Device;
 use crate::service::{ServiceError, ServiceResult};
 
+/// Resolves InsightFace model artifacts using the Lumen model repository
+/// convention: `{cache_dir}/{model_name}/burn/{component}.{precision}.bpk`.
 pub struct InsightFaceModelFactory {
     cache_dir: String,
 }
@@ -41,58 +39,57 @@ impl InsightFaceModelFactory {
         })
     }
 
-    pub fn resolve_component_path(
+    fn component_path_str(
         &self,
         model_name: &str,
         runtime: Runtime,
         component: &str,
         precision: &str,
-    ) -> PathBuf {
-        let runtime_dir = match runtime {
-            Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-            Runtime::Mnn => "mnn",
-        };
-        let ext = match runtime {
-            Runtime::Onnx | Runtime::CandleOnnx => "onnx",
-            Runtime::Mnn => "mnn",
-        };
-        self.model_dir(model_name)
-            .join(runtime_dir)
-            .join(format!("{component}.{precision}.{ext}"))
-    }
-
-    pub fn create_component(
-        &self,
-        model_name: &str,
-        runtime: Runtime,
-        component: &str,
-        precision: &str,
-        context: &Arc<MLContext>,
-    ) -> ServiceResult<Box<dyn MLNode>> {
-        let model_path = self.resolve_component_path(model_name, runtime, component, precision);
-        let path_str = model_path.to_str().ok_or_else(|| {
+    ) -> ServiceResult<String> {
+        match runtime {
+            Runtime::Burn => {}
+        }
+        let path = self
+            .model_dir(model_name)
+            .join("burn")
+            .join(format!("{component}.{precision}.bpk"));
+        if !path.exists() {
+            return Err(ServiceError::InvalidArgument(format!(
+                "InsightFace `{component}` weights not found at {}",
+                path.display()
+            )));
+        }
+        path.to_str().map(str::to_owned).ok_or_else(|| {
             ServiceError::InvalidArgument(format!(
                 "model path is not valid UTF-8: {}",
-                model_path.display()
+                path.display()
             ))
-        })?;
-        let name = format!("{model_name}_{component}");
-        match runtime {
-            Runtime::Onnx => OrtNode::new(context.as_ref(), path_str, name)
-                .map(|node| Box::new(node) as Box<dyn MLNode>)
-                .map_err(ServiceError::Internal),
-            #[cfg(feature = "mnn")]
-            Runtime::Mnn => MnnNode::new(context.as_ref(), path_str, name)
-                .map(|node| Box::new(node) as Box<dyn MLNode>)
-                .map_err(ServiceError::Internal),
-            #[cfg(not(feature = "mnn"))]
-            Runtime::Mnn => Err(ServiceError::InvalidArgument(
-                "InsightFace MNN runtime is not enabled in this lumen-hub build".to_owned(),
-            )),
-            Runtime::CandleOnnx => Err(ServiceError::InvalidArgument(
-                "InsightFace Candle ONNX runtime is not implemented yet; use runtime=onnx"
-                    .to_owned(),
-            )),
-        }
+        })
+    }
+
+    pub fn create_detection_model(
+        &self,
+        model_name: &str,
+        runtime: Runtime,
+        component: &str,
+        precision: &str,
+        device: &Device,
+    ) -> ServiceResult<InsightFaceDetectionModel> {
+        let path = self.component_path_str(model_name, runtime, component, precision)?;
+        InsightFaceDetectionModel::load(model_name, &path, device.clone())
+            .map_err(ServiceError::InvalidArgument)
+    }
+
+    pub fn create_recognition_model(
+        &self,
+        model_name: &str,
+        runtime: Runtime,
+        component: &str,
+        precision: &str,
+        device: &Device,
+    ) -> ServiceResult<InsightFaceRecognitionModel> {
+        let path = self.component_path_str(model_name, runtime, component, precision)?;
+        InsightFaceRecognitionModel::load(model_name, &path, device.clone())
+            .map_err(ServiceError::InvalidArgument)
     }
 }

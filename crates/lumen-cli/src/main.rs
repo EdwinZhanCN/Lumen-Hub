@@ -19,8 +19,6 @@ const OFFICIAL_RELEASE_DOWNLOAD_PREFIX: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/";
 const OFFICIAL_RELEASE_LATEST_DOWNLOAD_PREFIX: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/";
-const JETSON_PROFILE: &str = "linux-arm64-jetson";
-const JETSON_ORT_PACKAGE: &str = "onnxruntime-gpu";
 
 fn main() -> ExitCode {
     match run(env::args().collect()) {
@@ -278,7 +276,6 @@ fn start(args: &[String]) -> Result<(), CliError> {
         .join(&manifest.version)
         .join(&artifact.profile);
     let hub = ensure_hub_installed(&install_dir, artifact)?;
-    let jetson_ort_dylib = ensure_jetson_onnxruntime(profile)?;
 
     log::step(format!("starting {}", hub.display()))?;
     outro("Lumen Hub output follows.")?;
@@ -289,9 +286,6 @@ fn start(args: &[String]) -> Result<(), CliError> {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    if let Some(path) = jetson_ort_dylib {
-        command.env("LUMNN_ORT_DYLIB_PATH", path);
-    }
     let status = command.status().map_err(|source| CliError::SpawnHub {
         path: hub.clone(),
         source,
@@ -300,166 +294,6 @@ fn start(args: &[String]) -> Result<(), CliError> {
         return Err(CliError::HubExited(FormattedExitStatus(status)));
     }
     Ok(())
-}
-
-fn ensure_jetson_onnxruntime(profile: &str) -> Result<Option<PathBuf>, CliError> {
-    if profile != JETSON_PROFILE {
-        return Ok(None);
-    }
-
-    if let Some(path) = locate_python_onnxruntime_dylib() {
-        log::success(format!(
-            "Jetson ONNX Runtime already installed: {}",
-            path.display()
-        ))?;
-        return Ok(Some(path));
-    }
-
-    let cuda_version = detect_cuda_version();
-    let cuda_index = cuda_version
-        .as_deref()
-        .and_then(jetson_cuda_index_for_version)
-        .unwrap_or("cu126");
-    let index_url = format!("https://pypi.jetson-ai-lab.io/jp6/{cuda_index}");
-    let package_spec = env::var("LUMEN_JETSON_ORT_VERSION")
-        .map(|version| format!("{JETSON_ORT_PACKAGE}=={version}"))
-        .unwrap_or_else(|_| JETSON_ORT_PACKAGE.to_owned());
-
-    let detected = cuda_version
-        .as_deref()
-        .map(|value| format!("CUDA {value}"))
-        .unwrap_or_else(|| "CUDA version unknown, defaulting to cu126".to_owned());
-    log::step(format!(
-        "installing Jetson ONNX Runtime ({detected}, index {index_url})"
-    ))?;
-
-    run_python_pip_install(&index_url, &package_spec, false).or_else(|first_err| {
-        log::warning(format!(
-            "system pip install failed ({first_err}); retrying with --user"
-        ))?;
-        run_python_pip_install(&index_url, &package_spec, true)
-    })?;
-
-    let path = locate_python_onnxruntime_dylib().ok_or_else(|| {
-        CliError::InvalidArgument(
-            "onnxruntime-gpu installed, but libonnxruntime.so was not found through python3"
-                .to_owned(),
-        )
-    })?;
-    log::success(format!("Jetson ONNX Runtime ready: {}", path.display()))?;
-    Ok(Some(path))
-}
-
-fn run_python_pip_install(index_url: &str, package_spec: &str, user: bool) -> Result<(), CliError> {
-    let mut command = Command::new("python3");
-    command.args([
-        "-m",
-        "pip",
-        "install",
-        "--extra-index-url",
-        index_url,
-        package_spec,
-    ]);
-    if user {
-        command.arg("--user");
-    }
-    let status = command
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .map_err(CliError::Io)?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(CliError::InvalidArgument(format!(
-            "`python3 -m pip install {package_spec}` failed with status {status}"
-        )))
-    }
-}
-
-fn locate_python_onnxruntime_dylib() -> Option<PathBuf> {
-    let script = r#"
-import pathlib
-try:
-    import onnxruntime
-except Exception:
-    raise SystemExit(1)
-path = pathlib.Path(onnxruntime.__file__).parent / "capi" / "libonnxruntime.so"
-if path.is_file():
-    print(path)
-    raise SystemExit(0)
-raise SystemExit(1)
-"#;
-    command_stdout("python3", &["-c", script]).and_then(|stdout| {
-        let path = stdout.lines().next()?.trim();
-        if path.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(path))
-        }
-    })
-}
-
-fn detect_cuda_version() -> Option<String> {
-    if let Some(version) = command_stdout("nvcc", &["--version"]).and_then(|text| {
-        text.split("release ")
-            .nth(1)
-            .and_then(|rest| rest.split([',', ' ']).next())
-            .map(str::to_owned)
-    }) {
-        return Some(version);
-    }
-
-    for path in [
-        "/usr/local/cuda/version.json",
-        "/usr/local/cuda/version.txt",
-        "/usr/local/cuda/version",
-    ] {
-        if let Ok(contents) = fs::read_to_string(path)
-            && let Some(version) = first_cuda_version_in_text(&contents)
-        {
-            return Some(version);
-        }
-    }
-
-    None
-}
-
-fn first_cuda_version_in_text(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    for start in 0..bytes.len() {
-        if !bytes[start].is_ascii_digit() {
-            continue;
-        }
-        let mut end = start;
-        let mut dots = 0;
-        while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
-            if bytes[end] == b'.' {
-                dots += 1;
-            }
-            end += 1;
-        }
-        if dots >= 1 {
-            let candidate = &text[start..end];
-            if candidate.starts_with("12.") {
-                return Some(candidate.to_owned());
-            }
-        }
-    }
-    None
-}
-
-fn jetson_cuda_index_for_version(version: &str) -> Option<&'static str> {
-    let mut parts = version.split('.');
-    let major = parts.next()?.parse::<u32>().ok()?;
-    let minor = parts.next()?.parse::<u32>().ok()?;
-    match (major, minor) {
-        (12, 6) | (12, 7) => Some("cu126"),
-        (12, 8) => Some("cu128"),
-        (12, 9) => Some("cu129"),
-        _ => None,
-    }
 }
 
 fn read_bootstrap(path: &Path) -> Result<Bootstrap, CliError> {
@@ -1135,14 +969,9 @@ struct SiglipPresetConfig {
 
 fn siglip_preset_config(preset: Preset, backend: Backend) -> SiglipPresetConfig {
     if preset.name == "brave" {
-        let precision = if backend.semantic_runtime == "mnn" {
-            "q4"
-        } else {
-            "fp16"
-        };
         SiglipPresetConfig {
             model: "siglip2-so400m-patch14-384",
-            precision,
+            precision: backend.semantic_precision,
             min_ram_gb: 4,
             min_vram_gb: 3,
         }
@@ -1163,33 +992,37 @@ fn yaml_single_quoted(value: &str) -> String {
 fn backend_choices(platform: PlatformProfile) -> Vec<BackendChoice> {
     match platform.name {
         "darwin-arm64" => vec![
-            BackendChoice::available(Backend::mnn_metal()),
-            BackendChoice::available(Backend::ort_cpu_xnnpack("darwin-arm64")),
-            BackendChoice::available(Backend::cpu_only()),
+            BackendChoice::available(Backend::metal()),
+            BackendChoice::available(Backend::cpu("darwin-arm64-cpu")),
         ],
         "windows-x64" => vec![
-            BackendChoice::available(Backend::ort_dml()),
-            BackendChoice::available(Backend::cpu_only()),
+            BackendChoice::available(Backend::gpu("windows-x64-gpu")),
+            BackendChoice::available(Backend::cpu("windows-x64-cpu")),
         ],
         "linux-x64" => vec![
             BackendChoice::new(
-                Backend::ort_cuda(),
+                Backend::cuda("linux-x64-cuda"),
                 detect_nvidia().then_some(()),
                 "NVIDIA runtime was not detected",
             ),
             BackendChoice::new(
-                Backend::ort_openvino(),
-                glibc_meets(2, 28).then_some(()),
-                "requires Linux x64 with glibc 2.28+",
+                Backend::rocm("linux-x64-rocm"),
+                detect_amd().then_some(()),
+                "AMD ROCm runtime was not detected",
             ),
-            BackendChoice::available(Backend::cpu_only()),
+            BackendChoice::available(Backend::gpu("linux-x64-gpu")),
+            BackendChoice::available(Backend::cpu("linux-x64-cpu")),
         ],
         "linux-arm64" => vec![
-            BackendChoice::available(Backend::mnn_opencl("linux-arm64")),
-            BackendChoice::available(Backend::ort_jetson_cuda()),
-            BackendChoice::available(Backend::cpu_only_profile("linux-arm64")),
+            BackendChoice::new(
+                Backend::jetson(),
+                is_jetson().then_some(()),
+                "not running on an NVIDIA Jetson (L4T) device",
+            ),
+            BackendChoice::available(Backend::gpu("linux-arm64-gpu")),
+            BackendChoice::available(Backend::cpu("linux-arm64-cpu")),
         ],
-        _ => vec![BackendChoice::available(Backend::cpu_only())],
+        _ => vec![BackendChoice::available(Backend::cpu("linux-x64-cpu"))],
     }
 }
 
@@ -1289,25 +1122,19 @@ fn detect_nvidia() -> bool {
         || command_output_contains("ldconfig", &["-p"], "libcuda")
 }
 
-fn glibc_meets(major: u32, minor: u32) -> bool {
-    let Some(output) = command_stdout("getconf", &["GNU_LIBC_VERSION"]) else {
-        return false;
-    };
-    let version = output
-        .split_whitespace()
-        .find(|part| part.chars().next().is_some_and(|ch| ch.is_ascii_digit()));
-    let Some(version) = version else {
-        return false;
-    };
-    let mut parts = version.split('.');
-    let got_major = parts.next().and_then(|part| part.parse::<u32>().ok());
-    let got_minor = parts.next().and_then(|part| part.parse::<u32>().ok());
-    match (got_major, got_minor) {
-        (Some(got_major), Some(got_minor)) => {
-            got_major > major || (got_major == major && got_minor >= minor)
-        }
-        _ => false,
-    }
+/// True on NVIDIA Jetson / L4T (Tegra) devices, which need the L4T-built CUDA
+/// package rather than the generic arm64 build.
+fn is_jetson() -> bool {
+    Path::new("/etc/nv_tegra_release").is_file()
+        || fs::read_to_string("/proc/device-tree/model")
+            .map(|model| model.contains("Jetson") || model.contains("NVIDIA Orin"))
+            .unwrap_or(false)
+}
+
+fn detect_amd() -> bool {
+    command_success("rocminfo")
+        || Path::new("/dev/kfd").exists()
+        || Path::new("/sys/module/amdgpu").is_dir()
 }
 
 fn command_success(name: &str) -> bool {
@@ -1473,88 +1300,43 @@ struct Backend {
 }
 
 impl Backend {
-    fn mnn_metal() -> Self {
+    /// All inference runs through the Burn runtime at fp32; only the compute
+    /// backend (selected at build time and reflected in the release profile)
+    /// differs between packages.
+    fn burn(name: &'static str, release_profile: &'static str) -> Self {
         Self {
-            name: "mnn-metal",
-            release_profile: "darwin-arm64",
-            cv_runtime: "mnn",
-            semantic_runtime: "mnn",
-            semantic_precision: "fp16",
-        }
-    }
-
-    fn mnn_opencl(release_profile: &'static str) -> Self {
-        Self {
-            name: "mnn-opencl",
+            name,
             release_profile,
-            cv_runtime: "mnn",
-            semantic_runtime: "mnn",
-            semantic_precision: "fp16",
-        }
-    }
-
-    fn ort_cpu_xnnpack(release_profile: &'static str) -> Self {
-        Self {
-            name: "ort-cpu-xnnpack",
-            release_profile,
-            cv_runtime: "onnx",
-            semantic_runtime: "onnx",
-            semantic_precision: "fp16",
-        }
-    }
-
-    fn ort_dml() -> Self {
-        Self {
-            name: "ort-dml",
-            release_profile: "windows-x64-dml",
-            cv_runtime: "onnx",
-            semantic_runtime: "onnx",
-            semantic_precision: "fp16",
-        }
-    }
-
-    fn ort_cuda() -> Self {
-        Self {
-            name: "ort-cuda",
-            release_profile: "linux-x64-cuda",
-            cv_runtime: "onnx",
-            semantic_runtime: "onnx",
-            semantic_precision: "fp16",
-        }
-    }
-
-    fn ort_openvino() -> Self {
-        Self {
-            name: "ort-openvino",
-            release_profile: "linux-x64-openvino",
-            cv_runtime: "onnx",
-            semantic_runtime: "onnx",
-            semantic_precision: "fp16",
-        }
-    }
-
-    fn ort_jetson_cuda() -> Self {
-        Self {
-            name: "ort-jetson-cuda",
-            release_profile: "linux-arm64-jetson",
-            cv_runtime: "onnx",
-            semantic_runtime: "onnx",
-            semantic_precision: "fp16",
-        }
-    }
-
-    fn cpu_only() -> Self {
-        Self::cpu_only_profile("universal-cpu")
-    }
-
-    fn cpu_only_profile(release_profile: &'static str) -> Self {
-        Self {
-            name: "cpu-only",
-            release_profile,
-            cv_runtime: "onnx",
-            semantic_runtime: "onnx",
+            cv_runtime: "burn",
+            semantic_runtime: "burn",
             semantic_precision: "fp32",
         }
+    }
+
+    fn metal() -> Self {
+        Self::burn("metal", "darwin-arm64-metal")
+    }
+
+    /// Portable wgpu backend (Vulkan / GL / DX12 at runtime).
+    fn gpu(release_profile: &'static str) -> Self {
+        Self::burn("gpu", release_profile)
+    }
+
+    fn cuda(release_profile: &'static str) -> Self {
+        Self::burn("cuda", release_profile)
+    }
+
+    fn rocm(release_profile: &'static str) -> Self {
+        Self::burn("rocm", release_profile)
+    }
+
+    /// NVIDIA Jetson / L4T CUDA build.
+    fn jetson() -> Self {
+        Self::burn("jetson", "linux-arm64-jetson")
+    }
+
+    fn cpu(release_profile: &'static str) -> Self {
+        Self::burn("cpu", release_profile)
     }
 }
 
@@ -1846,41 +1628,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn brave_preset_renders_so400m_for_mnn_metal() {
+    fn brave_preset_renders_so400m_on_burn() {
         let config = render_config(
             Preset::all()[2],
             "other",
-            Backend::mnn_metal(),
+            Backend::metal(),
             Path::new("/tmp/lumen"),
         );
         assert!(config.contains("model: siglip2-so400m-patch14-384"));
-        assert!(config.contains("precision: q4"));
-    }
-
-    #[test]
-    fn brave_preset_renders_so400m_fp16_for_onnx() {
-        let config = render_config(
-            Preset::all()[2],
-            "other",
-            Backend::ort_cuda(),
-            Path::new("/tmp/lumen"),
-        );
-        assert!(config.contains("model: siglip2-so400m-patch14-384"));
-        assert!(config.contains("runtime: onnx"));
-        assert!(config.contains("precision: fp16"));
+        assert!(config.contains("runtime: burn"));
+        assert!(config.contains("precision: fp32"));
     }
 
     #[test]
     fn renders_valid_configs_for_all_presets_and_backends() {
         for preset in Preset::all() {
             for backend in [
-                Backend::mnn_metal(),
-                Backend::mnn_opencl("linux-arm64"),
-                Backend::ort_cuda(),
-                Backend::ort_openvino(),
-                Backend::ort_jetson_cuda(),
-                Backend::cpu_only_profile("linux-arm64"),
-                Backend::cpu_only(),
+                Backend::metal(),
+                Backend::gpu("linux-x64-gpu"),
+                Backend::cuda("linux-x64-cuda"),
+                Backend::rocm("linux-x64-rocm"),
+                Backend::jetson(),
+                Backend::cpu("linux-x64-cpu"),
             ] {
                 let config = render_config(*preset, "other", backend, Path::new("/tmp/lumen"));
                 validate_yaml_config(&config).unwrap();
@@ -1900,47 +1669,35 @@ mod tests {
     }
 
     #[test]
-    fn linux_arm64_offers_opencl_jetson_and_native_cpu_profiles() {
+    fn linux_arm64_offers_jetson_gpu_and_cpu_profiles() {
         let choices = backend_choices(PlatformProfile {
             name: "linux-arm64",
         });
 
+        // jetson (hardware-gated) + portable gpu + cpu fallback.
         assert_eq!(choices.len(), 3);
-        let opencl = choices[0]
-            .backend
-            .expect("linux-arm64 OpenCL backend is available");
-        assert_eq!(opencl.name, "mnn-opencl");
-        assert_eq!(opencl.release_profile, "linux-arm64");
-        let jetson = choices[1]
-            .backend
-            .expect("linux-arm64 Jetson backend is available");
-        assert_eq!(jetson.name, "ort-jetson-cuda");
-        assert_eq!(jetson.release_profile, "linux-arm64-jetson");
-        let backend = choices[2]
-            .backend
-            .expect("linux-arm64 backend is available");
-        assert_eq!(backend.name, "cpu-only");
-        assert_eq!(backend.release_profile, "linux-arm64");
+        assert_eq!(choices[0].label.split_whitespace().next(), Some("jetson"));
+        let gpu = choices[1].backend.expect("arm64 gpu backend is available");
+        assert_eq!(gpu.name, "gpu");
+        assert_eq!(gpu.release_profile, "linux-arm64-gpu");
+        let cpu = choices[2].backend.expect("arm64 cpu backend is available");
+        assert_eq!(cpu.name, "cpu");
+        assert_eq!(cpu.release_profile, "linux-arm64-cpu");
     }
 
     #[test]
-    fn maps_cuda_versions_to_jetson_ai_lab_indexes() {
-        assert_eq!(jetson_cuda_index_for_version("12.6"), Some("cu126"));
-        assert_eq!(jetson_cuda_index_for_version("12.7"), Some("cu126"));
-        assert_eq!(jetson_cuda_index_for_version("12.8"), Some("cu128"));
-        assert_eq!(jetson_cuda_index_for_version("12.9"), Some("cu129"));
-        assert_eq!(jetson_cuda_index_for_version("13.0"), None);
-    }
-
-    #[test]
-    fn extracts_cuda_version_from_text() {
+    fn linux_x64_offers_cuda_rocm_gpu_and_cpu_profiles() {
+        let choices = backend_choices(PlatformProfile { name: "linux-x64" });
+        assert_eq!(choices.len(), 4);
+        assert_eq!(choices[0].label.split_whitespace().next(), Some("cuda"));
+        assert_eq!(choices[1].label.split_whitespace().next(), Some("rocm"));
         assert_eq!(
-            first_cuda_version_in_text(r#"{ "cuda": { "version": "12.6.68" } }"#).as_deref(),
-            Some("12.6.68")
+            choices[2].backend.expect("gpu available").release_profile,
+            "linux-x64-gpu"
         );
         assert_eq!(
-            first_cuda_version_in_text("CUDA Version 12.8.0").as_deref(),
-            Some("12.8.0")
+            choices[3].backend.expect("cpu available").release_profile,
+            "linux-x64-cpu"
         );
     }
 
@@ -1949,7 +1706,7 @@ mod tests {
         let config = render_config(
             Preset::all()[1],
             "other",
-            Backend::mnn_metal(),
+            Backend::metal(),
             Path::new("/tmp/lumen"),
         );
         assert!(config.contains("dataset: TreeOfLife200MCore"));
@@ -1960,7 +1717,7 @@ mod tests {
         let config = render_config(
             Preset::all()[0],
             "other",
-            Backend::ort_dml(),
+            Backend::cpu("windows-x64-cpu"),
             Path::new(r"C:\Users\edwin\.lumen\models"),
         );
         validate_yaml_config(&config).unwrap();
