@@ -76,10 +76,14 @@ jobs:
             - name: Install ROCm toolkit
               if: matrix.toolkit == 'rocm'
               run: |
+                  set -euo pipefail
                   sudo apt-get update
                   sudo apt-get install -y wget gnupg
                   wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/rocm.gpg
                   echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/6.2 noble main' | sudo tee /etc/apt/sources.list.d/rocm.list
+                  # Ubuntu 24.04 universe ships conflicting rocminfo/rocm-cmake/hipcc
+                  # versions; prefer the AMD repo so the SDK's pinned deps resolve.
+                  printf 'Package: *\nPin: origin "repo.radeon.com"\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600
                   sudo apt-get update
                   sudo apt-get install -y rocm-hip-sdk
 
@@ -87,18 +91,20 @@ jobs:
             - name: Build hub dist profile
               run: cargo xtask dist --profile ${{ matrix.profile }}
 
+            # bash, not pwsh: PowerShell isn't present in the L4T container.
             - name: Check hub dist layout
-              shell: pwsh
+              shell: bash
               run: |
-                  $artifact = Join-Path "dist" "lumen-hub-${{ matrix.profile }}"
-                  if (!(Test-Path (Join-Path $artifact "README.md"))) { throw "missing README.md" }
-                  if (!(Test-Path (Join-Path $artifact "LICENSE"))) { throw "missing LICENSE" }
-                  if (!(Test-Path (Join-Path $artifact "bin"))) { throw "missing bin directory" }
-                  if ($env:RUNNER_OS -eq "Windows") {
-                    if (!(Test-Path (Join-Path $artifact "bin/lumen-hub.exe"))) { throw "missing bin/lumen-hub.exe" }
-                  } else {
-                    if (!(Test-Path (Join-Path $artifact "bin/lumen-hub"))) { throw "missing bin/lumen-hub" }
-                  }
+                  set -euo pipefail
+                  art="dist/lumen-hub-${{ matrix.profile }}"
+                  test -f "$art/README.md"
+                  test -f "$art/LICENSE"
+                  test -d "$art/bin"
+                  if [ "${RUNNER_OS:-}" = "Windows" ]; then
+                    test -f "$art/bin/lumen-hub.exe"
+                  else
+                    test -f "$art/bin/lumen-hub"
+                  fi
 
             - uses: actions/upload-artifact@v4
               with:
