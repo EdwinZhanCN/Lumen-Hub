@@ -90,18 +90,30 @@ jobs:
                   # versions; prefer the AMD repo so the SDK's pinned deps resolve.
                   printf 'Package: *\nPin: origin "repo.radeon.com"\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600
                   sudo apt-get update
-                  sudo apt-get install -y rocm-hip-sdk
+                  # rocm-hip-sdk pulls the runtime/headers; hipcc ships the
+                  # `hipconfig` utility that cubecl-hip-sys runs at build time.
+                  sudo apt-get install -y rocm-hip-sdk hipcc
                   # ROCm 7.x installs to /opt/rocm-<ver>; rocm-hip-sdk alone does
                   # not always create the /opt/rocm symlink, so resolve the real
                   # install dir instead of hardcoding it.
                   ROCM_DIR="$(ls -d /opt/rocm /opt/rocm-* 2>/dev/null | sort -V | tail -n1)"
                   test -n "$ROCM_DIR" || { echo "no ROCm install under /opt"; exit 1; }
                   echo "Resolved ROCm at: $ROCM_DIR"
-                  # cubecl-hip-sys build.rs locates HIP via these + `hipconfig`.
+                  # cubecl-hip-sys runs `hipconfig` from PATH (not from ROCM_PATH),
+                  # and its location varies across ROCm layouts. Find it and put
+                  # its directory on PATH so the build can derive the link paths.
+                  HIPCONFIG="$(find "$ROCM_DIR" /opt/rocm* -name hipconfig -type f 2>/dev/null | head -n1)"
+                  if [ -z "$HIPCONFIG" ]; then
+                      echo "hipconfig not found; ROCm bin layout:" >&2
+                      ls -la "$ROCM_DIR/bin" 2>/dev/null | grep -i hip >&2 || true
+                      exit 1
+                  fi
+                  echo "Found hipconfig at: $HIPCONFIG"
+                  echo "$(dirname "$HIPCONFIG")" >> "$GITHUB_PATH"
                   echo "$ROCM_DIR/bin" >> "$GITHUB_PATH"
                   echo "HIP_PATH=$ROCM_DIR" >> "$GITHUB_ENV"
                   echo "ROCM_PATH=$ROCM_DIR" >> "$GITHUB_ENV"
-                  "$ROCM_DIR/bin/hipconfig" --version
+                  "$HIPCONFIG" --version
 
             # Each runner builds its own native target; no cross toolchain needed.
             - name: Build hub dist profile
