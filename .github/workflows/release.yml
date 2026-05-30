@@ -113,6 +113,26 @@ jobs:
                   echo "$ROCM_DIR/bin" >> "$GITHUB_PATH"
                   echo "HIP_PATH=$ROCM_DIR" >> "$GITHUB_ENV"
                   echo "ROCM_PATH=$ROCM_DIR" >> "$GITHUB_ENV"
+                  # This ROCm layout ships hipconfig but omits the share/hip/version
+                  # file it reads, so `hipconfig --version` warns on stderr and
+                  # cubecl-hip-sys panics (it treats any stderr as fatal). Rebuild
+                  # the file from hip_version.h — the same header the bindings were
+                  # generated against, so the reported patch matches exactly.
+                  VER_FILE="$ROCM_DIR/share/hip/version"
+                  if [ ! -f "$VER_FILE" ]; then
+                      HDR="$ROCM_DIR/include/hip/hip_version.h"
+                      test -f "$HDR" || { echo "missing $HDR; cannot synth version"; exit 1; }
+                      MAJ="$(awk '/define HIP_VERSION_MAJOR/{print $3}' "$HDR")"
+                      MIN="$(awk '/define HIP_VERSION_MINOR/{print $3}' "$HDR")"
+                      PAT="$(awk '/define HIP_VERSION_PATCH/{print $3}' "$HDR")"
+                      GIT="$(awk '/define HIP_VERSION_GITHASH/{gsub(/"/,"",$3);print $3}' "$HDR")"
+                      [ -n "$GIT" ] || GIT=unknown
+                      echo "Synthesizing $VER_FILE: $MAJ.$MIN.$PAT-$GIT"
+                      sudo mkdir -p "$(dirname "$VER_FILE")"
+                      printf 'HIP_VERSION_MAJOR=%s\nHIP_VERSION_MINOR=%s\nHIP_VERSION_PATCH=%s\nHIP_VERSION_GITHASH=%s\n' \
+                          "$MAJ" "$MIN" "$PAT" "$GIT" | sudo tee "$VER_FILE" >/dev/null
+                  fi
+                  # Must print the version with empty stderr or cubecl-hip-sys panics.
                   "$HIPCONFIG" --version
 
             # Each runner builds its own native target; no cross toolchain needed.
