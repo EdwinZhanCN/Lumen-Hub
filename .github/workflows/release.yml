@@ -120,13 +120,23 @@ jobs:
                   # generated against, so the reported patch matches exactly.
                   VER_FILE="$ROCM_DIR/share/hip/version"
                   if [ ! -f "$VER_FILE" ]; then
-                      HDR="$ROCM_DIR/include/hip/hip_version.h"
-                      test -f "$HDR" || { echo "missing $HDR; cannot synth version"; exit 1; }
-                      MAJ="$(awk '/define HIP_VERSION_MAJOR/{print $3}' "$HDR")"
-                      MIN="$(awk '/define HIP_VERSION_MINOR/{print $3}' "$HDR")"
-                      PAT="$(awk '/define HIP_VERSION_PATCH/{print $3}' "$HDR")"
-                      GIT="$(awk '/define HIP_VERSION_GITHASH/{gsub(/"/,"",$3);print $3}' "$HDR")"
-                      [ -n "$GIT" ] || GIT=unknown
+                      # Prefer the real header if present; otherwise this is a
+                      # runtime-only install (cubecl-hip-sys ships pre-generated
+                      # bindings and only links libamdhip64, so headers may be
+                      # absent). cubecl reads the *patch* from `hipconfig` and
+                      # enables hip_<patch>; we pin the AMD repo to 7.1.1 and the
+                      # crate to 7.1.5280200 whose sole HIP feature is hip_52802,
+                      # so that patch is fixed.
+                      HDR="$(find "$ROCM_DIR" -name hip_version.h 2>/dev/null | head -n1)"
+                      if [ -n "$HDR" ]; then
+                          MAJ="$(awk '/define HIP_VERSION_MAJOR/{print $3}' "$HDR")"
+                          MIN="$(awk '/define HIP_VERSION_MINOR/{print $3}' "$HDR")"
+                          PAT="$(awk '/define HIP_VERSION_PATCH/{print $3}' "$HDR")"
+                          GIT="$(awk '/define HIP_VERSION_GITHASH/{gsub(/"/,"",$3);print $3}' "$HDR")"
+                      else
+                          MAJ=7; MIN=1; PAT=52802; GIT=""
+                      fi
+                      [ -n "$GIT" ] || GIT=rocm711
                       echo "Synthesizing $VER_FILE: $MAJ.$MIN.$PAT-$GIT"
                       sudo mkdir -p "$(dirname "$VER_FILE")"
                       printf 'HIP_VERSION_MAJOR=%s\nHIP_VERSION_MINOR=%s\nHIP_VERSION_PATCH=%s\nHIP_VERSION_GITHASH=%s\n' \
