@@ -90,12 +90,60 @@ jobs:
                   # versions; prefer the AMD repo so the SDK's pinned deps resolve.
                   printf 'Package: *\nPin: origin "repo.radeon.com"\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600
                   sudo apt-get update
-                  sudo apt-get install -y rocm-hip-sdk
-                  # cubecl-hip-sys build.rs locates HIP via these + `hipconfig`.
-                  echo "/opt/rocm/bin" >> "$GITHUB_PATH"
-                  echo "HIP_PATH=/opt/rocm" >> "$GITHUB_ENV"
-                  echo "ROCM_PATH=/opt/rocm" >> "$GITHUB_ENV"
-                  /opt/rocm/bin/hipconfig --version
+                  # rocm-hip-sdk pulls the runtime/headers; hipcc ships the
+                  # `hipconfig` utility that cubecl-hip-sys runs at build time.
+                  sudo apt-get install -y rocm-hip-sdk hipcc
+                  # ROCm 7.x installs to /opt/rocm-<ver>; rocm-hip-sdk alone does
+                  # not always create the /opt/rocm symlink, so resolve the real
+                  # install dir instead of hardcoding it.
+                  ROCM_DIR="$(ls -d /opt/rocm /opt/rocm-* 2>/dev/null | sort -V | tail -n1)"
+                  test -n "$ROCM_DIR" || { echo "no ROCm install under /opt"; exit 1; }
+                  echo "Resolved ROCm at: $ROCM_DIR"
+                  # cubecl-hip-sys runs `hipconfig` from PATH (not from ROCM_PATH),
+                  # and its location varies across ROCm layouts. Find it and put
+                  # its directory on PATH so the build can derive the link paths.
+                  HIPCONFIG="$(find "$ROCM_DIR" /opt/rocm* -name hipconfig -type f 2>/dev/null | head -n1)"
+                  if [ -z "$HIPCONFIG" ]; then
+                      echo "hipconfig not found; ROCm bin layout:" >&2
+                      ls -la "$ROCM_DIR/bin" 2>/dev/null | grep -i hip >&2 || true
+                      exit 1
+                  fi
+                  echo "Found hipconfig at: $HIPCONFIG"
+                  echo "$(dirname "$HIPCONFIG")" >> "$GITHUB_PATH"
+                  echo "$ROCM_DIR/bin" >> "$GITHUB_PATH"
+                  echo "HIP_PATH=$ROCM_DIR" >> "$GITHUB_ENV"
+                  echo "ROCM_PATH=$ROCM_DIR" >> "$GITHUB_ENV"
+                  # This ROCm layout ships hipconfig but omits the share/hip/version
+                  # file it reads, so `hipconfig --version` warns on stderr and
+                  # cubecl-hip-sys panics (it treats any stderr as fatal). Rebuild
+                  # the file from hip_version.h — the same header the bindings were
+                  # generated against, so the reported patch matches exactly.
+                  VER_FILE="$ROCM_DIR/share/hip/version"
+                  if [ ! -f "$VER_FILE" ]; then
+                      # Prefer the real header if present; otherwise this is a
+                      # runtime-only install (cubecl-hip-sys ships pre-generated
+                      # bindings and only links libamdhip64, so headers may be
+                      # absent). cubecl reads the *patch* from `hipconfig` and
+                      # enables hip_<patch>; we pin the AMD repo to 7.1.1 and the
+                      # crate to 7.1.5280200 whose sole HIP feature is hip_52802,
+                      # so that patch is fixed.
+                      HDR="$(find "$ROCM_DIR" -name hip_version.h 2>/dev/null | head -n1)"
+                      if [ -n "$HDR" ]; then
+                          MAJ="$(awk '/define HIP_VERSION_MAJOR/{print $3}' "$HDR")"
+                          MIN="$(awk '/define HIP_VERSION_MINOR/{print $3}' "$HDR")"
+                          PAT="$(awk '/define HIP_VERSION_PATCH/{print $3}' "$HDR")"
+                          GIT="$(awk '/define HIP_VERSION_GITHASH/{gsub(/"/,"",$3);print $3}' "$HDR")"
+                      else
+                          MAJ=7; MIN=1; PAT=52802; GIT=""
+                      fi
+                      [ -n "$GIT" ] || GIT=rocm711
+                      echo "Synthesizing $VER_FILE: $MAJ.$MIN.$PAT-$GIT"
+                      sudo mkdir -p "$(dirname "$VER_FILE")"
+                      printf 'HIP_VERSION_MAJOR=%s\nHIP_VERSION_MINOR=%s\nHIP_VERSION_PATCH=%s\nHIP_VERSION_GITHASH=%s\n' \
+                          "$MAJ" "$MIN" "$PAT" "$GIT" | sudo tee "$VER_FILE" >/dev/null
+                  fi
+                  # Must print the version with empty stderr or cubecl-hip-sys panics.
+                  "$HIPCONFIG" --version
 
             # Each runner builds its own native target; no cross toolchain needed.
             - name: Build hub dist profile
