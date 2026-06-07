@@ -41,14 +41,14 @@ Models are fetched on first start into `metadata.cache_dir` from
 
 ```yaml
 metadata:   { version: "0.1.0", region: other, cache_dir: "~/.lumen/models" }
-deployment: { mode: hub, services: [siglip, ocr, face] }
+deployment: { mode: hub, services: [siglip, face] }
 server:     { host: "0.0.0.0", port: 50051, batching: { enabled: true, max_batch_size: 8, queue_latency_ms: 2 } }
 services:
   siglip:
     enabled: true
     package: siglip
     models:
-      default: { model: siglip2-base-patch16-224, runtime: burn, precision: fp32 }
+      default: { model: siglip2-base-patch16-224, runtime: burn, precision: fp16q8 }
 ```
 
 `runtime` is always `burn`; the compute backend is a build-time choice, not config.

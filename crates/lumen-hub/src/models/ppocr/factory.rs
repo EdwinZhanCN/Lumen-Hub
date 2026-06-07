@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf};
 
 use lumen_schema::{ModelInfo, Runtime};
 
-use super::model::{PpocrDetectionModel, PpocrRecognitionModel};
+use super::model::{PpocrClassificationModel, PpocrDetectionModel, PpocrRecognitionModel};
 use crate::backend::Device;
 use crate::service::{ServiceError, ServiceResult};
 
@@ -84,7 +84,7 @@ impl PpocrModelFactory {
         device: &Device,
     ) -> ServiceResult<PpocrDetectionModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        PpocrDetectionModel::load(model_name, &path, device.clone())
+        PpocrDetectionModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 
@@ -97,7 +97,20 @@ impl PpocrModelFactory {
         device: &Device,
     ) -> ServiceResult<PpocrRecognitionModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        PpocrRecognitionModel::load(model_name, &path, device.clone())
+        PpocrRecognitionModel::load(model_name, &path, precision, device.clone())
+            .map_err(ServiceError::InvalidArgument)
+    }
+
+    pub fn create_classification_model(
+        &self,
+        model_name: &str,
+        runtime: Runtime,
+        component: &str,
+        precision: &str,
+        device: &Device,
+    ) -> ServiceResult<PpocrClassificationModel> {
+        let path = self.component_path_str(model_name, runtime, component, precision)?;
+        PpocrClassificationModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 

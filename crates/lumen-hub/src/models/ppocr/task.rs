@@ -6,7 +6,7 @@ use imageproc::geometric_transformations::{Interpolation, Projection, warp_into}
 use lumen_schema::OCRV1;
 use serde::Deserialize;
 
-use super::model::{PpocrDetectionModel, PpocrRecognitionModel};
+use super::model::{PpocrClassificationModel, PpocrDetectionModel, PpocrRecognitionModel};
 use super::postprocess::{ctc_greedy_decode, detect_boxes};
 use crate::service::{
     DEFAULT_TENSOR_MIME, META_MODEL_ID, PREPROCESS_PPOCR_DET, ServiceError, ServiceResult,
@@ -113,6 +113,43 @@ fn default_blank_id() -> i64 {
 }
 
 // ---------------------------------------------------------------------------
+// Text-line orientation classification config (server pack only; optional)
+// ---------------------------------------------------------------------------
+
+/// Orientation classifier sub-config. When present, each detected crop is checked
+/// for being upside-down (180°) and rotated before recognition.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PpocrClsConfig {
+    pub component: String,
+    #[serde(default)]
+    pub input_name: String,
+    #[serde(default)]
+    pub output_name: String,
+    #[serde(default = "default_rec_mean")]
+    pub mean: [f32; 3],
+    #[serde(default = "default_rec_std")]
+    pub std: [f32; 3],
+    #[serde(default = "default_scale")]
+    pub scale: f32,
+    #[serde(default = "default_cls_image_shape")]
+    pub image_shape: [usize; 3],
+    #[serde(default = "default_cls_labels")]
+    pub labels: Vec<String>,
+    #[serde(default = "default_cls_thresh")]
+    pub thresh: f32,
+}
+
+fn default_cls_image_shape() -> [usize; 3] {
+    [3, 80, 160]
+}
+fn default_cls_labels() -> Vec<String> {
+    vec!["0".to_owned(), "180".to_owned()]
+}
+fn default_cls_thresh() -> f32 {
+    0.9
+}
+
+// ---------------------------------------------------------------------------
 // PpocrEngine: synchronous detection -> recognition pipeline
 // ---------------------------------------------------------------------------
 
@@ -121,8 +158,10 @@ struct PpocrEngine {
     model_id: String,
     det_config: PpocrDetConfig,
     rec_config: PpocrRecConfig,
+    cls_config: Option<PpocrClsConfig>,
     det_model: PpocrDetectionModel,
     rec_model: PpocrRecognitionModel,
+    cls_model: Option<PpocrClassificationModel>,
     vocab: Vec<String>,
 }
 
@@ -245,6 +284,8 @@ impl PpocrEngine {
                 }
             };
 
+            let crop = self.maybe_orient(crop, box_idx);
+
             let [c, h, w] = self.rec_config.image_shape;
             let rec_input = rec_preprocess(
                 &crop,
@@ -291,6 +332,41 @@ impl PpocrEngine {
 
         OCRV1::new(items, &self.model_id)
     }
+
+    /// Corrects upside-down text crops using the orientation classifier (server
+    /// pack only). Returns the crop rotated 180° when the classifier predicts the
+    /// `180` label above its confidence threshold; otherwise the crop unchanged.
+    fn maybe_orient(&self, crop: RgbImage, box_idx: usize) -> RgbImage {
+        let (Some(cfg), Some(model)) = (&self.cls_config, &self.cls_model) else {
+            return crop;
+        };
+        let [c, h, w] = cfg.image_shape;
+        let input = rec_preprocess(&crop, c, h as u32, w as u32, cfg.scale, &cfg.mean, &cfg.std);
+        let out = model.forward(&input, c, h, w);
+        let (best, score) =
+            out.values
+                .iter()
+                .enumerate()
+                .fold(
+                    (0usize, f32::MIN),
+                    |acc, (i, &v)| {
+                        if v > acc.1 { (i, v) } else { acc }
+                    },
+                );
+        let upside_down = cfg.labels.get(best).is_some_and(|l| l == "180");
+        if ppocr_debug_enabled() {
+            eprintln!(
+                "ppocr_debug box_idx={box_idx} cls_label={:?} score={score:.4} rotate={}",
+                cfg.labels.get(best),
+                upside_down && score >= cfg.thresh,
+            );
+        }
+        if upside_down && score >= cfg.thresh {
+            image::imageops::rotate180(&crop)
+        } else {
+            crop
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -311,8 +387,10 @@ impl PpocrTask {
         model_id: String,
         det_config: PpocrDetConfig,
         rec_config: PpocrRecConfig,
+        cls_config: Option<PpocrClsConfig>,
         det_model: PpocrDetectionModel,
         rec_model: PpocrRecognitionModel,
+        cls_model: Option<PpocrClassificationModel>,
         vocab: Vec<String>,
     ) -> ServiceResult<Self> {
         let name = name.into();
@@ -332,8 +410,10 @@ impl PpocrTask {
                 model_id,
                 det_config,
                 rec_config,
+                cls_config,
                 det_model,
                 rec_model,
+                cls_model,
                 vocab,
             }),
         })

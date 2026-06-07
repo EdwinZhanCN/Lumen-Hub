@@ -2,17 +2,30 @@ use std::{
     collections::HashMap,
     env,
     net::{IpAddr, UdpSocket},
+    sync::LazyLock,
     time::Duration,
 };
 
 use lumen_schema::Mdns;
 use mdns_sd::{ServiceDaemon, ServiceInfo};
+use rand::Rng;
 
 use crate::daemon::{DaemonError, DaemonResult};
 
 pub const DEFAULT_MDNS_SERVICE_TYPE: &str = "_lumen._tcp.local.";
-const DEFAULT_MDNS_INSTANCE_NAME: &str = "Lumen-Hub";
 const DEFAULT_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn default_instance_name() -> String {
+    static NAME: LazyLock<String> = LazyLock::new(|| {
+        let hash: String = rand::thread_rng()
+            .sample_iter(&rand::distributions::Alphanumeric)
+            .take(5)
+            .map(char::from)
+            .collect();
+        format!("lumen-hub-{}", hash.to_lowercase())
+    });
+    NAME.clone()
+}
 
 /// Keeps an mDNS registration alive and unregisters it on drop.
 pub struct MdnsAdvertisement {
@@ -21,10 +34,10 @@ pub struct MdnsAdvertisement {
 }
 
 impl MdnsAdvertisement {
-    pub fn register(config: Option<&Mdns>, port: u16) -> DaemonResult<Option<Self>> {
-        let Some(config) = config.filter(|config| config.enabled) else {
+    pub fn register(config: &Mdns, port: u16) -> DaemonResult<Option<Self>> {
+        if !config.enabled {
             return Ok(None);
-        };
+        }
 
         let ip = advertise_ip()?;
         if ip.is_loopback() {
@@ -35,10 +48,8 @@ impl MdnsAdvertisement {
         }
 
         let hostname = mdns_hostname();
-        let instance_name = config
-            .service_name
-            .as_deref()
-            .unwrap_or(DEFAULT_MDNS_INSTANCE_NAME);
+        let default_name = default_instance_name();
+        let instance_name = config.service_name.as_deref().unwrap_or(&default_name);
         let service_info = ServiceInfo::new(
             DEFAULT_MDNS_SERVICE_TYPE,
             instance_name,

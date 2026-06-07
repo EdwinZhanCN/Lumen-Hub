@@ -1,6 +1,6 @@
 # Lumen Hub brave beta config.
 #
-# Includes: OCR, SigLIP, InsightFace, BioCLIP.
+# Includes: SigLIP, InsightFace, OCR, BioCLIP.
 # Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
 # All models run on the Burn runtime.
 #
@@ -8,7 +8,7 @@
 #   RAM: 32 GB
 #   GPU/Unified memory: 12 GB
 #
-# BioCLIP uses the full TreeOfLife200M dataset in this profile.
+# BioCLIP uses the full TreeOfLife200MCore dataset in this profile.
 
 metadata:
     version: "0.1.0"
@@ -18,9 +18,9 @@ metadata:
 deployment:
     mode: hub
     services:
-        - ocr
         - siglip
         - face
+        - ocr
         - bioclip
 
 server:
@@ -32,16 +32,6 @@ server:
         queue_latency_ms: 2
 
 services:
-    # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.
-    ocr:
-        enabled: true
-        package: ppocr
-        models:
-            default:
-                model: pp-ocrv5
-                runtime: burn
-                precision: fp32
-
     # Minimum: RAM 4 GB, GPU/Unified memory 3 GB.
     siglip:
         enabled: true
@@ -50,7 +40,7 @@ services:
             default:
                 model: siglip2-so400m-patch14-384
                 runtime: burn
-                precision: fp32
+                precision: fp16q8
 
     # Minimum: RAM 1 GB, GPU/Unified memory 1 GB.
     face:
@@ -60,7 +50,17 @@ services:
             default:
                 model: antelopev2
                 runtime: burn
-                precision: fp32
+                precision: fp16q8
+
+    # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.
+    ocr:
+        enabled: true
+        package: ppocr
+        models:
+            default:
+                model: pp-ocrv5-server
+                runtime: burn
+                precision: fp16q8
 
     # Minimum: RAM 16 GB, GPU/Unified memory 4 GB.
     bioclip:
@@ -70,5 +70,5 @@ services:
             default:
                 model: bioclip-2
                 runtime: burn
-                precision: fp32
-                dataset: TreeOfLife200M
+                precision: fp16q8
+                dataset: TreeOfLife200MCore

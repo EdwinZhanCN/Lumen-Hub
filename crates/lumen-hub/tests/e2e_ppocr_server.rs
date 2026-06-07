@@ -1,0 +1,92 @@
+//! End-to-end PP-OCRv5-**server** test through the full runtime service path,
+//! loading **int8** weights (detection + text-line-orientation classification +
+//! recognition) and reading the "BORDER" warmup crop.
+//!
+//! Run on CPU:   cargo test --test e2e_ppocr_server
+//! Run on Metal: cargo test --features metal --test e2e_ppocr_server
+
+mod common;
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use lumen_hub::backend::default_device;
+use lumen_hub::models::ppocr::PpocrService;
+use lumen_hub::service::{InferenceService, TaskRequest};
+use lumen_schema::{ModelConfig, OCRV1, Runtime, ServiceConfig};
+
+const MODEL: &str = "pp-ocrv5-server";
+
+// The generated server `new`/`forward` have huge stack frames; on GPU backends they
+// exceed the default thread stack. Run construction + the runtime on a large-stack
+// std::thread (model construction is on the block_on thread), with a matching
+// blocking-pool stack — so the test passes on metal without `RUST_MIN_STACK`.
+#[test]
+fn ppocr_server_int8_reads_border_test() {
+    const STACK: usize = 256 * 1024 * 1024;
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK)
+                .build()
+                .expect("tokio runtime")
+                .block_on(ppocr_server_int8_reads_border());
+        })
+        .expect("spawn test thread")
+        .join()
+        .expect("test thread panicked");
+}
+
+async fn ppocr_server_int8_reads_border() {
+    let Some((cache_dir, model_name)) =
+        common::require_model(MODEL, &["detection", "recognition", "classification"])
+    else {
+        return;
+    };
+
+    // int8 precision exercises the quantized server artifacts end to end.
+    let config = ServiceConfig {
+        enabled: true,
+        package: "ppocr".to_owned(),
+        models: BTreeMap::from([(
+            "default".to_owned(),
+            ModelConfig {
+                model: model_name,
+                runtime: Runtime::Burn,
+                dataset: None,
+                precision: Some("int8".to_owned()),
+            },
+        )]),
+    };
+
+    let device = Arc::new(default_device());
+    let service = PpocrService::from_config("ppocr", &config, &cache_dir, device)
+        .expect("PP-OCR server service builds from int8 config");
+
+    let task = service
+        .tasks()
+        .task_names()
+        .into_iter()
+        .next()
+        .expect("PP-OCR exposes a task");
+
+    let image = common::sample_bytes("warmup/ocr/border.png");
+    let result = service
+        .tasks()
+        .handle(&task, TaskRequest::new(image, "image/png"))
+        .await
+        .expect("OCR task succeeds");
+
+    let ocr: OCRV1 = serde_json::from_slice(&result.payload).expect("ocr_v1 JSON");
+    let texts: Vec<&String> = ocr.items.iter().map(|i| &i.text).collect();
+    eprintln!("server int8 OCR: count={} texts={texts:?}", ocr.count);
+
+    assert!(ocr.count > 0, "expected at least one detected text region");
+    let joined: String = ocr.items.iter().map(|i| i.text.as_str()).collect();
+    assert!(
+        joined.to_uppercase().contains("BORD"),
+        "expected BORDER-like text from int8 server pipeline, got {joined:?}"
+    );
+}

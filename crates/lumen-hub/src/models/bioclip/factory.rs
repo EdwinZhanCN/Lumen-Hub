@@ -75,7 +75,7 @@ impl BioClipModelFactory {
                 path.display()
             ))
         })?;
-        BioClipVisionModel::load(model_name, path_str, device.clone())
+        BioClipVisionModel::load(model_name, path_str, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 

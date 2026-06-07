@@ -13,6 +13,7 @@ use burn::tensor::{Tensor, TensorData};
 
 use crate::backend::{Backend, Device};
 use crate::model_arch::antelopev2;
+use crate::model_arch::load_burnpack;
 
 /// A flat tensor result paired with its shape.
 pub struct TensorOutput {
@@ -38,10 +39,19 @@ pub struct InsightFaceDetectionModel {
 }
 
 impl InsightFaceDetectionModel {
-    pub fn load(model_name: &str, path: &str, device: Device) -> Result<Self, String> {
+    pub fn load(
+        model_name: &str,
+        path: &str,
+        precision: &str,
+        device: Device,
+    ) -> Result<Self, String> {
         let inner: Box<dyn InsightFaceDetectionArch> = match model_name {
             "antelopev2" => Box::new(AntelopeV2Detection {
-                model: antelopev2::detection::Model::<Backend>::from_file(path, &device),
+                model: load_burnpack(
+                    antelopev2::detection::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
                 device,
             }),
             other => return Err(unsupported("detection", other)),
@@ -60,10 +70,19 @@ pub struct InsightFaceRecognitionModel {
 }
 
 impl InsightFaceRecognitionModel {
-    pub fn load(model_name: &str, path: &str, device: Device) -> Result<Self, String> {
+    pub fn load(
+        model_name: &str,
+        path: &str,
+        precision: &str,
+        device: Device,
+    ) -> Result<Self, String> {
         let inner: Box<dyn InsightFaceRecognitionArch> = match model_name {
             "antelopev2" => Box::new(AntelopeV2Recognition {
-                model: antelopev2::recognition::Model::<Backend>::from_file(path, &device),
+                model: load_burnpack(
+                    antelopev2::recognition::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
                 device,
             }),
             other => return Err(unsupported("recognition", other)),

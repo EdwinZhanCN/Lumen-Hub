@@ -26,6 +26,8 @@ use lumen_hub::{
     service::ServiceHub,
     warmup::{WarmupError, default_warmup_dir, run_startup_warmup},
 };
+#[cfg(test)]
+use lumen_schema::Mdns;
 use lumen_schema::{ConfigValidationError, LumenConfig, Mode, ServerConfig};
 use thiserror::Error;
 use tracing::{
@@ -37,18 +39,45 @@ use tracing::{
     subscriber::{Interest, SetGlobalDefaultError, set_global_default},
 };
 
-#[tokio::main]
-async fn main() {
-    match run(env::args_os()).await {
-        Ok(()) => {}
-        Err(StartupError::Help) => {
-            print_usage();
+/// Stack size for the runtime driver thread and the blocking pool.
+///
+/// The ONNX-generated model `new`/`forward` functions are monolithic with very
+/// large stack frames; on GPU backends (where tensor handles are larger than
+/// ndarray's) the default ~2 MB thread stack overflows. Model construction runs on
+/// the runtime *driver* thread, and inference runs on `spawn_blocking` pool threads,
+/// so both need a generous stack.
+const RUNTIME_STACK_SIZE: usize = 256 * 1024 * 1024;
+
+fn main() {
+    // Drive the runtime from a thread with a large stack so model construction
+    // (which happens on the `block_on` thread) does not overflow; `thread_stack_size`
+    // covers the worker + `spawn_blocking` pool threads where inference runs.
+    let worker = std::thread::Builder::new()
+        .stack_size(RUNTIME_STACK_SIZE)
+        .spawn(run_main)
+        .expect("failed to spawn runtime thread");
+    worker.join().expect("runtime thread panicked");
+}
+
+fn run_main() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(RUNTIME_STACK_SIZE)
+        .build()
+        .expect("failed to build tokio runtime");
+
+    runtime.block_on(async {
+        match run(env::args_os()).await {
+            Ok(()) => {}
+            Err(StartupError::Help) => {
+                print_usage();
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                process::exit(1);
+            }
         }
-        Err(error) => {
-            eprintln!("error: {error}");
-            process::exit(1);
-        }
-    }
+    });
 }
 
 async fn run<I>(args: I) -> StartupResult<()>
@@ -717,7 +746,7 @@ mod tests {
         let config = ServerConfig {
             port: 50_051,
             host: "127.0.0.1".to_owned(),
-            mdns: None,
+            mdns: Mdns::default(),
             batching: Default::default(),
         };
 

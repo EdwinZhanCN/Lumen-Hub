@@ -10,6 +10,7 @@ use burn::tensor::{Tensor, TensorData};
 
 use crate::backend::{Backend, Device};
 use crate::model_arch::bioclip2;
+use crate::model_arch::load_burnpack;
 
 trait BioClipVisionArch: Send + Sync {
     fn encode(&self, pixels: Vec<f32>, batch: usize, height: usize, width: usize) -> Vec<f32>;
@@ -21,10 +22,19 @@ pub struct BioClipVisionModel {
 }
 
 impl BioClipVisionModel {
-    pub fn load(model_name: &str, path: &str, device: Device) -> Result<Self, String> {
+    pub fn load(
+        model_name: &str,
+        path: &str,
+        precision: &str,
+        device: Device,
+    ) -> Result<Self, String> {
         let inner: Box<dyn BioClipVisionArch> = match model_name {
             "bioclip-2" => Box::new(BioClip2Vision {
-                model: bioclip2::vision::Model::<Backend>::from_file(path, &device),
+                model: load_burnpack(
+                    bioclip2::vision::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
                 device,
             }),
             other => {

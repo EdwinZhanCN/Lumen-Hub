@@ -9,7 +9,8 @@
 use burn::tensor::{Tensor, TensorData};
 
 use crate::backend::{Backend, Device};
-use crate::model_arch::pp_ocrv5;
+use crate::model_arch::load_burnpack;
+use crate::model_arch::{pp_ocrv5, pp_ocrv5_server};
 
 /// A flat tensor result paired with its shape.
 pub struct TensorOutput {
@@ -25,16 +26,37 @@ trait PpocrRecognitionArch: Send + Sync {
     fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput;
 }
 
+trait PpocrClassificationArch: Send + Sync {
+    fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput;
+}
+
 /// PP-OCR DBNet detection model (architecture-erased).
 pub struct PpocrDetectionModel {
     inner: Box<dyn PpocrDetectionArch>,
 }
 
 impl PpocrDetectionModel {
-    pub fn load(model_name: &str, path: &str, device: Device) -> Result<Self, String> {
+    pub fn load(
+        model_name: &str,
+        path: &str,
+        precision: &str,
+        device: Device,
+    ) -> Result<Self, String> {
         let inner: Box<dyn PpocrDetectionArch> = match model_name {
             "pp-ocrv5" => Box::new(PpOcrV5Detection {
-                model: pp_ocrv5::detection::Model::<Backend>::from_file(path, &device),
+                model: load_burnpack(
+                    pp_ocrv5::detection::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
+                device,
+            }),
+            "pp-ocrv5-server" => Box::new(PpOcrV5ServerDetection {
+                model: load_burnpack(
+                    pp_ocrv5_server::detection::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
                 device,
             }),
             other => return Err(unsupported("detection", other)),
@@ -55,10 +77,27 @@ pub struct PpocrRecognitionModel {
 }
 
 impl PpocrRecognitionModel {
-    pub fn load(model_name: &str, path: &str, device: Device) -> Result<Self, String> {
+    pub fn load(
+        model_name: &str,
+        path: &str,
+        precision: &str,
+        device: Device,
+    ) -> Result<Self, String> {
         let inner: Box<dyn PpocrRecognitionArch> = match model_name {
             "pp-ocrv5" => Box::new(PpOcrV5Recognition {
-                model: pp_ocrv5::recognition::Model::<Backend>::from_file(path, &device),
+                model: load_burnpack(
+                    pp_ocrv5::recognition::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
+                device,
+            }),
+            "pp-ocrv5-server" => Box::new(PpOcrV5ServerRecognition {
+                model: load_burnpack(
+                    pp_ocrv5_server::recognition::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
                 device,
             }),
             other => return Err(unsupported("recognition", other)),
@@ -68,6 +107,43 @@ impl PpocrRecognitionModel {
 
     /// Runs recognition on a `[1, C, H, W]` normalized crop, returning CTC
     /// logits `[1, seq_len, num_classes]`.
+    pub fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput {
+        self.inner.forward(pixels, c, h, w)
+    }
+}
+
+/// PP-OCR text-line orientation classification model (architecture-erased).
+///
+/// Only the server pack ships a classifier; it predicts whether a detected text
+/// crop is upright (0°) or upside-down (180°) so the task can rotate it before
+/// recognition.
+pub struct PpocrClassificationModel {
+    inner: Box<dyn PpocrClassificationArch>,
+}
+
+impl PpocrClassificationModel {
+    pub fn load(
+        model_name: &str,
+        path: &str,
+        precision: &str,
+        device: Device,
+    ) -> Result<Self, String> {
+        let inner: Box<dyn PpocrClassificationArch> = match model_name {
+            "pp-ocrv5-server" => Box::new(PpOcrV5ServerClassification {
+                model: load_burnpack(
+                    pp_ocrv5_server::classification::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
+                device,
+            }),
+            other => return Err(unsupported("classification", other)),
+        };
+        Ok(Self { inner })
+    }
+
+    /// Runs orientation classification on a `[1, C, H, W]` normalized crop,
+    /// returning class scores `[1, num_classes]` (typically `[p(0°), p(180°)]`).
     pub fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput {
         self.inner.forward(pixels, c, h, w)
     }
@@ -106,6 +182,62 @@ struct PpOcrV5Recognition {
 }
 
 impl PpocrRecognitionArch for PpOcrV5Recognition {
+    fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput {
+        let data = TensorData::new(pixels.to_vec(), [1, c, h, w]);
+        let input = Tensor::<Backend, 4>::from_data(data, &self.device);
+        let output = self.model.forward(input);
+        let shape = output.dims().to_vec();
+        TensorOutput {
+            values: tensor_to_f32(output),
+            shape,
+        }
+    }
+}
+
+// --- pp-ocrv5-server -------------------------------------------------------
+
+struct PpOcrV5ServerDetection {
+    model: pp_ocrv5_server::detection::Model<Backend>,
+    device: Device,
+}
+
+impl PpocrDetectionArch for PpOcrV5ServerDetection {
+    fn forward(&self, pixels: &[f32], height: usize, width: usize) -> TensorOutput {
+        let data = TensorData::new(pixels.to_vec(), [1, 3, height, width]);
+        let input = Tensor::<Backend, 4>::from_data(data, &self.device);
+        let output = self.model.forward(input);
+        let shape = output.dims().to_vec();
+        TensorOutput {
+            values: tensor_to_f32(output),
+            shape,
+        }
+    }
+}
+
+struct PpOcrV5ServerRecognition {
+    model: pp_ocrv5_server::recognition::Model<Backend>,
+    device: Device,
+}
+
+impl PpocrRecognitionArch for PpOcrV5ServerRecognition {
+    fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput {
+        let data = TensorData::new(pixels.to_vec(), [1, c, h, w]);
+        let input = Tensor::<Backend, 4>::from_data(data, &self.device);
+        let output = self.model.forward(input);
+        let shape = output.dims().to_vec();
+        TensorOutput {
+            values: tensor_to_f32(output),
+            shape,
+        }
+    }
+}
+
+struct PpOcrV5ServerClassification {
+    model: pp_ocrv5_server::classification::Model<Backend>,
+    device: Device,
+}
+
+impl PpocrClassificationArch for PpOcrV5ServerClassification {
     fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput {
         let data = TensorData::new(pixels.to_vec(), [1, c, h, w]);
         let input = Tensor::<Backend, 4>::from_data(data, &self.device);

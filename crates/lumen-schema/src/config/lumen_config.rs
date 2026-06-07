@@ -107,14 +107,23 @@ pub struct Deployment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Validate, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Mdns {
-    /// Enable mDNS service discovery.
-    #[serde(default)]
+    /// Enable mDNS service discovery (enabled by default).
+    #[serde(default = "default_mdns_enabled")]
     pub enabled: bool,
 
-    /// mDNS service name, required when `enabled` is true.
+    /// mDNS service name. Auto-generated as `lumen-hub-XXXXX` when not set.
     #[validate(regex(path = "*MDNS_SERVICE_NAME_RE"))]
     #[serde(default)]
     pub service_name: Option<String>,
+}
+
+impl Default for Mdns {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            service_name: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Validate, JsonSchema)]
@@ -130,7 +139,7 @@ pub struct ServerConfig {
 
     #[validate(nested)]
     #[serde(default)]
-    pub mdns: Option<Mdns>,
+    pub mdns: Mdns,
 
     /// Dynamic batching configuration for daemon-level request queues.
     #[validate(nested)]
@@ -368,21 +377,18 @@ impl LumenConfig {
     }
 
     fn validate_mdns(&self) -> Result<(), ConfigValidationError> {
-        if let Some(mdns) = &self.server.mdns {
-            if mdns.enabled && mdns.service_name.is_none() {
-                return Err(ConfigValidationError::Invalid(
-                    "server.mdns.service_name is required when server.mdns.enabled is true"
-                        .to_owned(),
-                ));
-            }
-        }
-
+        // mDNS is enabled by default; service_name is auto-generated
+        // at runtime when not provided, so no further validation is needed.
         Ok(())
     }
 }
 
 fn default_host() -> String {
     "0.0.0.0".to_owned()
+}
+
+fn default_mdns_enabled() -> bool {
+    true
 }
 
 fn default_batching_enabled() -> bool {
@@ -402,7 +408,7 @@ mod tests {
     use serde_json::json;
     use validator::Validate;
 
-    use super::{BatchingConfig, LumenConfig, Mode, Runtime, ServerConfig};
+    use super::{BatchingConfig, LumenConfig, Mdns, Mode, Runtime, ServerConfig};
 
     #[test]
     fn parses_and_validates_single_service_config() {
@@ -671,7 +677,47 @@ mod tests {
     }
 
     #[test]
-    fn requires_mdns_service_name_when_enabled() {
+    fn mdns_enabled_defaults_to_true() {
+        // mDNS is on by default even without explicit `enabled`.
+        let config = LumenConfig::from_json_str(
+            &json!({
+                "metadata": {
+                    "version": "1.0.0",
+                    "region": "cn",
+                    "cache_dir": "~/.lumen/models"
+                },
+                "deployment": {
+                    "mode": "single",
+                    "service": "clip"
+                },
+                "server": {
+                    "port": 50051
+                },
+                "services": {
+                    "clip": {
+                        "enabled": true,
+                        "package": "lumen_clip",
+                        "models": {
+                            "default": {
+                                "model": "ViT-B-32",
+                                "runtime": "burn"
+                            }
+                        }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("mDNS enabled by default");
+
+        assert!(config.server.mdns.enabled);
+        assert!(config.server.mdns.service_name.is_none());
+    }
+
+    #[test]
+    fn mdns_service_name_is_optional() {
+        // Explicitly enabling mDNS without a service_name is fine —
+        // the daemon auto-generates one at runtime.
         let config = LumenConfig::from_json_str(
             &json!({
                 "metadata": {
@@ -703,9 +749,11 @@ mod tests {
                 }
             })
             .to_string(),
-        );
+        )
+        .expect("mDNS with explicit enabled and no service name is valid");
 
-        assert!(config.is_err());
+        assert!(config.server.mdns.enabled);
+        assert!(config.server.mdns.service_name.is_none());
     }
 
     #[test]
@@ -751,7 +799,7 @@ mod tests {
         let server = ServerConfig {
             port: 50051,
             host: "127.0.0.1".to_owned(),
-            mdns: None,
+            mdns: Mdns::default(),
             batching: BatchingConfig::default(),
         };
 

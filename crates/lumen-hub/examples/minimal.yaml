@@ -1,6 +1,6 @@
 # Lumen Hub minimal beta config.
 #
-# Includes: OCR, SigLIP, InsightFace.
+# Includes: SigLIP, InsightFace.
 # Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
 # All models run on the Burn runtime.
 #
@@ -16,7 +16,6 @@ metadata:
 deployment:
     mode: hub
     services:
-        - ocr
         - siglip
         - face
 
@@ -29,16 +28,6 @@ server:
         queue_latency_ms: 2
 
 services:
-    # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.
-    ocr:
-        enabled: true
-        package: ppocr
-        models:
-            default:
-                model: pp-ocrv5
-                runtime: burn
-                precision: fp32
-
     # Minimum: RAM 3 GB, GPU/Unified memory 2 GB.
     siglip:
         enabled: true
@@ -47,7 +36,7 @@ services:
             default:
                 model: siglip2-base-patch16-224
                 runtime: burn
-                precision: fp32
+                precision: fp16q8
 
     # Minimum: RAM 1 GB, GPU/Unified memory 1 GB.
     face:
@@ -57,4 +46,4 @@ services:
             default:
                 model: antelopev2
                 runtime: burn
-                precision: fp32
+                precision: fp16q8

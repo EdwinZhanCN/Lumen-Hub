@@ -4,7 +4,7 @@ use lumen_schema::ServiceConfig;
 use serde::Deserialize;
 
 use super::factory::PpocrModelFactory;
-use super::task::{PpocrDetConfig, PpocrRecConfig, PpocrTask};
+use super::task::{PpocrClsConfig, PpocrDetConfig, PpocrRecConfig, PpocrTask};
 use crate::backend::{BACKEND_NAME, Device};
 use crate::service::{
     InferenceService, ServiceCapability, ServiceError, ServiceResult, TaskRegistry,
@@ -27,6 +27,9 @@ struct PpocrTaskMetadata {
 struct PpocrTaskConfig {
     detection: PpocrDetConfig,
     recognition: PpocrRecConfig,
+    /// Optional text-line orientation classifier (server pack only).
+    #[serde(default)]
+    classification: Option<PpocrClsConfig>,
 }
 
 impl PpocrService {
@@ -76,6 +79,19 @@ impl PpocrService {
                     precision,
                     &device,
                 )?;
+                let cls_model = task_config
+                    .classification
+                    .as_ref()
+                    .map(|cls| {
+                        factory.create_classification_model(
+                            model_name,
+                            runtime,
+                            &cls.component,
+                            precision,
+                            &device,
+                        )
+                    })
+                    .transpose()?;
                 let vocab = factory.load_vocab(
                     model_name,
                     &task_config.recognition.character_dict_path,
@@ -87,8 +103,10 @@ impl PpocrService {
                     model_name.clone(),
                     task_config.detection.clone(),
                     task_config.recognition.clone(),
+                    task_config.classification.clone(),
                     det_model,
                     rec_model,
+                    cls_model,
                     vocab,
                 )?;
 

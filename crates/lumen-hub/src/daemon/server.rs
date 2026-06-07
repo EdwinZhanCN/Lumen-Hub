@@ -1,5 +1,7 @@
 use std::{future::Future, net::SocketAddr, sync::Arc, time::Duration};
 
+#[cfg(test)]
+use lumen_schema::Mdns;
 use lumen_schema::ServerConfig;
 use tonic::transport::Server;
 
@@ -58,7 +60,7 @@ async fn serve_grpc_at_addr(
     config: &ServerConfig,
     addr: SocketAddr,
 ) -> DaemonResult<()> {
-    let _mdns = MdnsAdvertisement::register(config.mdns.as_ref(), addr.port())?;
+    let _mdns = MdnsAdvertisement::register(&config.mdns, addr.port())?;
     tracing::info!(%addr, services = hub.len(), "starting Lumen gRPC server");
 
     Server::builder()
@@ -81,7 +83,7 @@ async fn serve_grpc_at_addr_with_shutdown<S>(
 where
     S: Future<Output = ()> + Send + 'static,
 {
-    let _mdns = MdnsAdvertisement::register(config.mdns.as_ref(), addr.port())?;
+    let _mdns = MdnsAdvertisement::register(&config.mdns, addr.port())?;
     tracing::info!(%addr, services = hub.len(), "starting Lumen gRPC server");
 
     Server::builder()
@@ -149,7 +151,7 @@ mod tests {
         ServerConfig {
             port,
             host: host.to_owned(),
-            mdns: None,
+            mdns: Mdns::default(),
             batching: Default::default(),
         }
     }

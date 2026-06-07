@@ -93,7 +93,7 @@ impl SiglipModelFactory {
         device: &Device,
     ) -> ServiceResult<SiglipTextModel> {
         let path = self.component_path_str(model_name, runtime, "text", precision)?;
-        SiglipTextModel::load(model_name, &path, device.clone())
+        SiglipTextModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 
@@ -105,7 +105,7 @@ impl SiglipModelFactory {
         device: &Device,
     ) -> ServiceResult<SiglipVisionModel> {
         let path = self.component_path_str(model_name, runtime, "vision", precision)?;
-        SiglipVisionModel::load(model_name, &path, device.clone())
+        SiglipVisionModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 

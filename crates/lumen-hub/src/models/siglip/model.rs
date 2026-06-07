@@ -12,6 +12,7 @@
 use burn::tensor::{Int, Tensor, TensorData};
 
 use crate::backend::{Backend, Device};
+use crate::model_arch::load_burnpack;
 use crate::model_arch::siglip2_base_patch16_224 as base_patch16_224;
 use crate::model_arch::siglip2_so400m_patch14_384 as so400m_patch14_384;
 
@@ -34,18 +35,31 @@ pub struct SiglipTextModel {
 
 impl SiglipTextModel {
     /// Loads the text encoder for `model_name` from its `.bpk` weights.
-    pub fn load(model_name: &str, path: &str, device: Device) -> Result<Self, String> {
+    pub fn load(
+        model_name: &str,
+        path: &str,
+        precision: &str,
+        device: Device,
+    ) -> Result<Self, String> {
         let (inner, seq_len): (Box<dyn SiglipTextArch>, usize) = match model_name {
             "siglip2-base-patch16-224" => (
                 Box::new(BasePatch16Text {
-                    model: base_patch16_224::text::Model::<Backend>::from_file(path, &device),
+                    model: load_burnpack(
+                        base_patch16_224::text::Model::<Backend>::new(&device),
+                        path,
+                        precision,
+                    )?,
                     device,
                 }),
                 64,
             ),
             "siglip2-so400m-patch14-384" => (
                 Box::new(So400mText {
-                    model: so400m_patch14_384::text::Model::<Backend>::from_file(path, &device),
+                    model: load_burnpack(
+                        so400m_patch14_384::text::Model::<Backend>::new(&device),
+                        path,
+                        precision,
+                    )?,
                     device,
                 }),
                 64,
@@ -67,14 +81,27 @@ pub struct SiglipVisionModel {
 
 impl SiglipVisionModel {
     /// Loads the vision encoder for `model_name` from its `.bpk` weights.
-    pub fn load(model_name: &str, path: &str, device: Device) -> Result<Self, String> {
+    pub fn load(
+        model_name: &str,
+        path: &str,
+        precision: &str,
+        device: Device,
+    ) -> Result<Self, String> {
         let inner: Box<dyn SiglipVisionArch> = match model_name {
             "siglip2-base-patch16-224" => Box::new(BasePatch16Vision {
-                model: base_patch16_224::vision::Model::<Backend>::from_file(path, &device),
+                model: load_burnpack(
+                    base_patch16_224::vision::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
                 device,
             }),
             "siglip2-so400m-patch14-384" => Box::new(So400mVision {
-                model: so400m_patch14_384::vision::Model::<Backend>::from_file(path, &device),
+                model: load_burnpack(
+                    so400m_patch14_384::vision::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
                 device,
             }),
             other => return Err(unsupported(other)),

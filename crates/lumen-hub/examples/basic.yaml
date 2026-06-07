@@ -1,14 +1,12 @@
 # Lumen Hub basic beta config.
 #
-# Includes: OCR, SigLIP, InsightFace, BioCLIP.
+# Includes: SigLIP, InsightFace, OCR.
 # Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
 # All models run on the Burn runtime.
 #
 # Total minimum requirement:
-#   RAM: 16 GB
-#   GPU/Unified memory: 6 GB
-#
-# BioCLIP uses the smaller TreeOfLife200MCore dataset in this profile.
+#   RAM: 8 GB
+#   GPU/Unified memory: 4 GB
 
 metadata:
     version: "0.1.0"
@@ -18,10 +16,9 @@ metadata:
 deployment:
     mode: hub
     services:
-        - ocr
         - siglip
         - face
-        - bioclip
+        - ocr
 
 server:
     host: "0.0.0.0"
@@ -32,16 +29,6 @@ server:
         queue_latency_ms: 2
 
 services:
-    # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.
-    ocr:
-        enabled: true
-        package: ppocr
-        models:
-            default:
-                model: pp-ocrv5
-                runtime: burn
-                precision: fp32
-
     # Minimum: RAM 3 GB, GPU/Unified memory 2 GB.
     siglip:
         enabled: true
@@ -50,7 +37,7 @@ services:
             default:
                 model: siglip2-base-patch16-224
                 runtime: burn
-                precision: fp32
+                precision: fp16q8
 
     # Minimum: RAM 1 GB, GPU/Unified memory 1 GB.
     face:
@@ -60,15 +47,14 @@ services:
             default:
                 model: antelopev2
                 runtime: burn
-                precision: fp32
+                precision: fp16q8
 
-    # Minimum: RAM 8 GB, GPU/Unified memory 3 GB.
-    bioclip:
+    # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.
+    ocr:
         enabled: true
-        package: clip
+        package: ppocr
         models:
             default:
-                model: bioclip-2
+                model: pp-ocrv5-server
                 runtime: burn
-                precision: fp32
-                dataset: TreeOfLife200MCore
+                precision: fp16q8
