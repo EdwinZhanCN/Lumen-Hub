@@ -1,0 +1,10 @@
+# Large model artifacts — provenance is the source ONNX, not these.
+onnx/**/*.onnx
+onnx/**/*.onnx_data
+onnx/**/*_data
+out/
+target/
+.DS_Store
+**/.DS_Store
+__pycache__/
+**/__pycache__/

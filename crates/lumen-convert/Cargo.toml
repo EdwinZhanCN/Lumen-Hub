@@ -1,0 +1,33 @@
+[package]
+name = "lumen-convert"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Offline weight-only int8 quantization toolchain. Not part of the lumen-hub
+# runtime build. Reuses lumen-hub's generated model_arch (cpu/NdArray backend,
+# which implements the quantization ops) to read fp32 .bpk and emit int8 .bpk.
+
+[dependencies]
+lumen-hub = { path = "../lumen-hub", default-features = false, features = [
+    "cpu",
+    "siglip",
+    "clip",
+    "ppocr",
+    "insightface",
+] }
+lumen-quant-core = { path = "../lumen-quant-core" }
+burn = { version = "0.21.0", default-features = false, features = [
+    "std",
+    "ndarray",
+] }
+burn-store = { version = "0.21.0", default-features = false, features = [
+    "burnpack",
+    "std",
+] }
+image = "0.25.10"
+
+[build-dependencies]
+# ONNX -> Burn architecture codegen. Generates a `Model<B>` + fp32 `.bpk` per
+# prepared ONNX into OUT_DIR; see build.rs and tools/onnx_prep.py.
+burn-onnx = "0.21.0"

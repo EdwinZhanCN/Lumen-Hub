@@ -46,6 +46,7 @@ hnswlib-rs = "0.5.0"
 image = "0.25.10"
 indicatif = "0.18.3"
 imageproc = { version = "0.26", optional = true }
+lumen-quant-core = { path = "../lumen-quant-core" }
 lumen-schema = { path = "../lumen-schema" }
 memmap2 = "0.9.9"
 minijinja = "2.9.2"

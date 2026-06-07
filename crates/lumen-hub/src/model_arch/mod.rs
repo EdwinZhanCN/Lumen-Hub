@@ -17,6 +17,8 @@
 
 use burn::nn::conv::Conv2d;
 use burn::prelude::*;
+use burn_store::{BurnpackStore, HalfPrecisionAdapter, ModuleSnapshot};
+use lumen_quant_core::{QuantConfig, RuntimeQ8Quantizer};
 
 /// Convolution forward that works around a burn-wgpu correctness bug in the
 /// 1×1 (pointwise) convolution kernel.
@@ -50,6 +52,55 @@ pub fn conv_fwd<B: Backend>(conv: &Conv2d<B>, x: Tensor<B, 4>) -> Tensor<B, 4> {
     conv.forward(x)
 }
 
+/// Returns `true` when a configured precision tag denotes fp16 weight storage.
+pub fn is_fp16_precision(precision: &str) -> bool {
+    precision.eq_ignore_ascii_case("fp16") || precision.eq_ignore_ascii_case("fp16q8")
+}
+
+/// Returns `true` when fp16 weights should be quantized to Q8 after loading.
+pub fn is_runtime_q8_precision(precision: &str) -> bool {
+    precision.eq_ignore_ascii_case("fp16q8")
+}
+
+/// Loads burnpack weights into a freshly-constructed module.
+///
+/// The generated `Model::from_file` reads each tensor at its on-disk dtype, which
+/// is correct for fp32 artifacts. An fp16 artifact (produced by Burn-Convert's
+/// `convert_weights` via [`HalfPrecisionAdapter`]) instead stores its
+/// weight-bearing modules (Linear/Conv/Norm/Embedding/PRelu) as f16 while the
+/// model graph's synthesized constants and the service's input tensors stay f32 —
+/// mixing the two panics inside burn-ir with `DTypeMismatch`.
+///
+/// For fp16 storage we attach the same [`HalfPrecisionAdapter`] on load: it casts
+/// the f16 weight modules back to f32 (leaving the already-f32 constants alone), so
+/// the loaded module is uniformly f32. fp16 is therefore a storage/transfer saving
+/// here, not f16 compute.
+///
+/// `fp16q8` uses the same on-disk fp16 burnpack format, then quantizes eligible
+/// weights in memory to Q8. This avoids saving/reloading QFloat burnpacks, which
+/// is currently not reliable on CubeCL/Metal.
+pub fn load_burnpack<B: Backend, M: ModuleSnapshot<B> + Module<B>>(
+    mut model: M,
+    path: &str,
+    precision: &str,
+) -> Result<M, String> {
+    let mut store = BurnpackStore::from_file(path);
+    if is_fp16_precision(precision) {
+        store = store.with_from_adapter(HalfPrecisionAdapter::new());
+    }
+    model
+        .load_from(&mut store)
+        .map_err(|err| format!("failed to load burnpack weights from `{path}`: {err}"))?;
+    if is_runtime_q8_precision(precision) {
+        model = quantize_runtime_q8(model);
+    }
+    Ok(model)
+}
+
+fn quantize_runtime_q8<B: Backend, M: Module<B>>(model: M) -> M {
+    model.map(&mut RuntimeQ8Quantizer::<B>::new(&QuantConfig::default()))
+}
+
 // Each submodule directory holds the generated architecture for one model
 // repository (named after its `model_info.json` `name`). Adding a new model
 // variant — e.g. a `siglip2_so400m_patch14_384` or a `buffalo_l` face pack —
@@ -68,6 +119,9 @@ pub mod siglip2_so400m_patch14_384;
 
 #[cfg(feature = "ppocr")]
 pub mod pp_ocrv5;
+
+#[cfg(feature = "ppocr")]
+pub mod pp_ocrv5_server;
 
 #[cfg(feature = "insightface")]
 pub mod antelopev2;

@@ -1,0 +1,11 @@
+[package]
+name = "lumen-quant-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Shared selective int8 quantization primitives used by both lumen-hub (runtime
+# fp16q8 path) and lumen-convert (offline artifact generation).
+
+[dependencies]
+burn = { version = "0.21.0", default-features = false, features = ["std"] }
