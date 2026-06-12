@@ -61,7 +61,7 @@ cargo build --release --no-default-features --features metal,siglip,ppocr,insigh
 ```
 
 Backend features (pick one; priority cuda > rocm > vulkan > metal > wgpu > cpu):
-`cpu` (ndarray), `metal`, `vulkan`, `wgpu`, `cuda`, `rocm`.
+`cpu` (Burn Flex), `metal`, `vulkan`, `wgpu`, `cuda`, `rocm`.
 Model features: `siglip`, `ppocr`, `insightface`, `clip` (BioCLIP).
 
 Requires Rust 1.94+ (pinned in `rust-toolchain.toml`).

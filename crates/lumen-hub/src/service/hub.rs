@@ -10,6 +10,13 @@ use crate::service::{
 /// The hub owns service instances and routes task requests to the selected
 /// service. Protocol adapters such as gRPC should translate transport messages
 /// into `TaskRequest` values before calling into this type.
+///
+/// GPU submission safety: CubeCL's Metal/wgpu backend deadlocks when multiple
+/// threads submit GPU commands concurrently, so all model forward passes are
+/// funneled through the single-threaded `inference_worker`. Task handlers may
+/// run concurrently here; only their CPU-side work (decode, preprocessing,
+/// serialization) overlaps, which keeps the GPU fed instead of idling while a
+/// request decodes its input.
 #[derive(Default)]
 pub struct ServiceHub {
     services: HashMap<String, Arc<dyn InferenceService>>,

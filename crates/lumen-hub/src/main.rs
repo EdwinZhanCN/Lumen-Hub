@@ -20,8 +20,9 @@ use lumen_hub::models::ppocr::PpocrService;
 #[cfg(feature = "siglip")]
 use lumen_hub::models::siglip::SiglipService;
 use lumen_hub::{
-    backend::default_device,
+    backend::{configure_runtime, default_device},
     daemon::{DaemonError, bind_addr, serve_grpc_with_shutdown},
+    inference_worker,
     model_download::{ModelDownloadError, ensure_models_for_config},
     service::ServiceHub,
     warmup::{WarmupError, default_warmup_dir, run_startup_warmup},
@@ -39,19 +40,20 @@ use tracing::{
     subscriber::{Interest, SetGlobalDefaultError, set_global_default},
 };
 
-/// Stack size for the runtime driver thread and the blocking pool.
+/// Stack size for the runtime driver thread and the inference worker.
 ///
 /// The ONNX-generated model `new`/`forward` functions are monolithic with very
 /// large stack frames; on GPU backends (where tensor handles are larger than
-/// ndarray's) the default ~2 MB thread stack overflows. Model construction runs on
-/// the runtime *driver* thread, and inference runs on `spawn_blocking` pool threads,
+/// Flex CPU's) the default ~2 MB thread stack overflows. Model construction runs on
+/// the dedicated inference worker, and the Tokio runtime still drives async IO,
 /// so both need a generous stack.
 const RUNTIME_STACK_SIZE: usize = 256 * 1024 * 1024;
 
 fn main() {
+    configure_runtime();
+
     // Drive the runtime from a thread with a large stack so model construction
-    // (which happens on the `block_on` thread) does not overflow; `thread_stack_size`
-    // covers the worker + `spawn_blocking` pool threads where inference runs.
+    // around startup and async orchestration does not overflow.
     let worker = std::thread::Builder::new()
         .stack_size(RUNTIME_STACK_SIZE)
         .spawn(run_main)
@@ -107,7 +109,11 @@ where
     ensure_models_for_config(&config, &cache_dir)?;
 
     info!("building service hub");
-    let hub = build_service_hub_from_config(&config, &cache_dir)?;
+    let hub_config = config.clone();
+    let hub_cache_dir = cache_dir.clone();
+    let hub =
+        inference_worker::run(move || build_service_hub_from_config(&hub_config, &hub_cache_dir))
+            .await??;
     info!("running mandatory warmup");
     run_startup_warmup(&hub, &default_warmup_dir()).await?;
 
@@ -673,6 +679,9 @@ enum StartupError {
     #[error("startup warmup failed: {0}")]
     Warmup(#[from] WarmupError),
 
+    #[error("inference worker failed: {0}")]
+    InferenceWorker(#[from] inference_worker::InferenceWorkerError),
+
     #[error("failed to initialize logging: {0}")]
     Logging(#[from] SetGlobalDefaultError),
 
@@ -758,7 +767,14 @@ mod tests {
 
     #[test]
     fn load_config_accepts_yaml_examples() {
-        for name in ["minimal.yaml", "basic.yaml", "brave.yaml"] {
+        for name in [
+            "minimal.yaml",
+            "basic.yaml",
+            "brave.yaml",
+            "bench-siglip.yaml",
+            "bench-bioclip.yaml",
+            "bench-mixed-siglip-bioclip.yaml",
+        ] {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("examples")
                 .join(name);

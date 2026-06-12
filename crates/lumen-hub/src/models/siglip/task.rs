@@ -9,16 +9,20 @@ use lumen_schema::EmbeddingV1;
 use serde::{Deserialize, Deserializer, de};
 
 use super::model::{SiglipTextModel, SiglipVisionModel};
-use crate::service::{
-    BatchKey, DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, META_INPUT_KIND, META_MODEL_ID,
-    META_MODEL_VERSION, ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult,
-    TaskSpec, TensorDescriptor, TensorValidationOptions, bytes_to_f32_le, validate_tensor_request,
+use crate::{
+    inference_worker,
+    service::{
+        BatchKey, DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, META_INPUT_KIND, META_MODEL_ID,
+        META_MODEL_VERSION, PREPROCESS_SIGLIP2_BASE_PATCH16_224_IMAGE,
+        PREPROCESS_SIGLIP2_SO400M_PATCH14_384_IMAGE, ServiceError, ServiceResult, TaskHandler,
+        TaskRequest, TaskResult, TaskSpec, TensorDescriptor, TensorValidationOptions,
+        bytes_to_f32_le, validate_tensor_request,
+    },
 };
 
 const SUPPORTED_IMAGE_INPUT_MIMES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/avif"];
 const IMAGE_TENSOR_LAYOUT: &str = "NCHW";
-const SIGLIP_IMAGE_PREPROCESS_ID: &str = "siglip_image_preprocess_v1";
 const TENSOR_INPUT_DTYPE: &str = "fp32";
 
 /// SigLIP image preprocessing settings loaded from `model_info.json`
@@ -58,13 +62,17 @@ impl SiglipImagePreprocessConfig {
         })?;
         let mut rgb = image.to_rgb8();
 
-        if self.do_resize {
-            rgb = resize_shortest_edge(&rgb, self.resize_shortest_edge, self.filter);
-        }
-
         if self.do_center_crop {
+            // CLIP-style: resize shortest edge, then center crop.
+            if self.do_resize {
+                rgb = resize_shortest_edge(&rgb, self.resize_shortest_edge, self.filter);
+            }
             rgb = center_crop(&rgb, self.crop_width, self.crop_height, self.filter);
         } else if rgb.width() != self.crop_width || rgb.height() != self.crop_height {
+            // SigLIP-style (HF `do_center_crop=false`): a single direct resize
+            // to the target size, ignoring aspect ratio. A shortest-edge
+            // pre-pass would add a second resampling pass that training-time
+            // preprocessing does not have.
             rgb = imageops::resize(&rgb, self.crop_width, self.crop_height, self.filter);
         }
 
@@ -352,6 +360,7 @@ pub struct SiglipImageEmbedTask {
     model: Arc<SiglipVisionModel>,
     model_id: String,
     preprocess: SiglipImagePreprocessConfig,
+    tensor_preprocess_id: String,
 }
 
 impl SiglipImageEmbedTask {
@@ -361,16 +370,21 @@ impl SiglipImageEmbedTask {
         model_id: impl Into<String>,
         preprocess: SiglipImagePreprocessConfig,
     ) -> Self {
+        let tensor_preprocess_id = siglip_tensor_preprocess_id(&preprocess.output_shape())
+            .unwrap_or(PREPROCESS_SIGLIP2_BASE_PATCH16_224_IMAGE)
+            .to_owned();
         Self {
             spec: TaskSpec::new(
                 task_name,
                 "SigLIP vision encoder -> L2-normalized embedding",
             )
             .with_input_mimes(image_input_mimes_with_tensor())
-            .with_output_mime("application/json;schema=embedding_v1"),
+            .with_output_mime("application/json;schema=embedding_v1")
+            .with_tensor_fast_path(&tensor_preprocess_id, true),
             model,
             model_id: model_id.into(),
             preprocess,
+            tensor_preprocess_id,
         }
     }
 
@@ -380,7 +394,7 @@ impl SiglipImageEmbedTask {
             TensorValidationOptions {
                 dtype: TENSOR_INPUT_DTYPE,
                 layout: IMAGE_TENSOR_LAYOUT,
-                preprocess_id: SIGLIP_IMAGE_PREPROCESS_ID,
+                preprocess_id: &self.tensor_preprocess_id,
             },
         )?;
         let expected_shape = self.preprocess.output_shape();
@@ -436,7 +450,7 @@ impl TaskHandler for SiglipImageEmbedTask {
             descriptor.layout,
             descriptor.format,
             descriptor.byte_order,
-            SIGLIP_IMAGE_PREPROCESS_ID
+            self.tensor_preprocess_id
         ))))
     }
 
@@ -491,15 +505,23 @@ impl TaskHandler for SiglipImageEmbedTask {
     }
 }
 
-/// Runs a blocking inference closure on the tokio blocking pool.
+/// Runs a blocking inference closure on the dedicated inference worker.
 async fn run_blocking<F, T>(f: F) -> ServiceResult<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
+    inference_worker::run(f)
         .await
-        .map_err(|e| ServiceError::Internal(format!("inference task failed: {e}")))
+        .map_err(|e| ServiceError::Internal(format!("inference worker failed: {e}")))
+}
+
+fn siglip_tensor_preprocess_id(shape: &[usize]) -> Option<&'static str> {
+    match shape {
+        [1, 3, 224, 224] => Some(PREPROCESS_SIGLIP2_BASE_PATCH16_224_IMAGE),
+        [1, 3, 384, 384] => Some(PREPROCESS_SIGLIP2_SO400M_PATCH14_384_IMAGE),
+        _ => None,
+    }
 }
 
 fn image_input_mimes_with_tensor() -> Vec<String> {

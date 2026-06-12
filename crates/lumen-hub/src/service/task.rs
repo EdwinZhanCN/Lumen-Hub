@@ -26,6 +26,8 @@ pub struct TaskSpec {
     pub output_mimes: Vec<String>,
     pub limits: HashMap<String, String>,
     pub metadata: HashMap<String, String>,
+    pub tensor_preprocess_id: String,
+    pub tensor_batching_supported: bool,
 }
 
 impl TaskSpec {
@@ -37,6 +39,8 @@ impl TaskSpec {
             output_mimes: Vec::new(),
             limits: HashMap::new(),
             metadata: HashMap::new(),
+            tensor_preprocess_id: String::new(),
+            tensor_batching_supported: false,
         }
     }
 
@@ -70,6 +74,16 @@ impl TaskSpec {
 
     pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_tensor_fast_path(
+        mut self,
+        tensor_preprocess_id: impl Into<String>,
+        tensor_batching_supported: bool,
+    ) -> Self {
+        self.tensor_preprocess_id = tensor_preprocess_id.into();
+        self.tensor_batching_supported = tensor_batching_supported;
         self
     }
 }

@@ -5,12 +5,12 @@
 //! the quantization policy stays in sync across both paths.
 
 use burn::module::{ModuleMapper, Param};
+use burn::tensor::Tensor;
 use burn::tensor::backend::Backend;
 use burn::tensor::ops::QuantizedTensor;
 use burn::tensor::quantization::{
     QTensorPrimitive, QuantLevel, QuantScheme, QuantStore, QuantValue,
 };
-use burn::tensor::Tensor;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -166,7 +166,8 @@ impl SelectiveQuantizer {
 
 impl<B: Backend> ModuleMapper<B> for SelectiveQuantizer {
     fn enter_module(&mut self, _name: &str, container_type: &str) {
-        self.stack.push(WeightKind::from_container_type(container_type));
+        self.stack
+            .push(WeightKind::from_container_type(container_type));
     }
 
     fn exit_module(&mut self, _name: &str, _container_type: &str) {
@@ -261,7 +262,8 @@ impl<B: Backend> RuntimeQ8Quantizer<B> {
 
 impl<B: Backend> ModuleMapper<B> for RuntimeQ8Quantizer<B> {
     fn enter_module(&mut self, _name: &str, container_type: &str) {
-        self.stack.push(WeightKind::from_container_type(container_type));
+        self.stack
+            .push(WeightKind::from_container_type(container_type));
     }
 
     fn exit_module(&mut self, _name: &str, _container_type: &str) {
@@ -273,11 +275,7 @@ impl<B: Backend> ModuleMapper<B> for RuntimeQ8Quantizer<B> {
             return param;
         }
 
-        let kind = self
-            .stack
-            .last()
-            .copied()
-            .unwrap_or(WeightKind::None);
+        let kind = self.stack.last().copied().unwrap_or(WeightKind::None);
         if kind == WeightKind::None {
             return param;
         }

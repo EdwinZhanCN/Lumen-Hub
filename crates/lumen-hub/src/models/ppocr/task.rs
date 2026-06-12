@@ -8,10 +8,13 @@ use serde::Deserialize;
 
 use super::model::{PpocrClassificationModel, PpocrDetectionModel, PpocrRecognitionModel};
 use super::postprocess::{ctc_greedy_decode, detect_boxes};
-use crate::service::{
-    DEFAULT_TENSOR_MIME, META_MODEL_ID, PREPROCESS_PPOCR_DET, ServiceError, ServiceResult,
-    TaskHandler, TaskRequest, TaskResult, TaskSpec, bytes_to_f32_le, is_tensor_input_request,
-    parse_source_dimensions, validate_dynamic_det_tensor_request,
+use crate::{
+    inference_worker,
+    service::{
+        DEFAULT_TENSOR_MIME, META_MODEL_ID, PREPROCESS_PPOCR_DET, ServiceError, ServiceResult,
+        TaskHandler, TaskRequest, TaskResult, TaskSpec, bytes_to_f32_le, is_tensor_input_request,
+        parse_source_dimensions, validate_dynamic_det_tensor_request,
+    },
 };
 
 const SUPPORTED_IMAGE_MIMES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/avif"];
@@ -464,15 +467,15 @@ impl TaskHandler for PpocrTask {
     }
 }
 
-/// Runs a blocking inference closure on the tokio blocking pool.
+/// Runs a blocking inference closure on the dedicated inference worker.
 async fn run_blocking<F, T>(f: F) -> ServiceResult<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
+    inference_worker::run(f)
         .await
-        .map_err(|e| ServiceError::Internal(format!("inference task failed: {e}")))
+        .map_err(|e| ServiceError::Internal(format!("inference worker failed: {e}")))
 }
 
 // ---------------------------------------------------------------------------

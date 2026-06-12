@@ -1,0 +1,43 @@
+# Lumen Hub benchmark config: BioCLIP classification only.
+#
+# Scenario:
+#   - Hub service: bioclip
+#   - Benchmark task: bioclip_classify
+#   - Dataset: CUB-200-2011 sample-500
+#
+# Notes:
+#   - Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
+#   - mDNS is disabled because benchmark clients should use a static gRPC address.
+#   - Tensor batching is disabled: batch>1 regresses on Metal/CubeCL
+#     (see docs/lumen-hub-tensor-batching-decision.md).
+
+metadata:
+  version: "0.1.0"
+  region: other
+  cache_dir: "~/.lumen/models"
+
+deployment:
+  mode: hub
+  services:
+    - bioclip
+
+server:
+  host: "127.0.0.1"
+  port: 50051
+  mdns:
+    enabled: false
+  batching:
+    enabled: false
+    max_batch_size: 8
+    queue_latency_ms: 2
+
+services:
+  bioclip:
+    enabled: true
+    package: clip
+    models:
+      default:
+        model: bioclip-2
+        runtime: burn
+        precision: fp16q8
+        dataset: TreeOfLife200MCore

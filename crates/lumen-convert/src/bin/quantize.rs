@@ -92,7 +92,7 @@ fn convert<M, L, N, E>(
     }
     let device = default_device();
     let fp32 = load(&fp32_path, &device);
-    // In-binary forward validation runs on the ndarray CPU backend, where int8
+    // In-binary forward validation runs on the CPU/Flex backend, where int8
     // inference is slow; set LUMEN_CONVERT_NO_VALIDATE=1 to skip it (validate the
     // artifact separately on a GPU backend instead).
     let validate = std::env::var_os("LUMEN_CONVERT_NO_VALIDATE").is_none();

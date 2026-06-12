@@ -391,8 +391,14 @@ fn default_mdns_enabled() -> bool {
     true
 }
 
+// Disabled by default: on the Metal/CubeCL backend, batched vision inference
+// costs more GPU time per image than back-to-back single-image jobs
+// (SigLIP fp16q8 on M2 Pro: batch=1 ~40ms/img, batch=2 ~95ms/img,
+// batch=4 ~96ms/img, batch=8 ~45ms/img), so concurrent batch-1 pipelining
+// is both faster and lower-memory. Re-enable per deployment only after
+// benchmarks show a win for the target backend.
 fn default_batching_enabled() -> bool {
-    true
+    false
 }
 
 fn default_max_batch_size() -> usize {
@@ -446,7 +452,7 @@ mod tests {
 
         assert_eq!(config.deployment.mode, Mode::Single);
         assert_eq!(config.server.host, "0.0.0.0");
-        assert!(config.server.batching.enabled);
+        assert!(!config.server.batching.enabled);
         assert_eq!(config.server.batching.max_batch_size, 8);
         assert_eq!(config.server.batching.queue_latency_ms, 2);
         assert!(config.service_enabled("clip"));

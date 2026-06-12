@@ -749,7 +749,9 @@ dependencies = [
  "burn-backend",
  "burn-ir",
  "burn-std",
+ "bytemuck",
  "const-random",
+ "itertools 0.14.0",
  "libm",
  "macerator",
  "matrixmultiply",
@@ -759,6 +761,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "rand 0.10.1",
+ "seq-macro",
 ]
 
 [[package]]
@@ -3740,9 +3743,11 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "burn",
+ "burn-flex",
  "burn-store",
  "bytes",
  "console",
+ "cubecl-runtime",
  "half",
  "hnswlib-rs",
  "image",

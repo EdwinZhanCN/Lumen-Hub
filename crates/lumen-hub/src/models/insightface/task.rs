@@ -7,11 +7,14 @@ use serde::Deserialize;
 
 use super::metadata::{InsightFaceDetectionSpec, InsightFacePackSpec, InsightFaceRecognitionSpec};
 use super::model::{InsightFaceDetectionModel, InsightFaceRecognitionModel, TensorOutput};
-use crate::service::{
-    DEFAULT_TENSOR_MIME, FixedShapeTensorValidationOptions, IMAGE_TENSOR_LAYOUT,
-    LetterboxTransform, META_MODEL_ID, PREPROCESS_INSIGHTFACE_DET, ServiceError, ServiceResult,
-    TaskHandler, TaskRequest, TaskResult, TaskSpec, bytes_to_f32_le, is_tensor_input_request,
-    parse_letterbox_transform, parse_source_dimensions, validate_fixed_shape_tensor_request,
+use crate::{
+    inference_worker,
+    service::{
+        DEFAULT_TENSOR_MIME, FixedShapeTensorValidationOptions, IMAGE_TENSOR_LAYOUT,
+        LetterboxTransform, META_MODEL_ID, PREPROCESS_INSIGHTFACE_DET, ServiceError, ServiceResult,
+        TaskHandler, TaskRequest, TaskResult, TaskSpec, bytes_to_f32_le, is_tensor_input_request,
+        parse_letterbox_transform, parse_source_dimensions, validate_fixed_shape_tensor_request,
+    },
 };
 
 const SUPPORTED_IMAGE_MIMES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/avif"];
@@ -250,15 +253,15 @@ impl TaskHandler for InsightFaceTask {
     }
 }
 
-/// Runs a blocking inference closure on the tokio blocking pool.
+/// Runs a blocking inference closure on the dedicated inference worker.
 async fn run_blocking<F, T>(f: F) -> ServiceResult<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
+    inference_worker::run(f)
         .await
-        .map_err(|e| ServiceError::Internal(format!("inference task failed: {e}")))
+        .map_err(|e| ServiceError::Internal(format!("inference worker failed: {e}")))
 }
 
 fn image_input_mimes_with_tensor() -> Vec<String> {

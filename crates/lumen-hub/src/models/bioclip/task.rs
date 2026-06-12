@@ -6,16 +6,19 @@ use lumen_schema::{Label, LabelsV1};
 use super::dataset::BioClipDataset;
 use super::model::BioClipVisionModel;
 use super::preprocess::ClipImagePreprocessConfig;
-use crate::service::{
-    BatchKey, DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, META_INPUT_KIND, META_MODEL_ID,
-    META_MODEL_VERSION, ServiceError, ServiceResult, TaskHandler, TaskRequest, TaskResult,
-    TaskSpec, TensorDescriptor, TensorValidationOptions, bytes_to_f32_le, validate_tensor_request,
+use crate::{
+    inference_worker,
+    service::{
+        BatchKey, DEFAULT_TENSOR_MIME, INPUT_KIND_TENSOR, META_INPUT_KIND, META_MODEL_ID,
+        META_MODEL_VERSION, PREPROCESS_BIOCLIP2_224_IMAGE, ServiceError, ServiceResult,
+        TaskHandler, TaskRequest, TaskResult, TaskSpec, TensorDescriptor, TensorValidationOptions,
+        bytes_to_f32_le, validate_tensor_request,
+    },
 };
 
 const SUPPORTED_IMAGE_INPUT_MIMES: [&str; 4] =
     ["image/jpeg", "image/png", "image/webp", "image/avif"];
 const IMAGE_TENSOR_LAYOUT: &str = "NCHW";
-const CLIP_IMAGE_PREPROCESS_ID: &str = "clip_image_preprocess_v1";
 const TENSOR_INPUT_DTYPE: &str = "fp32";
 const BIOCLIP_DEFAULT_TOP_K: usize = 5;
 const BIOCLIP_TOP_K_META_KEYS: [&str; 5] = ["TopK", "topK", "top_k", "top-k", "lumen.top_k"];
@@ -49,7 +52,8 @@ impl BioClipClassifyTask {
             .with_input_mimes(image_input_mimes_with_tensor())
             .with_output_mime(lumen_schema::mime::LABELS_V1_JSON)
             .with_metadata("output_schema", "labels_v1")
-            .with_metadata("dataset", dataset_name),
+            .with_metadata("dataset", dataset_name)
+            .with_tensor_fast_path(PREPROCESS_BIOCLIP2_224_IMAGE, true),
             model,
             model_id: model_id.into(),
             preprocess,
@@ -64,7 +68,7 @@ impl BioClipClassifyTask {
             TensorValidationOptions {
                 dtype: TENSOR_INPUT_DTYPE,
                 layout: IMAGE_TENSOR_LAYOUT,
-                preprocess_id: CLIP_IMAGE_PREPROCESS_ID,
+                preprocess_id: PREPROCESS_BIOCLIP2_224_IMAGE,
             },
         )?;
         let expected_shape = self.preprocess.output_shape();
@@ -139,7 +143,7 @@ impl TaskHandler for BioClipClassifyTask {
             descriptor.layout,
             descriptor.format,
             descriptor.byte_order,
-            CLIP_IMAGE_PREPROCESS_ID
+            PREPROCESS_BIOCLIP2_224_IMAGE
         ))))
     }
 
@@ -187,15 +191,15 @@ impl TaskHandler for BioClipClassifyTask {
     }
 }
 
-/// Runs a blocking inference closure on the tokio blocking pool.
+/// Runs a blocking inference closure on the dedicated inference worker.
 async fn run_blocking<F, T>(f: F) -> ServiceResult<T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(f)
+    inference_worker::run(f)
         .await
-        .map_err(|e| ServiceError::Internal(format!("inference task failed: {e}")))
+        .map_err(|e| ServiceError::Internal(format!("inference worker failed: {e}")))
 }
 
 fn top_k_from_request(request: &TaskRequest, max_len: usize) -> ServiceResult<usize> {

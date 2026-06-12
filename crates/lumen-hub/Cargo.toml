@@ -23,24 +23,32 @@ siglip = []
 # highest-priority one wins (see `src/backend.rs`): cuda > rocm > vulkan > metal
 # > wgpu > cpu. `cpu` is part of the default set so `--features metal` simply
 # overrides it.
+#
+# CPU uses Burn Flex instead of the legacy NdArray backend. Because the top-level
+# burn dependency is built with default-features disabled, we explicitly activate
+# burn-flex with rayon + SIMD so CPU inference uses the multi-core/vectorized
+# execution paths.
+#
 # Fusion is enabled for GPU backends: the deep antelopev2 graph overflows the
 # stack in eager mode, and fusion also batches kernels for throughput. burn-store
 # keeps only the burnpack reader (no GPU features) to avoid a second, conflicting
 # burn-wgpu feature activation.
-cpu = ["burn/ndarray"]
-metal = ["burn/metal", "burn/fusion"]
-vulkan = ["burn/vulkan", "burn/fusion"]
-wgpu = ["burn/wgpu", "burn/fusion"]
-cuda = ["burn/cuda", "burn/fusion"]
-rocm = ["burn/rocm", "burn/fusion"]
+cpu = ["burn/flex", "burn/simd", "dep:burn-flex"]
+metal = ["burn/metal", "burn/fusion", "dep:cubecl-runtime"]
+vulkan = ["burn/vulkan", "burn/fusion", "dep:cubecl-runtime"]
+wgpu = ["burn/wgpu", "burn/fusion", "dep:cubecl-runtime"]
+cuda = ["burn/cuda", "burn/fusion", "dep:cubecl-runtime"]
+rocm = ["burn/rocm", "burn/fusion", "dep:cubecl-runtime"]
 
 [dependencies]
 async-trait = "0.1.89"
 base64 = "0.22.1"
 burn = { version = "0.21.0", default-features = false, features = ["std"] }
+burn-flex = { version = "0.21.0", default-features = false, features = ["std", "simd", "rayon"], optional = true }
 burn-store = { version = "0.21.0", default-features = false, features = ["burnpack", "std", "memmap"] }
 bytes = "1.11.1"
 console = "0.16.1"
+cubecl-runtime = { version = "0.10.0", default-features = false, features = ["std"], optional = true }
 half = "2.7.1"
 hnswlib-rs = "0.5.0"
 image = "0.25.10"

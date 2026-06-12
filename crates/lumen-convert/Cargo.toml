@@ -5,8 +5,8 @@ edition = "2024"
 publish = false
 
 # Offline weight-only int8 quantization toolchain. Not part of the lumen-hub
-# runtime build. Reuses lumen-hub's generated model_arch (cpu/NdArray backend,
-# which implements the quantization ops) to read fp32 .bpk and emit int8 .bpk.
+# runtime build. Reuses lumen-hub's generated model_arch with the CPU/Flex
+# backend to read fp32 .bpk and emit int8 .bpk.
 
 [dependencies]
 lumen-hub = { path = "../lumen-hub", default-features = false, features = [

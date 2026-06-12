@@ -138,7 +138,14 @@ async fn run_queue(
             continue;
         }
 
+        let batch_size = pending.len();
+        let started = std::time::Instant::now();
         flush(pending, &batch_fn).await;
+        tracing::debug!(
+            batch_size,
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "batch flushed"
+        );
     }
 }
 

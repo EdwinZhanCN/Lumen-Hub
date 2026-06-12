@@ -24,7 +24,7 @@ server:
     host: "0.0.0.0"
     port: 50051
     batching:
-        enabled: true
+        enabled: false
         max_batch_size: 8
         queue_latency_ms: 2
 

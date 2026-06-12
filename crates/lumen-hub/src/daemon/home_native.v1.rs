@@ -28,6 +28,12 @@ pub struct IoTask {
         ::prost::alloc::string::String,
         ::prost::alloc::string::String,
     >,
+    /// Empty means this task has no client-side tensor fast path.
+    #[prost(string, tag = "5")]
+    pub tensor_preprocess_id: ::prost::alloc::string::String,
+    /// True means tensor requests for this task can be dynamically batched by the Hub.
+    #[prost(bool, tag = "6")]
+    pub tensor_batching_supported: bool,
 }
 /// ---- Capability declaration (retrieve at startup or on demand) ----
 #[derive(Clone, PartialEq, ::prost::Message)]

@@ -4,7 +4,7 @@
 //! classification on a cat.
 //!
 //! Run on Metal: cargo test --features metal --test e2e_int8_spotcheck -- --nocapture
-//! (int8 inference is slow on the ndarray CPU backend — use a GPU backend.)
+//! (int8 inference is slow on the CPU backend — use a GPU backend.)
 
 mod common;
 

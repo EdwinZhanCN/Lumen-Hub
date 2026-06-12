@@ -45,13 +45,16 @@ impl ClipImagePreprocessConfig {
         })?;
         let mut rgb = image.to_rgb8();
 
-        if self.do_resize {
-            rgb = resize_shortest_edge(&rgb, self.resize_shortest_edge, self.filter);
-        }
-
         if self.do_center_crop {
+            // CLIP-style: resize shortest edge, then center crop.
+            if self.do_resize {
+                rgb = resize_shortest_edge(&rgb, self.resize_shortest_edge, self.filter);
+            }
             rgb = center_crop(&rgb, self.crop_width, self.crop_height, self.filter);
         } else if rgb.width() != self.crop_width || rgb.height() != self.crop_height {
+            // HF `do_center_crop=false`: a single direct resize to the target
+            // size; a shortest-edge pre-pass would add a resampling pass that
+            // training-time preprocessing does not have.
             rgb = imageops::resize(&rgb, self.crop_width, self.crop_height, self.filter);
         }
 

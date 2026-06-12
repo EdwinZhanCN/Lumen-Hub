@@ -35,6 +35,18 @@ impl HubGrpcService {
         &self.hub
     }
 
+    /// Converts a capability for wire reporting, masking tensor batching
+    /// support when the daemon batcher is disabled.
+    fn reported_capability(&self, capability: ServiceCapability) -> v1::Capability {
+        let mut capability = v1::Capability::from(capability);
+        if !self.batcher.config().enabled {
+            for task in &mut capability.tasks {
+                task.tensor_batching_supported = false;
+            }
+        }
+        capability
+    }
+
     async fn handle_messages(
         &self,
         messages: Vec<v1::InferRequest>,
@@ -123,7 +135,9 @@ impl v1::inference_server::Inference for HubGrpcService {
             return Err(Status::unavailable("no inference services registered"));
         }
 
-        Ok(Response::new(capabilities.remove(0).into()))
+        Ok(Response::new(
+            self.reported_capability(capabilities.remove(0)),
+        ))
     }
 
     type StreamCapabilitiesStream = ResponseStream<v1::Capability>;
@@ -132,13 +146,14 @@ impl v1::inference_server::Inference for HubGrpcService {
         &self,
         _request: Request<()>,
     ) -> Result<Response<Self::StreamCapabilitiesStream>, Status> {
-        let stream = tonic::codegen::tokio_stream::iter(
-            self.hub
-                .capabilities()
-                .into_iter()
-                .map(v1::Capability::from)
-                .map(Ok),
-        );
+        let capabilities = self
+            .hub
+            .capabilities()
+            .into_iter()
+            .map(|capability| self.reported_capability(capability))
+            .map(Ok)
+            .collect::<Vec<_>>();
+        let stream = tonic::codegen::tokio_stream::iter(capabilities);
         Ok(Response::new(Box::pin(stream)))
     }
 
@@ -378,6 +393,8 @@ impl From<&TaskSpec> for v1::IoTask {
             input_mimes: spec.input_mimes.clone(),
             output_mimes: spec.output_mimes.clone(),
             limits: spec.limits.clone(),
+            tensor_preprocess_id: spec.tensor_preprocess_id.clone(),
+            tensor_batching_supported: spec.tensor_batching_supported,
         }
     }
 }
@@ -792,7 +809,8 @@ mod tests {
             .with_input_mimes(["image/jpeg", "image/png"])
             .with_output_mime("application/json;schema=embedding_v1")
             .with_limit("max_payload_size", "52428800")
-            .with_metadata("not_in_proto", "kept_service_side");
+            .with_metadata("not_in_proto", "kept_service_side")
+            .with_tensor_fast_path("siglip2_base_patch16_224_image_v1", true);
 
         let proto = v1::IoTask::from(&spec);
 
@@ -807,6 +825,11 @@ mod tests {
             Some(&"52428800".to_owned())
         );
         assert!(!proto.limits.contains_key("not_in_proto"));
+        assert_eq!(
+            proto.tensor_preprocess_id,
+            "siglip2_base_patch16_224_image_v1"
+        );
+        assert!(proto.tensor_batching_supported);
     }
 
     #[test]

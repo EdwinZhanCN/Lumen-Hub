@@ -35,8 +35,11 @@ pub const META_LETTERBOX_SCALE: &str = "lumen.letterbox.scale";
 pub const META_LETTERBOX_PAD_X: &str = "lumen.letterbox.pad_x";
 pub const META_LETTERBOX_PAD_Y: &str = "lumen.letterbox.pad_y";
 
-pub const PREPROCESS_CLIP_IMAGE: &str = "clip_image_preprocess_v1";
-pub const PREPROCESS_SIGLIP_IMAGE: &str = "siglip_image_preprocess_v1";
+pub const PREPROCESS_BIOCLIP2_224_IMAGE: &str = "bioclip2_224_image_v1";
+pub const PREPROCESS_SIGLIP2_BASE_PATCH16_224_IMAGE: &str = "siglip2_base_patch16_224_image_v1";
+pub const PREPROCESS_SIGLIP2_SO400M_PATCH14_384_IMAGE: &str = "siglip2_so400m_patch14_384_image_v1";
+pub const PREPROCESS_CLIP_IMAGE: &str = PREPROCESS_BIOCLIP2_224_IMAGE;
+pub const PREPROCESS_SIGLIP_IMAGE: &str = PREPROCESS_SIGLIP2_BASE_PATCH16_224_IMAGE;
 pub const PREPROCESS_PPOCR_DET: &str = "ppocr_det_v1";
 pub const PREPROCESS_INSIGHTFACE_DET: &str = "insightface_det_v1";
 

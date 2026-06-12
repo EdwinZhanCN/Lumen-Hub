@@ -1,0 +1,70 @@
+# Lumen Hub config: full Lumilio Photos service set on one hub.
+#
+# Pairs with Photos ML queues: semantic_image_embed, ocr, face_recognition
+# (ingest-triggered) plus semantic_text_embed and bioclip_classify (on demand).
+#
+# Services: SigLIP (semantic embed), PP-OCR, InsightFace, BioCLIP (TreeOfLife core).
+# Backend: build-time cargo features (metal for this run).
+# Batching: disabled (schema default) — batch>1 is a regression on Metal/CubeCL,
+# see docs/lumen-hub-tensor-batching-decision.md.
+
+metadata:
+  version: "0.1.0"
+  region: other
+  cache_dir: "~/.lumen/models"
+
+deployment:
+  mode: hub
+  services:
+    - siglip
+    - face
+    - ocr
+    - bioclip
+
+server:
+  host: "0.0.0.0"
+  port: 50051
+  mdns:
+    enabled: true
+  batching:
+    enabled: false
+    max_batch_size: 8
+    queue_latency_ms: 2
+
+services:
+  siglip:
+    enabled: true
+    package: siglip
+    models:
+      default:
+        model: siglip2-base-patch16-224
+        runtime: burn
+        precision: fp16q8
+
+  face:
+    enabled: true
+    package: insightface
+    models:
+      default:
+        model: antelopev2
+        runtime: burn
+        precision: fp16q8
+
+  ocr:
+    enabled: true
+    package: ppocr
+    models:
+      default:
+        model: pp-ocrv5-server
+        runtime: burn
+        precision: fp16q8
+
+  bioclip:
+    enabled: true
+    package: clip
+    models:
+      default:
+        model: bioclip-2
+        runtime: burn
+        precision: fp16q8
+        dataset: TreeOfLife200MCore
