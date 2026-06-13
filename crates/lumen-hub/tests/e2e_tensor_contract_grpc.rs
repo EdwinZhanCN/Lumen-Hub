@@ -42,7 +42,18 @@ const TASK_FACE_RECOGNITION: &str = "face_recognition";
 
 #[tokio::test]
 async fn grpc_reports_thin_tensor_capabilities_and_protocol_version() {
-    let harness = start_harness(contract_hub(), BatcherConfig::disabled()).await;
+    // Batcher enabled so the reported capability reflects each task's declared
+    // tensor fast-path contract; the disabled-batcher masking is covered by
+    // `grpc_masks_tensor_batching_when_batcher_disabled`.
+    let harness = start_harness(
+        contract_hub(),
+        BatcherConfig {
+            enabled: true,
+            max_batch_size: 8,
+            queue_latency: Duration::from_millis(2),
+        },
+    )
+    .await;
     let mut client = harness.client().await;
 
     let capabilities = collect_capabilities(&mut client).await;
@@ -85,6 +96,33 @@ async fn grpc_reports_thin_tensor_capabilities_and_protocol_version() {
         SERVICE_FACE,
         TASK_FACE_RECOGNITION,
         "",
+        false,
+    );
+}
+
+#[tokio::test]
+async fn grpc_masks_tensor_batching_when_batcher_disabled() {
+    // When the daemon batcher is off (the default), the Hub must not advertise
+    // tensor_batching_supported: clients would otherwise expect concurrent
+    // tensor requests to be batched when they will not be. The tensor fast path
+    // (preprocess_id) stays advertised so clients still use tensor input.
+    let harness = start_harness(contract_hub(), BatcherConfig::disabled()).await;
+    let mut client = harness.client().await;
+
+    let capabilities = collect_capabilities(&mut client).await;
+
+    assert_task_contract(
+        &capabilities,
+        SERVICE_SIGLIP,
+        TASK_SEMANTIC_IMAGE_EMBED,
+        PREPROCESS_SIGLIP2_BASE_PATCH16_224_IMAGE,
+        false,
+    );
+    assert_task_contract(
+        &capabilities,
+        SERVICE_BIOCLIP,
+        TASK_BIOCLIP_CLASSIFY,
+        PREPROCESS_BIOCLIP2_224_IMAGE,
         false,
     );
 }
