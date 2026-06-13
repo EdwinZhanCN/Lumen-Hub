@@ -865,9 +865,13 @@ fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: &Pat
         preset.components.join(", ")
     ));
     yaml.push_str(&format!(
-        "# Total minimum requirement: RAM {} GB, GPU/Unified memory {} GB, disk {} GB.\n\n",
+        "# Resource guidance: RAM {} GB, GPU/Unified memory {} GB, disk {} GB.\n",
         preset.min_ram_gb, preset.min_vram_gb, preset.min_disk_gb
     ));
+    yaml.push_str(
+        "# Weights and BioCLIP catalogs are memory-mapped: they load on demand and\n\
+         # do not all count as resident RAM. A brief warmup spike is reclaimed after startup.\n\n",
+    );
     yaml.push_str("metadata:\n");
     yaml.push_str("  version: \"0.1.0\"\n");
     yaml.push_str(&format!("  region: {region}\n"));
@@ -884,16 +888,15 @@ fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: &Pat
     yaml.push_str("\nserver:\n");
     yaml.push_str("  host: \"0.0.0.0\"\n");
     yaml.push_str("  port: 50051\n");
+    // Dynamic batching is off: on Metal/CubeCL batch>1 regresses per-image
+    // latency, so concurrent batch-1 inference is faster and lower-memory.
     yaml.push_str("  batching:\n");
-    yaml.push_str("    enabled: true\n");
+    yaml.push_str("    enabled: false\n");
     yaml.push_str("    max_batch_size: 8\n");
     yaml.push_str("    queue_latency_ms: 2\n\n");
     yaml.push_str("services:\n");
     let siglip = siglip_preset_config(preset, backend);
-    yaml.push_str(&format!(
-        "  # Minimum: RAM {} GB, GPU/Unified memory {} GB.\n",
-        siglip.min_ram_gb, siglip.min_vram_gb
-    ));
+    yaml.push_str("  # SigLIP: semantic image + text embeddings.\n");
     yaml.push_str("  siglip:\n");
     yaml.push_str("    enabled: true\n");
     yaml.push_str("    package: siglip\n");
@@ -903,7 +906,7 @@ fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: &Pat
     yaml.push_str(&format!("        runtime: {}\n", backend.semantic_runtime));
     yaml.push_str(&format!("        precision: {}\n\n", siglip.precision));
 
-    yaml.push_str("  # Minimum: RAM 1 GB, GPU/Unified memory 1 GB.\n");
+    yaml.push_str("  # InsightFace antelopev2: face detection + recognition.\n");
     yaml.push_str("  face:\n");
     yaml.push_str("    enabled: true\n");
     yaml.push_str("    package: insightface\n");
@@ -915,24 +918,27 @@ fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: &Pat
 
     if preset.includes("ocr") {
         yaml.push('\n');
-        yaml.push_str("  # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.\n");
+        yaml.push_str("  # PP-OCRv6 small: in-image text detection + recognition.\n");
         yaml.push_str("  ocr:\n");
         yaml.push_str("    enabled: true\n");
         yaml.push_str("    package: ppocr\n");
         yaml.push_str("    models:\n");
         yaml.push_str("      default:\n");
-        yaml.push_str("        model: pp-ocrv5-server\n");
+        yaml.push_str("        model: pp-ocrv6-small\n");
         yaml.push_str(&format!("        runtime: {}\n", backend.cv_runtime));
         yaml.push_str("        precision: fp16q8\n");
     }
 
     if preset.includes("bioclip") {
         yaml.push('\n');
-        yaml.push_str(&format!(
-            "  # Minimum: RAM {} GB, GPU/Unified memory {} GB.\n",
-            if preset.name == "brave" { 16 } else { 8 },
-            if preset.name == "brave" { 4 } else { 3 }
-        ));
+        // brave uses the full TreeOfLife200M catalog for long-tail species
+        // coverage; other presets use the smaller Core subset.
+        let dataset = if preset.name == "brave" {
+            "TreeOfLife200M"
+        } else {
+            "TreeOfLife200MCore"
+        };
+        yaml.push_str("  # BioCLIP-2: species classification over the Tree of Life catalog.\n");
         yaml.push_str("  bioclip:\n");
         yaml.push_str("    enabled: true\n");
         yaml.push_str("    package: clip\n");
@@ -944,7 +950,7 @@ fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: &Pat
             "        precision: {}\n",
             backend.semantic_precision
         ));
-        yaml.push_str("        dataset: TreeOfLife200MCore\n");
+        yaml.push_str(&format!("        dataset: {dataset}\n"));
     }
 
     yaml
@@ -954,8 +960,6 @@ fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: &Pat
 struct SiglipPresetConfig {
     model: &'static str,
     precision: &'static str,
-    min_ram_gb: u64,
-    min_vram_gb: u64,
 }
 
 fn siglip_preset_config(preset: Preset, backend: Backend) -> SiglipPresetConfig {
@@ -963,15 +967,11 @@ fn siglip_preset_config(preset: Preset, backend: Backend) -> SiglipPresetConfig 
         SiglipPresetConfig {
             model: "siglip2-so400m-patch14-384",
             precision: backend.semantic_precision,
-            min_ram_gb: 4,
-            min_vram_gb: 3,
         }
     } else {
         SiglipPresetConfig {
             model: "siglip2-base-patch16-224",
             precision: backend.semantic_precision,
-            min_ram_gb: 3,
-            min_vram_gb: 2,
         }
     }
 }
@@ -1242,26 +1242,31 @@ struct Preset {
 impl Preset {
     fn all() -> &'static [Self] {
         &[
+            // RAM/VRAM/disk are measured guidance (Apple M2 Pro, Metal,
+            // fp16q8). Weights and BioCLIP catalogs are memory-mapped, so model
+            // size lands on disk and cold faults, not resident RAM; the RAM
+            // figures cover the Hub working set plus same-host Photos/OS. See
+            // docs/lumen-hub-tensor-batching-decision.md.
             Self {
                 name: "minimal",
                 components: &["siglip", "face"],
-                min_ram_gb: 8,
-                min_vram_gb: 4,
-                min_disk_gb: 8,
+                min_ram_gb: 4,
+                min_vram_gb: 2,
+                min_disk_gb: 2,
             },
             Self {
                 name: "basic",
-                components: &["siglip", "face", "ocr"],
-                min_ram_gb: 8,
-                min_vram_gb: 4,
-                min_disk_gb: 10,
+                components: &["siglip", "face", "ocr", "bioclip"],
+                min_ram_gb: 6,
+                min_vram_gb: 3,
+                min_disk_gb: 6,
             },
             Self {
                 name: "brave",
                 components: &["siglip", "face", "ocr", "bioclip"],
-                min_ram_gb: 32,
-                min_vram_gb: 12,
-                min_disk_gb: 40,
+                min_ram_gb: 8,
+                min_vram_gb: 4,
+                min_disk_gb: 10,
             },
         ]
     }
@@ -1627,7 +1632,7 @@ mod tests {
             Path::new("/tmp/lumen"),
         );
         assert!(config.contains("model: siglip2-so400m-patch14-384"));
-        assert!(config.contains("model: pp-ocrv5-server"));
+        assert!(config.contains("model: pp-ocrv6-small"));
         assert!(config.contains("runtime: burn"));
         assert!(config.contains("precision: fp16q8"));
     }
@@ -1648,7 +1653,7 @@ mod tests {
     }
 
     #[test]
-    fn basic_preset_adds_ocr_without_bioclip() {
+    fn basic_preset_adds_ocr_and_core_bioclip() {
         let config = render_config(
             Preset::all()[1],
             "other",
@@ -1656,11 +1661,24 @@ mod tests {
             Path::new("/tmp/lumen"),
         );
         assert!(config.contains(
-            "deployment:\n  mode: hub\n  services:\n    - siglip\n    - face\n    - ocr"
+            "deployment:\n  mode: hub\n  services:\n    - siglip\n    - face\n    - ocr\n    - bioclip"
         ));
-        assert!(config.contains("model: pp-ocrv5-server"));
-        assert!(!config.contains("\n  bioclip:\n"));
-        assert!(!config.contains("dataset:"));
+        assert!(config.contains("model: siglip2-base-patch16-224"));
+        assert!(config.contains("model: pp-ocrv6-small"));
+        assert!(config.contains("\n  bioclip:\n"));
+        assert!(config.contains("dataset: TreeOfLife200MCore"));
+    }
+
+    #[test]
+    fn presets_disable_batching() {
+        for preset in Preset::all() {
+            let config = render_config(*preset, "other", Backend::metal(), Path::new("/tmp/lumen"));
+            assert!(
+                config.contains("batching:\n    enabled: false"),
+                "{} preset must disable batching",
+                preset.name
+            );
+        }
     }
 
     #[test]
@@ -1732,7 +1750,10 @@ mod tests {
             Backend::metal(),
             Path::new("/tmp/lumen"),
         );
-        assert!(config.contains("dataset: TreeOfLife200MCore"));
+        // Match with the trailing newline so the full dataset is not satisfied
+        // by the "TreeOfLife200MCore" substring.
+        assert!(config.contains("dataset: TreeOfLife200M\n"));
+        assert!(!config.contains("dataset: TreeOfLife200MCore"));
     }
 
     #[test]
