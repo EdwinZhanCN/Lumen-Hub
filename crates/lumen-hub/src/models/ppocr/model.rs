@@ -10,7 +10,7 @@ use burn::tensor::{Tensor, TensorData};
 
 use crate::backend::{Backend, Device};
 use crate::model_arch::load_burnpack;
-use crate::model_arch::{pp_ocrv5, pp_ocrv5_server};
+use crate::model_arch::{pp_ocrv5, pp_ocrv5_server, pp_ocrv6_small};
 
 /// A flat tensor result paired with its shape.
 pub struct TensorOutput {
@@ -59,6 +59,14 @@ impl PpocrDetectionModel {
                 )?,
                 device,
             }),
+            "pp-ocrv6-small" => Box::new(PpOcrV6SmallDetection {
+                model: load_burnpack(
+                    pp_ocrv6_small::detection::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
+                device,
+            }),
             other => return Err(unsupported("detection", other)),
         };
         Ok(Self { inner })
@@ -100,6 +108,14 @@ impl PpocrRecognitionModel {
                 )?,
                 device,
             }),
+            "pp-ocrv6-small" => Box::new(PpOcrV6SmallRecognition {
+                model: load_burnpack(
+                    pp_ocrv6_small::recognition::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
+                device,
+            }),
             other => return Err(unsupported("recognition", other)),
         };
         Ok(Self { inner })
@@ -114,9 +130,9 @@ impl PpocrRecognitionModel {
 
 /// PP-OCR text-line orientation classification model (architecture-erased).
 ///
-/// Only the server pack ships a classifier; it predicts whether a detected text
-/// crop is upright (0°) or upside-down (180°) so the task can rotate it before
-/// recognition.
+/// Server-oriented PP-OCR packs can ship a classifier; it predicts whether a
+/// detected text crop is upright (0°) or upside-down (180°) so the task can
+/// rotate it before recognition.
 pub struct PpocrClassificationModel {
     inner: Box<dyn PpocrClassificationArch>,
 }
@@ -132,6 +148,14 @@ impl PpocrClassificationModel {
             "pp-ocrv5-server" => Box::new(PpOcrV5ServerClassification {
                 model: load_burnpack(
                     pp_ocrv5_server::classification::Model::<Backend>::new(&device),
+                    path,
+                    precision,
+                )?,
+                device,
+            }),
+            "pp-ocrv6-small" => Box::new(PpOcrV6SmallClassification {
+                model: load_burnpack(
+                    pp_ocrv6_small::classification::Model::<Backend>::new(&device),
                     path,
                     precision,
                 )?,
@@ -238,6 +262,62 @@ struct PpOcrV5ServerClassification {
 }
 
 impl PpocrClassificationArch for PpOcrV5ServerClassification {
+    fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput {
+        let data = TensorData::new(pixels.to_vec(), [1, c, h, w]);
+        let input = Tensor::<Backend, 4>::from_data(data, &self.device);
+        let output = self.model.forward(input);
+        let shape = output.dims().to_vec();
+        TensorOutput {
+            values: tensor_to_f32(output),
+            shape,
+        }
+    }
+}
+
+// --- pp-ocrv6-small --------------------------------------------------------
+
+struct PpOcrV6SmallDetection {
+    model: pp_ocrv6_small::detection::Model<Backend>,
+    device: Device,
+}
+
+impl PpocrDetectionArch for PpOcrV6SmallDetection {
+    fn forward(&self, pixels: &[f32], height: usize, width: usize) -> TensorOutput {
+        let data = TensorData::new(pixels.to_vec(), [1, 3, height, width]);
+        let input = Tensor::<Backend, 4>::from_data(data, &self.device);
+        let output = self.model.forward(input);
+        let shape = output.dims().to_vec();
+        TensorOutput {
+            values: tensor_to_f32(output),
+            shape,
+        }
+    }
+}
+
+struct PpOcrV6SmallRecognition {
+    model: pp_ocrv6_small::recognition::Model<Backend>,
+    device: Device,
+}
+
+impl PpocrRecognitionArch for PpOcrV6SmallRecognition {
+    fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput {
+        let data = TensorData::new(pixels.to_vec(), [1, c, h, w]);
+        let input = Tensor::<Backend, 4>::from_data(data, &self.device);
+        let output = self.model.forward(input);
+        let shape = output.dims().to_vec();
+        TensorOutput {
+            values: tensor_to_f32(output),
+            shape,
+        }
+    }
+}
+
+struct PpOcrV6SmallClassification {
+    model: pp_ocrv6_small::classification::Model<Backend>,
+    device: Device,
+}
+
+impl PpocrClassificationArch for PpOcrV6SmallClassification {
     fn forward(&self, pixels: &[f32], c: usize, h: usize, w: usize) -> TensorOutput {
         let data = TensorData::new(pixels.to_vec(), [1, c, h, w]);
         let input = Tensor::<Backend, 4>::from_data(data, &self.device);

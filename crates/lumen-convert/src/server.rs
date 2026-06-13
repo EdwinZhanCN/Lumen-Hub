@@ -1,6 +1,6 @@
-//! Burn architectures generated from the pp-ocrv5-server ONNX by `build.rs`
+//! Burn architectures generated from PP-OCR ONNX graphs by `build.rs`
 //! (burn-onnx `ModelGen`). The `.rs` + fp32 `.bpk` live in `OUT_DIR`; these modules
-//! `include!` the generated code so the quantize binary can load and quantize them.
+//! `include!` the generated code so helper binaries can stage/export them.
 //!
 //! Once validated these graduate into `lumen-hub/src/model_arch/` for runtime use.
 #![allow(
@@ -32,4 +32,30 @@ pub mod classification {
         env!("OUT_DIR"),
         "/pp_ocrv5_server/classification/classification.rs"
     ));
+}
+
+pub mod pp_ocrv6_small {
+    pub mod detection {
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/pp_ocrv6_small/detection/detection.rs"
+        ));
+    }
+
+    pub mod recognition {
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/pp_ocrv6_small/recognition/recognition.rs"
+        ));
+    }
+
+    // PP-OCRv6-small uses the text-line orientation classifier too. As with the
+    // server pack above, onnx_prep pins a static [1,3,48,192] crop so burn-onnx
+    // can fold the dynamic shape subgraph away.
+    pub mod classification {
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/pp_ocrv6_small/classification/classification.rs"
+        ));
+    }
 }

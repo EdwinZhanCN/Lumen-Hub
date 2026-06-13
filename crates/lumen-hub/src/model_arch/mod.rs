@@ -123,5 +123,8 @@ pub mod pp_ocrv5;
 #[cfg(feature = "ppocr")]
 pub mod pp_ocrv5_server;
 
+#[cfg(feature = "ppocr")]
+pub mod pp_ocrv6_small;
+
 #[cfg(feature = "insightface")]
 pub mod antelopev2;

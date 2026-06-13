@@ -25,6 +25,18 @@ fn main() {
             "onnx/pp-ocrv5-server/classification.prepared.onnx",
             "pp_ocrv5_server/classification/",
         ),
+        (
+            "onnx/pp-ocrv6-small/detection.prepared.onnx",
+            "pp_ocrv6_small/detection/",
+        ),
+        (
+            "onnx/pp-ocrv6-small/recognition.prepared.onnx",
+            "pp_ocrv6_small/recognition/",
+        ),
+        (
+            "onnx/pp-ocrv6-small/classification.prepared.onnx",
+            "pp_ocrv6_small/classification/",
+        ),
     ];
 
     for (input, out_dir) in models {
