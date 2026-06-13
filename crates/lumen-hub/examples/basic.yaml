@@ -1,12 +1,20 @@
-# Lumen Hub basic beta config.
+# Lumen Hub basic profile.
 #
-# Includes: SigLIP, InsightFace, OCR.
+# Services: SigLIP (semantic), InsightFace (face), PP-OCR (text), BioCLIP
+# (species). The full Lumilio Photos feature set on economical models: adds
+# OCR text search and biodiversity classification on top of the minimal core.
+#
 # Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
-# All models run on the Burn runtime.
+# All models run on the Burn runtime at fp16q8.
 #
-# Total minimum requirement:
-#   RAM: 8 GB
-#   GPU/Unified memory: 4 GB
+# Resource guidance (measured on Apple M2 Pro, Metal, fp16q8):
+#   System RAM:      6 GB   (Hub working set ~2.4 GB under load + Photos/OS).
+#   GPU/Unified mem: 3 GB
+#   Model disk:      ~5.5 GB  (incl. BioCLIP TreeOfLife200MCore catalog).
+#
+# Note: model weights and the BioCLIP catalog are memory-mapped, so they load
+# on demand and do not all count as resident RAM. A brief warmup spike
+# (~4.5 GB unified) is reclaimed once startup completes.
 
 metadata:
     version: "0.1.0"
@@ -19,17 +27,21 @@ deployment:
         - siglip
         - face
         - ocr
+        - bioclip
 
 server:
     host: "0.0.0.0"
     port: 50051
+    # Dynamic batching is off: on Metal/CubeCL batch>1 regresses per-image
+    # latency, so concurrent batch-1 inference is faster and lower-memory.
+    # See docs/lumen-hub-tensor-batching-decision.md.
     batching:
         enabled: false
         max_batch_size: 8
         queue_latency_ms: 2
 
 services:
-    # Minimum: RAM 3 GB, GPU/Unified memory 2 GB.
+    # SigLIP base: semantic image + text embeddings (768-dim).
     siglip:
         enabled: true
         package: siglip
@@ -39,7 +51,7 @@ services:
                 runtime: burn
                 precision: fp16q8
 
-    # Minimum: RAM 1 GB, GPU/Unified memory 1 GB.
+    # InsightFace antelopev2: face detection + recognition.
     face:
         enabled: true
         package: insightface
@@ -49,12 +61,25 @@ services:
                 runtime: burn
                 precision: fp16q8
 
-    # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.
+    # PP-OCRv6 small: in-image text detection + recognition.
     ocr:
         enabled: true
         package: ppocr
         models:
             default:
-                model: pp-ocrv5-server
+                model: pp-ocrv6-small
                 runtime: burn
                 precision: fp16q8
+
+    # BioCLIP-2 with the TreeOfLife200MCore catalog: species classification.
+    # Core is a curated subset of the full Tree of Life taxa, enough for
+    # everyday biodiversity tagging at a fraction of the disk footprint.
+    bioclip:
+        enabled: true
+        package: clip
+        models:
+            default:
+                model: bioclip-2
+                runtime: burn
+                precision: fp16q8
+                dataset: TreeOfLife200MCore

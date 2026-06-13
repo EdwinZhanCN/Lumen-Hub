@@ -1,14 +1,22 @@
-# Lumen Hub brave beta config.
+# Lumen Hub brave profile.
 #
-# Includes: SigLIP, InsightFace, OCR, BioCLIP.
+# Services: SigLIP so400m (semantic), InsightFace (face), PP-OCR (text),
+# BioCLIP (species). The full Lumilio Photos feature set on the strongest
+# models: the so400m vision encoder for higher-quality semantic embeddings and
+# the complete TreeOfLife200M catalog for widest species coverage.
+#
 # Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
-# All models run on the Burn runtime.
+# All models run on the Burn runtime at fp16q8.
 #
-# Total minimum requirement:
-#   RAM: 32 GB
-#   GPU/Unified memory: 12 GB
+# Resource guidance (measured on Apple M2 Pro, Metal, fp16q8):
+#   System RAM:      8 GB   (Hub working set ~3.2 GB under load + Photos/OS).
+#   GPU/Unified mem: 4 GB
+#   Model disk:      ~8 GB   (incl. full BioCLIP TreeOfLife200M catalog).
 #
-# BioCLIP uses the full TreeOfLife200MCore dataset in this profile.
+# Note: model weights and the BioCLIP catalog are memory-mapped, so the larger
+# so400m weights and full Tree of Life catalog load on demand and do not all
+# count as resident RAM (measured footprint is close to the basic profile). A
+# brief warmup spike (~5.6 GB unified) is reclaimed once startup completes.
 
 metadata:
     version: "0.1.0"
@@ -26,13 +34,17 @@ deployment:
 server:
     host: "0.0.0.0"
     port: 50051
+    # Dynamic batching is off: on Metal/CubeCL batch>1 regresses per-image
+    # latency, so concurrent batch-1 inference is faster and lower-memory.
+    # See docs/lumen-hub-tensor-batching-decision.md.
     batching:
-        enabled: true
+        enabled: false
         max_batch_size: 8
         queue_latency_ms: 2
 
 services:
-    # Minimum: RAM 4 GB, GPU/Unified memory 3 GB.
+    # SigLIP so400m (patch14, 384px): higher-quality semantic embeddings than
+    # the base encoder, at a larger model and slower per-image inference.
     siglip:
         enabled: true
         package: siglip
@@ -42,7 +54,7 @@ services:
                 runtime: burn
                 precision: fp16q8
 
-    # Minimum: RAM 1 GB, GPU/Unified memory 1 GB.
+    # InsightFace antelopev2: face detection + recognition.
     face:
         enabled: true
         package: insightface
@@ -52,17 +64,18 @@ services:
                 runtime: burn
                 precision: fp16q8
 
-    # Minimum: RAM 1 GB, GPU/Unified memory 512 MB.
+    # PP-OCRv6 small: in-image text detection + recognition.
     ocr:
         enabled: true
         package: ppocr
         models:
             default:
-                model: pp-ocrv5-server
+                model: pp-ocrv6-small
                 runtime: burn
                 precision: fp16q8
 
-    # Minimum: RAM 16 GB, GPU/Unified memory 4 GB.
+    # BioCLIP-2 with the full TreeOfLife200M catalog: widest species coverage,
+    # including long-tail taxa beyond the Core subset.
     bioclip:
         enabled: true
         package: clip
@@ -71,4 +84,4 @@ services:
                 model: bioclip-2
                 runtime: burn
                 precision: fp16q8
-                dataset: TreeOfLife200MCore
+                dataset: TreeOfLife200M

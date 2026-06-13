@@ -115,6 +115,28 @@ SDK Go 路径 vs Hub raw:cosine `0.9997+`,max_abs_diff ≤ `0.0038`。
 注意:resize 语义修正会让新生成的 embedding 与旧索引存在 ~0.99 cosine 级别的偏移,
 属于一次性预处理修正;Photos 的 `MLPreprocessVersion` 维持 V1,不强制全库重建。
 
+## Preset 内存画像
+
+降内存改造后重测了三档 preset(Apple M2 Pro,Metal,fp16q8;混合推理负载下采样)。
+关键观察:**Burn 用 mmap 加载权重,BioCLIP 数据集也走 mmap**,因此模型/数据集体积主要
+落在磁盘和冷页延迟上,几乎不进 physical footprint —— 这也是 brave(so400m + 完整
+TreeOfLife200M)的常驻内存与 basic 接近的原因。
+
+| Preset | 服务 | Hub 工作内存 | warmup 瞬时 | 模型磁盘 |
+|---|---|---|---|---|
+| minimal | siglip-b + face | ~1.7G | 4.5G | ~1.3G |
+| basic | siglip-b + face + ocr-v6 + bioclip(Core) | ~2.4G | 4.5G | ~5.5G |
+| brave | so400m + face + ocr-v6 + bioclip(Full) | ~3.2G | 5.6G | ~8G |
+
+"Hub 工作内存"取 physical footprint 与推理负载下 `ps` RSS 峰值的较大者。warmup 瞬时
+是启动期 GPU 临时分配尖峰,`ExclusivePages` 之后回收,不是常驻需求。preset 文件里的
+`System RAM` hint 在此基础上叠加同机 Photos server + OS 余量(minimal 4G / basic 6G /
+brave 8G),远低于降内存前的旧值(8G / – / 32G)。
+
+档位业务取舍:minimal = 语义搜索 + 人脸(传统智能相册核心);basic = 全能力但经济模型
+(加 OCR 文字搜索 + BioCLIP 生物识别,Core 子集);brave = 全能力顶配(so400m 更高质量
+语义 + 完整 Tree of Life 覆盖长尾物种)。
+
 ## 残留问题
 
 1. **上游 kernel 问题**:batch=2/4 在 Metal/CubeCL 上的 2.4 倍退化值得向 Burn/CubeCL 上报最小复现(`[B,3,224,224]` ViT forward,fp16q8)。修复后 batching 才有重新开启的价值。
