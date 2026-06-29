@@ -97,6 +97,27 @@ impl SiglipModelFactory {
             .map_err(ServiceError::InvalidArgument)
     }
 
+    /// Like [`Self::component_path_str`] but returns `None` when the component is
+    /// absent rather than erroring — used for the optional aesthetic head.
+    fn optional_component_path_str(
+        &self,
+        model_name: &str,
+        runtime: Runtime,
+        component: &str,
+        precision: &str,
+    ) -> ServiceResult<Option<String>> {
+        let path = self.resolve_component_path(model_name, runtime, component, precision)?;
+        if !path.exists() {
+            return Ok(None);
+        }
+        path.to_str().map(|s| Some(s.to_owned())).ok_or_else(|| {
+            ServiceError::InvalidArgument(format!(
+                "model path is not valid UTF-8: {}",
+                path.display()
+            ))
+        })
+    }
+
     pub fn create_vision_model(
         &self,
         model_name: &str,
@@ -105,8 +126,18 @@ impl SiglipModelFactory {
         device: &Device,
     ) -> ServiceResult<SiglipVisionModel> {
         let path = self.component_path_str(model_name, runtime, "vision", precision)?;
-        SiglipVisionModel::load(model_name, &path, precision, device.clone())
-            .map_err(ServiceError::InvalidArgument)
+        // Optional: the aesthetic head ships as `aesthetic.{precision}.bpk` in the
+        // same burn dir. Present → image embeddings also carry an aesthetic score.
+        let head_path =
+            self.optional_component_path_str(model_name, runtime, "aesthetic", precision)?;
+        SiglipVisionModel::load(
+            model_name,
+            &path,
+            precision,
+            device.clone(),
+            head_path.as_deref(),
+        )
+        .map_err(ServiceError::InvalidArgument)
     }
 
     /// Loads the tokenizer and enforces truncation to the encoder's fixed

@@ -101,6 +101,29 @@ fn quantize_runtime_q8<B: Backend, M: Module<B>>(model: M) -> M {
     model.map(&mut RuntimeQ8Quantizer::<B>::new(&QuantConfig::default()))
 }
 
+/// Loads an aesthetic-head burnpack, honoring fp16 storage but **never** applying
+/// Q8 — even under an `fp16q8` precision tag.
+///
+/// The head is a tiny MLP whose final linear emits the scalar aesthetic score, so
+/// it is the model's output projection: Q8 noise would land directly on the score
+/// while saving only a couple of MB. The `aesthetic.fp16q8.bpk` artifact is a
+/// byte-identical copy of `aesthetic.fp16.bpk`, so loading it as fp16 (adapter on,
+/// quantizer off) is exact.
+pub fn load_aesthetic_head<B: Backend, M: ModuleSnapshot<B> + Module<B>>(
+    mut model: M,
+    path: &str,
+    precision: &str,
+) -> Result<M, String> {
+    let mut store = BurnpackStore::from_file(path);
+    if is_fp16_precision(precision) {
+        store = store.with_from_adapter(HalfPrecisionAdapter::new());
+    }
+    model
+        .load_from(&mut store)
+        .map_err(|err| format!("failed to load aesthetic head burnpack from `{path}`: {err}"))?;
+    Ok(model)
+}
+
 // Each submodule directory holds the generated architecture for one model
 // repository (named after its `model_info.json` `name`). Adding a new model
 // variant — e.g. a `siglip2_so400m_patch14_384` or a `buffalo_l` face pack —
@@ -110,6 +133,9 @@ fn quantize_runtime_q8<B: Backend, M: Module<B>>(model: M) -> M {
 
 #[cfg(feature = "clip")]
 pub mod bioclip2;
+
+#[cfg(feature = "siglip")]
+pub mod aesthetic_head;
 
 #[cfg(feature = "siglip")]
 pub mod siglip2_base_patch16_224;

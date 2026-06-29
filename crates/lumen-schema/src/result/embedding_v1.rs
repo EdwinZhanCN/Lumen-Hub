@@ -21,6 +21,12 @@ pub struct EmbeddingV1 {
     /// Model identifier that generated the embedding.
     #[validate(length(min = 1))]
     pub model_id: String,
+
+    /// Optional aesthetic score (teacher-distilled, ~1–10) produced alongside an
+    /// image embedding when the model ships an aesthetic head. Absent for text
+    /// embeddings and for image models without a head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aesthetic_score: Option<f32>,
 }
 
 impl EmbeddingV1 {
@@ -30,7 +36,15 @@ impl EmbeddingV1 {
             vector,
             dim,
             model_id: model_id.into(),
+            aesthetic_score: None,
         }
+    }
+
+    /// Attaches an aesthetic score to the embedding.
+    #[must_use]
+    pub fn with_aesthetic_score(mut self, score: f32) -> Self {
+        self.aesthetic_score = Some(score);
+        self
     }
 
     pub fn to_json_bytes(&self) -> Result<Bytes, SchemaEncodeError> {
@@ -52,6 +66,7 @@ mod tests {
             vector: Vec::new(),
             dim: 0,
             model_id: String::new(),
+            aesthetic_score: None,
         };
 
         assert!(invalid.validate().is_err());

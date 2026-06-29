@@ -408,16 +408,35 @@ impl SiglipImageEmbedTask {
     }
 
     /// Runs the vision encoder on a flattened `[batch, 3, H, W]` buffer and
-    /// returns L2-normalized embedding rows.
-    async fn embed_pixels(&self, pixels: Vec<f32>, batch: usize) -> ServiceResult<Vec<f32>> {
+    /// returns L2-normalized embedding rows plus, when an aesthetic head is
+    /// loaded, one score per row (from the same forward pass).
+    async fn embed_pixels(
+        &self,
+        pixels: Vec<f32>,
+        batch: usize,
+    ) -> ServiceResult<(Vec<f32>, Option<Vec<f32>>)> {
         let shape = self.preprocess.output_shape();
         let (height, width) = (shape[2], shape[3]);
         let model = Arc::clone(&self.model);
-        let mut raw = run_blocking(move || model.encode(pixels, batch, height, width)).await?;
+        let (mut raw, scores) =
+            run_blocking(move || model.encode(pixels, batch, height, width)).await?;
         let row_width = raw.len().checked_div(batch.max(1)).unwrap_or(0);
         normalize_rows(&mut raw, row_width);
-        Ok(raw)
+        Ok((raw, scores))
     }
+}
+
+/// Builds an `embedding_v1` result, attaching the aesthetic score when present.
+fn embedding_result(
+    vector: Vec<f32>,
+    model_id: &str,
+    score: Option<f32>,
+) -> ServiceResult<TaskResult> {
+    let mut embedding = EmbeddingV1::new(vector, model_id);
+    if let Some(score) = score {
+        embedding = embedding.with_aesthetic_score(score);
+    }
+    embedding_json_result(embedding)
 }
 
 #[async_trait]
@@ -459,8 +478,8 @@ impl TaskHandler for SiglipImageEmbedTask {
         {
             self.tensor_input_descriptor(&request)?;
             let pixels = bytes_to_f32_le(&request.payload)?;
-            let embedding = self.embed_pixels(pixels, 1).await?;
-            return embedding_json_result(EmbeddingV1::new(embedding, &self.model_id));
+            let (embedding, scores) = self.embed_pixels(pixels, 1).await?;
+            return embedding_result(embedding, &self.model_id, first_score(&scores));
         }
 
         if !is_supported_image_input_mime(&request.payload_mime) {
@@ -471,8 +490,8 @@ impl TaskHandler for SiglipImageEmbedTask {
             )));
         }
         let pixels = self.preprocess.preprocess_image_bytes(&request.payload)?;
-        let embedding = self.embed_pixels(pixels, 1).await?;
-        embedding_json_result(EmbeddingV1::new(embedding, &self.model_id))
+        let (embedding, scores) = self.embed_pixels(pixels, 1).await?;
+        embedding_result(embedding, &self.model_id, first_score(&scores))
     }
 
     async fn handle_batch(&self, requests: Vec<TaskRequest>) -> ServiceResult<Vec<TaskResult>> {
@@ -487,7 +506,7 @@ impl TaskHandler for SiglipImageEmbedTask {
             pixels.extend(bytes_to_f32_le(&request.payload)?);
         }
 
-        let embeddings = self.embed_pixels(pixels, batch_len).await?;
+        let (embeddings, scores) = self.embed_pixels(pixels, batch_len).await?;
         let row_width = embeddings.len().checked_div(batch_len).ok_or_else(|| {
             ServiceError::Internal("SigLIP batch output has invalid batch size".to_owned())
         })?;
@@ -500,9 +519,18 @@ impl TaskHandler for SiglipImageEmbedTask {
 
         embeddings
             .chunks(row_width)
-            .map(|row| embedding_json_result(EmbeddingV1::new(row.to_vec(), &self.model_id)))
+            .enumerate()
+            .map(|(row_index, row)| {
+                let score = scores.as_ref().and_then(|s| s.get(row_index).copied());
+                embedding_result(row.to_vec(), &self.model_id, score)
+            })
             .collect()
     }
+}
+
+/// First (single-image) score from an optional per-row score vector.
+fn first_score(scores: &Option<Vec<f32>>) -> Option<f32> {
+    scores.as_ref().and_then(|s| s.first().copied())
 }
 
 /// Runs a blocking inference closure on the dedicated inference worker.

@@ -34,6 +34,24 @@ pub mod classification {
     ));
 }
 
+// Aesthetic scoring heads (tiny MLP on SigLIP2 vision pooled features),
+// generated from the head ONNX. Graduated copies live in lumen-hub model_arch.
+pub mod aesthetic_head {
+    pub mod siglip2_base_patch16_224 {
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/aesthetic_head/siglip2_base_patch16_224/aesthetic.rs"
+        ));
+    }
+
+    pub mod siglip2_so400m_patch14_384 {
+        include!(concat!(
+            env!("OUT_DIR"),
+            "/aesthetic_head/siglip2_so400m_patch14_384/aesthetic.rs"
+        ));
+    }
+}
+
 pub mod pp_ocrv6_small {
     pub mod detection {
         include!(concat!(

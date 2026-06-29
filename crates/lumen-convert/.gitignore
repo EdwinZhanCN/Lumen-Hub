@@ -1,7 +1,5 @@
 # Large model artifacts — provenance is the source ONNX, not these.
-onnx/**/*.onnx
-onnx/**/*.onnx_data
-onnx/**/*_data
+onnx/
 out/
 target/
 .DS_Store

@@ -539,18 +539,34 @@ fn det_preprocess(
 // ---------------------------------------------------------------------------
 
 fn sort_boxes(boxes: &[[f32; 8]]) -> Vec<[f32; 8]> {
+    // Top-left corner key (min over the four box vertices) used for reading order.
+    let key = |b: &[f32; 8]| {
+        let y = b[1].min(b[3]).min(b[5]).min(b[7]);
+        let x = b[0].min(b[2]).min(b[4]).min(b[6]);
+        (y, x)
+    };
     let mut sorted: Vec<[f32; 8]> = boxes.to_vec();
+    // 1) Total-order sort by (y, x). `total_cmp` is a real total order for f32
+    //    (NaN included), so the comparator can never violate strict weak ordering.
     sorted.sort_by(|a, b| {
-        let a_y = a[1].min(a[3]).min(a[5]).min(a[7]);
-        let b_y = b[1].min(b[3]).min(b[5]).min(b[7]);
-        let a_x = a[0].min(a[2]).min(a[4]).min(a[6]);
-        let b_x = b[0].min(b[2]).min(b[4]).min(b[6]);
-        if (a_y - b_y).abs() < 10.0 {
-            a_x.partial_cmp(&b_x).unwrap_or(std::cmp::Ordering::Equal)
-        } else {
-            a_y.partial_cmp(&b_y).unwrap_or(std::cmp::Ordering::Equal)
-        }
+        let (ay, ax) = key(a);
+        let (by, bx) = key(b);
+        ay.total_cmp(&by).then(ax.total_cmp(&bx))
     });
+    // 2) Adjacent-swap pass for same-row boxes (mirrors PaddleOCR `sorted_boxes`):
+    //    within a ~10px row band, order left-to-right. The fuzzy threshold lives
+    //    OUTSIDE the comparator, so it does not need to be a total order.
+    for i in 0..sorted.len().saturating_sub(1) {
+        for j in (0..=i).rev() {
+            let (yj, xj) = key(&sorted[j]);
+            let (yj1, xj1) = key(&sorted[j + 1]);
+            if (yj1 - yj).abs() < 10.0 && xj1 < xj {
+                sorted.swap(j, j + 1);
+            } else {
+                break;
+            }
+        }
+    }
     sorted
 }
 

@@ -141,7 +141,7 @@ fn init_to_paths(config_path: &Path, bootstrap_path: &Path) -> Result<(), CliErr
     }
 
     let backends = backend_choices(platform);
-    let backend_index = choose_backend("Select beta backend package:", &backends)?;
+    let backend_index = choose_backend("Select alpha backend package:", &backends)?;
     let backend = backends[backend_index]
         .backend
         .ok_or_else(|| CliError::InvalidArgument("selected backend is unavailable".to_owned()))?;
@@ -1030,7 +1030,7 @@ fn platform_profile(system: &SystemInfo) -> Result<PlatformProfile, CliError> {
             name: "linux-arm64",
         }),
         _ => Err(CliError::UnsupportedPlatform(format!(
-            "{} / {} is not in the beta matrix",
+            "{} / {} is not in the alpha matrix",
             system.os_label(),
             system.arch
         ))),
