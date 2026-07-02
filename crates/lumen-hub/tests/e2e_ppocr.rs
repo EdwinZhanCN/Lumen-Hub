@@ -14,8 +14,25 @@ use lumen_schema::OCRV1;
 
 const MODEL: &str = "pp-ocrv5";
 
-#[tokio::test]
-async fn ppocr_detects_and_recognizes_text() {
+#[test]
+fn ppocr_detects_and_recognizes_text() {
+    const STACK: usize = 256 * 1024 * 1024;
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK)
+                .build()
+                .expect("tokio runtime")
+                .block_on(body());
+        })
+        .expect("spawn test thread")
+        .join()
+        .expect("test thread panicked");
+}
+
+async fn body() {
     let Some((cache_dir, model_name)) = common::require_model(MODEL, &["detection", "recognition"])
     else {
         return;

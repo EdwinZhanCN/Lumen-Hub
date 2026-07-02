@@ -134,6 +134,9 @@ fn insightface_int8_matches_fp32() {
     else {
         return;
     };
+    if common::require_model_precision(MODEL, &["detection", "recognition"], "int8").is_none() {
+        return;
+    }
     const STACK: usize = 256 * 1024 * 1024;
     std::thread::Builder::new()
         .stack_size(STACK)

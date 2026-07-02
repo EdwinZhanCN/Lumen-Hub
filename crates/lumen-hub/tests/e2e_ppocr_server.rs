@@ -40,9 +40,11 @@ fn ppocr_server_int8_reads_border_test() {
 }
 
 async fn ppocr_server_int8_reads_border() {
-    let Some((cache_dir, model_name)) =
-        common::require_model(MODEL, &["detection", "recognition", "classification"])
-    else {
+    let Some((cache_dir, model_name)) = common::require_model_precision(
+        MODEL,
+        &["detection", "recognition", "classification"],
+        "int8",
+    ) else {
         return;
     };
 

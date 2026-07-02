@@ -6649,10 +6649,7 @@ extern crate std;
 
 impl<B: Backend> Default for Model<B> {
     fn default() -> Self {
-        Self::from_file(
-            "/Volumes/CodeBase/Projects/Burn-Convert/burn_onnx_demo/target/debug/build/burn_onnx_demo-5924b412d15e0ca8/out/model/siglip2-so400m-text/text.bpk",
-            &Default::default(),
-        )
+        panic!("model weights are not embedded; use Model::from_file or Model::from_bytes")
     }
 }
 

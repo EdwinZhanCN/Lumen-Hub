@@ -18,7 +18,7 @@ use burn_store::{BurnpackStore, HalfPrecisionAdapter, ModuleSnapshot};
 use lumen_convert::server::aesthetic_head::{siglip2_base_patch16_224, siglip2_so400m_patch14_384};
 use lumen_hub::backend::{Backend, Device, default_device};
 
-const DEFAULT_ROOT: &str = "/Volumes/CodeBase/Projects/lumen-models";
+const DEFAULT_ROOT: &str = "lumen-models";
 
 /// (siglip model repo name, generated bpk path under OUT_DIR).
 const HEADS: &[(&str, &str)] = &[
@@ -43,14 +43,16 @@ fn main() {
         stage_generated_fp32(gen_rel, &burn_dir);
         match model {
             "siglip2-base-patch16-224" => {
-                export_fp16::<siglip2_base_patch16_224::Model<Backend>, _>(&burn_dir, |path, dev| {
-                    siglip2_base_patch16_224::Model::<Backend>::from_file(path, dev)
-                })
+                export_fp16::<siglip2_base_patch16_224::Model<Backend>, _>(
+                    &burn_dir,
+                    |path, dev| siglip2_base_patch16_224::Model::<Backend>::from_file(path, dev),
+                )
             }
             "siglip2-so400m-patch14-384" => {
-                export_fp16::<siglip2_so400m_patch14_384::Model<Backend>, _>(&burn_dir, |path, dev| {
-                    siglip2_so400m_patch14_384::Model::<Backend>::from_file(path, dev)
-                })
+                export_fp16::<siglip2_so400m_patch14_384::Model<Backend>, _>(
+                    &burn_dir,
+                    |path, dev| siglip2_so400m_patch14_384::Model::<Backend>::from_file(path, dev),
+                )
             }
             other => panic!("no aesthetic head architecture registered for `{other}`"),
         }

@@ -7,9 +7,9 @@ use lumen_hub::backend::default_device;
 use lumen_hub::models::siglip::{SiglipTextModel, SiglipVisionModel};
 
 fn main() {
-    let model_dir = std::env::args().nth(1).unwrap_or_else(|| {
-        "/Volumes/CodeBase/Projects/lumen-models/siglip2-base-patch16-224".into()
-    });
+    let model_dir = std::env::args()
+        .nth(1)
+        .expect("usage: siglip_smoke <model_dir> [precision]");
     let device = default_device();
 
     // Optional 2nd arg: precision (fp32 | fp16 | fp16q8). Default fp32.
@@ -27,7 +27,7 @@ fn main() {
     };
     let vision_path = format!("{model_dir}/burn/vision.{precision}.bpk");
     let head_path = format!("{model_dir}/burn/aesthetic.{precision}.bpk");
-    println!("loading vision model from {vision_path} (res={res})");
+    println!("loading vision model for `{model_name}` (res={res}, precision={precision})");
     let vision = SiglipVisionModel::load(
         model_name,
         &vision_path,
@@ -52,7 +52,7 @@ fn main() {
     println!("aesthetic score: {score:?}");
 
     let text_path = format!("{model_dir}/burn/text.{precision}.bpk");
-    println!("loading text model from {text_path}");
+    println!("loading text model for `{model_name}` (precision={precision})");
     let text = SiglipTextModel::load(model_name, &text_path, &precision, device)
         .expect("text model loads");
     // 64 token ids padded with 0; a trivial sequence just to exercise forward.

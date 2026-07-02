@@ -14,8 +14,25 @@ use lumen_schema::FaceV1;
 
 const MODEL: &str = "antelopev2";
 
-#[tokio::test]
-async fn insightface_detects_face_and_produces_embedding() {
+#[test]
+fn insightface_detects_face_and_produces_embedding() {
+    const STACK: usize = 256 * 1024 * 1024;
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK)
+                .build()
+                .expect("tokio runtime")
+                .block_on(body());
+        })
+        .expect("spawn test thread")
+        .join()
+        .expect("test thread panicked");
+}
+
+async fn body() {
     let Some((cache_dir, model_name)) = common::require_model(MODEL, &["detection", "recognition"])
     else {
         return;

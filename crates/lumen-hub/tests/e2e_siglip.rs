@@ -90,12 +90,29 @@ async fn check_siglip_model(model: &str) {
     );
 }
 
-#[tokio::test]
-async fn siglip_base_patch16_224_embeddings_are_aligned() {
-    check_siglip_model("siglip2-base-patch16-224").await;
+fn run_on_large_stack(model: &'static str) {
+    const STACK: usize = 256 * 1024 * 1024;
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(STACK)
+                .build()
+                .expect("tokio runtime")
+                .block_on(check_siglip_model(model));
+        })
+        .expect("spawn test thread")
+        .join()
+        .expect("test thread panicked");
 }
 
-#[tokio::test]
-async fn siglip_so400m_patch14_384_embeddings_are_aligned() {
-    check_siglip_model("siglip2-so400m-patch14-384").await;
+#[test]
+fn siglip_base_patch16_224_embeddings_are_aligned() {
+    run_on_large_stack("siglip2-base-patch16-224");
+}
+
+#[test]
+fn siglip_so400m_patch14_384_embeddings_are_aligned() {
+    run_on_large_stack("siglip2-so400m-patch14-384");
 }

@@ -1,12 +1,11 @@
 // Generated from ONNX "onnx/aesthetic-head-siglip2-base-patch16-224/aesthetic.prepared.onnx" by burn-onnx
-use burn::prelude::*;
 use burn::nn::Linear;
 use burn::nn::LinearConfig;
 use burn::nn::LinearLayout;
+use burn::prelude::*;
 use burn::tensor::Bytes;
 use burn_store::BurnpackStore;
 use burn_store::ModuleSnapshot;
-
 
 #[derive(Module, Debug)]
 pub struct Model<B: Backend> {
@@ -20,15 +19,11 @@ pub struct Model<B: Backend> {
     device: B::Device,
 }
 
-
 extern crate std;
 
 impl<B: Backend> Default for Model<B> {
     fn default() -> Self {
-        Self::from_file(
-            "/Volumes/CodeBase/Projects/Lumen-Hub/target/release/build/lumen-convert-0036f7b8de134cd6/out/aesthetic_head/siglip2_base_patch16_224/aesthetic.bpk",
-            &Default::default(),
-        )
+        panic!("model weights are not embedded; use Model::from_file or Model::from_bytes")
     }
 }
 
@@ -37,7 +32,9 @@ impl<B: Backend> Model<B> {
     pub fn from_file<P: AsRef<std::path::Path>>(file: P, device: &B::Device) -> Self {
         let mut model = Self::new(device);
         let mut store = BurnpackStore::from_file(file);
-        model.load_from(&mut store).expect("Failed to load burnpack file");
+        model
+            .load_from(&mut store)
+            .expect("Failed to load burnpack file");
         model
     }
 
@@ -47,7 +44,9 @@ impl<B: Backend> Model<B> {
     pub fn from_bytes(bytes: Bytes, device: &B::Device) -> Self {
         let mut model = Self::new(device);
         let mut store = BurnpackStore::from_bytes(Some(bytes));
-        model.load_from(&mut store).expect("Failed to load burnpack bytes");
+        model
+            .load_from(&mut store)
+            .expect("Failed to load burnpack bytes");
         model
     }
 }

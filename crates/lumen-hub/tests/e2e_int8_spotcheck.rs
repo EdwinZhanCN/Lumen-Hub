@@ -103,6 +103,12 @@ async fn body(cache: String) {
     {
         let m = "bioclip-2";
         let ds = "TreeOfLife200MCore";
+        if !common::has_burn_weights(&cache, m, &["vision"], "fp32")
+            || !common::has_burn_weights(&cache, m, &["vision"], "int8")
+        {
+            println!("bioclip: SKIP (missing fp32/int8 vision weights)");
+            return;
+        }
         let have_ds = std::path::Path::new(&cache)
             .join(m)
             .join("datasets")
@@ -153,6 +159,11 @@ fn int8_spotcheck_siglip_bioclip() {
     else {
         return;
     };
+    if common::require_model_precision("siglip2-base-patch16-224", &["text", "vision"], "int8")
+        .is_none()
+    {
+        return;
+    }
     const STACK: usize = 256 * 1024 * 1024;
     std::thread::Builder::new()
         .stack_size(STACK)

@@ -5,7 +5,7 @@ use burn_store::{BurnpackStore, HalfPrecisionAdapter, ModuleSnapshot};
 use lumen_convert::server::pp_ocrv6_small::{classification, detection, recognition};
 use lumen_hub::backend::{Backend, Device, default_device};
 
-const DEFAULT_ROOT: &str = "/Volumes/CodeBase/Projects/lumen-models";
+const DEFAULT_ROOT: &str = "lumen-models";
 const MODEL: &str = "pp-ocrv6-small";
 
 fn main() {

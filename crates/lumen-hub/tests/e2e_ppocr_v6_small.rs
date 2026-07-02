@@ -38,9 +38,11 @@ fn ppocr_v6_small_fp16q8_reads_border_test() {
 }
 
 async fn ppocr_v6_small_fp16q8_reads_border() {
-    let Some((cache_dir, model_name)) =
-        common::require_model(MODEL, &["detection", "recognition", "classification"])
-    else {
+    let Some((cache_dir, model_name)) = common::require_model_precision(
+        MODEL,
+        &["detection", "recognition", "classification"],
+        "fp16q8",
+    ) else {
         return;
     };
 

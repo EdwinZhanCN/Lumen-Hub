@@ -29,10 +29,7 @@ async fn bioclip_classifies_image_into_taxonomy_labels() {
     if !dataset_dir.join(format!("{DATASET}.npy")).is_file()
         || !dataset_dir.join(format!("{DATASET}.json")).is_file()
     {
-        eprintln!(
-            "SKIP: missing {DATASET} catalog under {}",
-            dataset_dir.display()
-        );
+        eprintln!("SKIP: missing {DATASET} catalog");
         return;
     }
 

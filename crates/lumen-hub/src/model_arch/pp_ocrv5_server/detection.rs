@@ -1849,10 +1849,7 @@ extern crate std;
 
 impl<B: Backend> Default for Model<B> {
     fn default() -> Self {
-        Self::from_file(
-            "/Volumes/CodeBase/Projects/Lumen-Hub/target/release/build/lumen-convert-0036f7b8de134cd6/out/pp_ocrv5_server/detection/detection.bpk",
-            &Default::default(),
-        )
+        panic!("model weights are not embedded; use Model::from_file or Model::from_bytes")
     }
 }
 

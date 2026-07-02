@@ -123,9 +123,9 @@ fn embed(model: &vision::Model<Backend>, pixels: &[f32], device: &Device) -> Vec
 }
 
 fn main() {
-    let model_dir = std::env::args().nth(1).unwrap_or_else(|| {
-        "/Volumes/CodeBase/Projects/lumen-models/siglip2-base-patch16-224".into()
-    });
+    let model_dir = std::env::args()
+        .nth(1)
+        .expect("usage: quantize_check <model_dir>");
     let device = default_device();
     let path = format!("{model_dir}/burn/vision.fp32.bpk");
 
@@ -138,7 +138,7 @@ fn main() {
         })
         .collect();
 
-    println!("loading fp32 vision from {path}");
+    println!("loading fp32 vision model");
     let fp32 = vision::Model::<Backend>::from_file(&path, &device);
     let emb_fp32 = embed(&fp32, &pixels, &device);
 

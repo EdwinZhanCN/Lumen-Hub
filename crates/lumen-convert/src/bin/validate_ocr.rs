@@ -6,7 +6,7 @@
 //!
 //! Run:
 //!   cargo run --release -p lumen-convert --bin validate_ocr
-//!   cargo run --release -p lumen-convert --bin validate_ocr -- <image.png> <expected>
+//!   cargo run --release -p lumen-convert --bin validate_ocr -- <image.png> <expected> <model_dir>
 
 use burn::tensor::{Tensor, TensorData};
 use burn_store::{BurnpackStore, ModuleSnapshot};
@@ -15,7 +15,7 @@ use image::imageops::FilterType;
 use lumen_convert::server::{detection, recognition};
 use lumen_hub::backend::{Backend, Device, default_device};
 
-const REPO: &str = "/Volumes/CodeBase/Projects/lumen-models/pp-ocrv5-server";
+const DEFAULT_REPO: &str = "lumen-models/pp-ocrv5-server";
 // PP-OCR recognition preprocessing (matches lumen-hub ppocr task).
 const REC_H: u32 = 48;
 const REC_W: u32 = 320;
@@ -108,9 +108,10 @@ fn main() {
         .next()
         .unwrap_or_else(|| "crates/lumen-hub/warmup/ocr/border.png".into());
     let expected = args.next().unwrap_or_else(|| "BORDER".into());
+    let repo = args.next().unwrap_or_else(|| DEFAULT_REPO.into());
     let device = default_device();
 
-    let vocab: Vec<String> = std::fs::read_to_string(format!("{REPO}/ppocrv5_dict.txt"))
+    let vocab: Vec<String> = std::fs::read_to_string(format!("{repo}/ppocrv5_dict.txt"))
         .expect("dict")
         .lines()
         .map(str::to_string)
@@ -125,12 +126,12 @@ fn main() {
     );
 
     let fp32 = recognition::Model::<Backend>::from_file(
-        format!("{REPO}/burn/recognition.fp32.bpk"),
+        format!("{repo}/burn/recognition.fp32.bpk"),
         &device,
     );
     let mut int8 = recognition::Model::<Backend>::new(&device);
     int8.load_from(&mut BurnpackStore::from_file(format!(
-        "{REPO}/burn/recognition.int8.bpk"
+        "{repo}/burn/recognition.int8.bpk"
     )))
     .expect("load int8");
 
@@ -172,10 +173,10 @@ fn main() {
             .unwrap()
     };
     let det32 =
-        detection::Model::<Backend>::from_file(format!("{REPO}/burn/detection.fp32.bpk"), &device);
+        detection::Model::<Backend>::from_file(format!("{repo}/burn/detection.fp32.bpk"), &device);
     let mut det8 = detection::Model::<Backend>::new(&device);
     det8.load_from(&mut BurnpackStore::from_file(format!(
-        "{REPO}/burn/detection.int8.bpk"
+        "{repo}/burn/detection.int8.bpk"
     )))
     .expect("load det int8");
     let (h32, h8) = (det_embed(&det32), det_embed(&det8));

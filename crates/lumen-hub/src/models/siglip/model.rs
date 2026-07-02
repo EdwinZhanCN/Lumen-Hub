@@ -13,9 +13,9 @@ use burn::tensor::{Int, Tensor, TensorData};
 
 use crate::backend::{Backend, Device};
 use crate::model_arch::aesthetic_head;
-use crate::model_arch::{load_aesthetic_head, load_burnpack};
 use crate::model_arch::siglip2_base_patch16_224 as base_patch16_224;
 use crate::model_arch::siglip2_so400m_patch14_384 as so400m_patch14_384;
+use crate::model_arch::{load_aesthetic_head, load_burnpack};
 
 /// A loaded SigLIP text encoder for a specific architecture.
 trait SiglipTextArch: Send + Sync {
@@ -254,7 +254,9 @@ struct BasePatch16Head {
 
 impl AestheticHeadArch for BasePatch16Head {
     fn score(&self, pooled: &[f32], batch: usize) -> Vec<f32> {
-        run_head(&self.device, batch, pooled, |input| self.model.forward(input))
+        run_head(&self.device, batch, pooled, |input| {
+            self.model.forward(input)
+        })
     }
 }
 
@@ -265,7 +267,9 @@ struct So400mHead {
 
 impl AestheticHeadArch for So400mHead {
     fn score(&self, pooled: &[f32], batch: usize) -> Vec<f32> {
-        run_head(&self.device, batch, pooled, |input| self.model.forward(input))
+        run_head(&self.device, batch, pooled, |input| {
+            self.model.forward(input)
+        })
     }
 }
 

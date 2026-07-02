@@ -23,7 +23,7 @@ use lumen_hub::model_arch::{
     siglip2_so400m_patch14_384 as siglip_so400m,
 };
 
-const DEFAULT_ROOT: &str = "/Volumes/CodeBase/Projects/lumen-models";
+const DEFAULT_ROOT: &str = "lumen-models";
 
 fn file_mb(path: &str) -> f64 {
     std::fs::metadata(path)
