@@ -7,8 +7,8 @@ use tonic::transport::Server;
 
 use crate::{
     daemon::{
-        BatcherConfig, DaemonError, DaemonResult, HubGrpcService, MdnsAdvertisement,
-        proto::home_native::v1::inference_server::InferenceServer,
+        AdvertisedCapabilities, BatcherConfig, DaemonError, DaemonResult, HubGrpcService,
+        MdnsAdvertisement, proto::home_native::v1::inference_server::InferenceServer,
     },
     service::ServiceHub,
 };
@@ -60,7 +60,8 @@ async fn serve_grpc_at_addr(
     config: &ServerConfig,
     addr: SocketAddr,
 ) -> DaemonResult<()> {
-    let _mdns = MdnsAdvertisement::register(&config.mdns, addr.port())?;
+    let _mdns =
+        MdnsAdvertisement::register(&config.mdns, addr.port(), &advertised_capabilities(&hub))?;
     tracing::info!(%addr, services = hub.len(), "starting Lumen gRPC server");
 
     Server::builder()
@@ -83,7 +84,8 @@ async fn serve_grpc_at_addr_with_shutdown<S>(
 where
     S: Future<Output = ()> + Send + 'static,
 {
-    let _mdns = MdnsAdvertisement::register(&config.mdns, addr.port())?;
+    let _mdns =
+        MdnsAdvertisement::register(&config.mdns, addr.port(), &advertised_capabilities(&hub))?;
     tracing::info!(%addr, services = hub.len(), "starting Lumen gRPC server");
 
     Server::builder()
@@ -95,6 +97,25 @@ where
         .await?;
 
     Ok(())
+}
+
+/// Collects the mDNS TXT hints (task names, runtime) from the registered
+/// services so discovery clients can route before fetching capabilities.
+fn advertised_capabilities(hub: &ServiceHub) -> AdvertisedCapabilities {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut tasks = Vec::new();
+    let mut runtime = None;
+    for capability in hub.capabilities() {
+        if runtime.is_none() && !capability.runtime.is_empty() {
+            runtime = Some(capability.runtime.clone());
+        }
+        for task in &capability.tasks {
+            if seen.insert(task.name.clone()) {
+                tasks.push(task.name.clone());
+            }
+        }
+    }
+    AdvertisedCapabilities { tasks, runtime }
 }
 
 fn batcher_config(config: &ServerConfig) -> BatcherConfig {

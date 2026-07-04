@@ -13,5 +13,5 @@ pub mod server;
 pub use batcher::{BatchFn, Batcher, BatcherConfig};
 pub use error::{DaemonError, DaemonResult};
 pub use grpc::HubGrpcService;
-pub use mdns::{DEFAULT_MDNS_SERVICE_TYPE, MdnsAdvertisement};
+pub use mdns::{AdvertisedCapabilities, DEFAULT_MDNS_SERVICE_TYPE, MdnsAdvertisement};
 pub use server::{bind_addr, bind_addr_with_port, serve_grpc, serve_grpc_with_shutdown};
