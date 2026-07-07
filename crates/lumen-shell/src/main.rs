@@ -227,14 +227,9 @@ fn configure_setup_defaults(app: &AppWindow) {
     let system = setup::detect_system();
     let memory = setup::detect_memory();
     let ram = if let Some(total_gb) = memory.total_gb {
-        i18n::bi(
-            &i18n::ram_known(total_gb),
-            &i18n::ram_known_zh(total_gb),
-        )
-        .to_string()
+        i18n::bi(&i18n::ram_known(total_gb), &i18n::ram_known_zh(total_gb)).to_string()
     } else {
-        i18n::bi(i18n::ram_unknown_en(), i18n::ram_unknown_zh())
-            .to_string()
+        i18n::bi(i18n::ram_unknown_en(), i18n::ram_unknown_zh()).to_string()
     };
     app.set_detected_text(i18n::detected_system(
         &system.os_label(),
@@ -663,7 +658,9 @@ fn start_hub(
                 return;
             }
             Some(Ok(status)) => {
-                let _ = tx.send(UiMessage::Status(i18n::status_exited_with_error().to_string()));
+                let _ = tx.send(UiMessage::Status(
+                    i18n::status_exited_with_error().to_string(),
+                ));
                 let _ = tx.send(UiMessage::Controls {
                     can_start: true,
                     can_stop: false,
@@ -943,7 +940,6 @@ fn default_bootstrap_label() -> String {
     }
 }
 
-
 #[derive(Debug)]
 struct SetupRequest {
     version: String,
@@ -995,9 +991,9 @@ struct ProcessState {
 
 impl LaunchObserver for ShellObserver {
     fn manifest_fetch_started(&mut self, _url: &str) {
-        let _ = self
-            .tx
-            .send(UiMessage::Status(i18n::status_fetching_manifest().to_string()));
+        let _ = self.tx.send(UiMessage::Status(
+            i18n::status_fetching_manifest().to_string(),
+        ));
     }
 
     fn manifest_fetched(&mut self, version: &str) {
@@ -1018,9 +1014,9 @@ impl LaunchObserver for ShellObserver {
             .map(format_bytes)
             .map(|size| format!(" ({size})"))
             .unwrap_or_default();
-        let _ = self
-            .tx
-            .send(UiMessage::Status(i18n::status_downloading_hub().to_string()));
+        let _ = self.tx.send(UiMessage::Status(
+            i18n::status_downloading_hub().to_string(),
+        ));
         let _ = self
             .tx
             .send(UiMessage::Log(format!("downloading {file_name}{detail}")));
@@ -1053,7 +1049,9 @@ impl LaunchObserver for ShellObserver {
     }
 
     fn verify_started(&mut self, path: &Path) {
-        let _ = self.tx.send(UiMessage::Status(i18n::status_verifying_hub().to_string()));
+        let _ = self
+            .tx
+            .send(UiMessage::Status(i18n::status_verifying_hub().to_string()));
         let _ = self
             .tx
             .send(UiMessage::Log(format!("verifying {}", path.display())));
@@ -1064,7 +1062,9 @@ impl LaunchObserver for ShellObserver {
     }
 
     fn extract_started(&mut self, path: &Path) {
-        let _ = self.tx.send(UiMessage::Status(i18n::status_extracting_hub().to_string()));
+        let _ = self
+            .tx
+            .send(UiMessage::Status(i18n::status_extracting_hub().to_string()));
         let _ = self
             .tx
             .send(UiMessage::Log(format!("extracting {}", path.display())));

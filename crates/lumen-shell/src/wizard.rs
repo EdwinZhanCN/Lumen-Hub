@@ -78,7 +78,9 @@ pub fn go_back(app: &AppWindow) {
 
 fn current_step_id(app: &AppWindow) -> i32 {
     let sequence = step_sequence(app.get_existing_visible());
-    let cursor = app.get_setup_wizard_cursor().clamp(0, sequence.len() as i32 - 1) as usize;
+    let cursor = app
+        .get_setup_wizard_cursor()
+        .clamp(0, sequence.len() as i32 - 1) as usize;
     sequence[cursor]
 }
 
@@ -118,11 +120,7 @@ fn advance_block_reason(app: &AppWindow, step_id: i32) -> String {
             .err()
             .unwrap_or_else(|| i18n::warning_backend_unavailable()),
         STEP_PATHS | STEP_REVIEW if !paths_valid(app) => {
-            i18n::bi(
-                "All storage paths are required.",
-                "请填写所有存储路径。",
-            )
-            .to_string()
+            i18n::bi("All storage paths are required.", "请填写所有存储路径。").to_string()
         }
         _ => i18n::bi("Complete this step first.", "请先完成当前步骤。").to_string(),
     }

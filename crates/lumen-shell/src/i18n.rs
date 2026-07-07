@@ -244,25 +244,25 @@ pub fn profile_summary(preset: &str, backend: &str, profile: &str) -> SharedStri
 }
 
 pub fn profile_only(profile: &str) -> SharedString {
-    bi(
-        &format!("Profile: {profile}"),
-        &format!("配置：{profile}"),
-    )
+    bi(&format!("Profile: {profile}"), &format!("配置：{profile}"))
 }
 
 pub fn review_region_other() -> SharedString {
-    bi("Region: International (Hugging Face)", "区域：国际（Hugging Face）")
+    bi(
+        "Region: International (Hugging Face)",
+        "区域：国际（Hugging Face）",
+    )
 }
 
 pub fn review_region_cn() -> SharedString {
-    bi("Region: China (hf-mirror.com)", "区域：中国（hf-mirror.com）")
+    bi(
+        "Region: China (hf-mirror.com)",
+        "区域：中国（hf-mirror.com）",
+    )
 }
 
 pub fn review_preset(preset: &str) -> SharedString {
-    bi(
-        &format!("Preset: {preset}"),
-        &format!("预设：{preset}"),
-    )
+    bi(&format!("Preset: {preset}"), &format!("预设：{preset}"))
 }
 
 pub fn review_backend(name: &str, profile: &str) -> SharedString {
@@ -310,9 +310,5 @@ pub fn warning_disk(cache: &str, preset: &str, free_gb: f64, min_gb: u64) -> Str
 }
 
 pub fn warning_backend_unavailable() -> String {
-    bi(
-        "Selected backend is unavailable.",
-        "所选后端不可用。",
-    )
-    .to_string()
+    bi("Selected backend is unavailable.", "所选后端不可用。").to_string()
 }
