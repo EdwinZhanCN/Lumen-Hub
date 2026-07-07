@@ -1,24 +1,18 @@
 use std::{
     env, fs, io,
-    io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, ExitCode, Stdio},
+    process::{Command, ExitCode},
 };
 
-use cliclack::{confirm, input, intro, log, note, outro, progress_bar, select, spinner};
-use flate2::read::GzDecoder;
+use cliclack::{confirm, input, intro, log, note, outro, select};
+use lumen_launcher::{
+    Bootstrap, LaunchObserver, LauncherError, StartOptions, format_bytes, prepare_hub,
+    resolve_start_plan, spawn_hub,
+};
 use lumen_schema::LumenConfig;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const DEFAULT_MANIFEST_URL: &str =
-    "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/manifest.json";
-const OFFICIAL_RELEASE_DOWNLOAD_PREFIX: &str =
-    "https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/";
-const OFFICIAL_RELEASE_LATEST_DOWNLOAD_PREFIX: &str =
-    "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/";
 
 fn main() -> ExitCode {
     match run(env::args().collect()) {
@@ -199,581 +193,96 @@ fn start(args: &[String]) -> Result<(), CliError> {
     let args = StartArgs::parse(args)?;
     intro(format!(" lumen-cli {VERSION} "))?;
 
-    let home = home_dir().ok_or(CliError::HomeDirUnavailable)?;
-    let lumen_dir = home.join(".lumen");
-    let bootstrap_path = args
-        .bootstrap_path
-        .clone()
-        .unwrap_or_else(|| lumen_dir.join("bootstrap.json"));
-    let bootstrap = if bootstrap_path.is_file() {
-        Some(read_bootstrap(&bootstrap_path)?)
-    } else {
-        None
+    let options = StartOptions {
+        config_path: args.config_path,
+        bootstrap_path: args.bootstrap_path,
+        manifest_url: args.manifest_url,
+        profile: args.profile,
     };
-    let config_path = args
-        .config_path
-        .clone()
-        .or_else(|| {
-            bootstrap
-                .as_ref()
-                .map(|bootstrap| PathBuf::from(&bootstrap.config_path))
-        })
-        .ok_or_else(|| {
-            CliError::InvalidArgument(format!(
-                "bootstrap `{}` was not found; run `lumen-cli init` first or pass both `--config <path>` and `--profile <profile>`",
-                bootstrap_path.display()
-            ))
-        })?;
-    if !config_path.is_file() {
-        return Err(CliError::InvalidArgument(format!(
-            "config `{}` does not exist; run `lumen-cli init` first or pass `--config <path>`",
-            config_path.display()
-        )));
-    }
-
-    let manifest_url = args
-        .manifest_url
-        .clone()
-        .or_else(|| env::var("LUMEN_RELEASE_MANIFEST_URL").ok())
-        .unwrap_or_else(|| DEFAULT_MANIFEST_URL.to_owned());
-    let profile = args
-        .profile
-        .as_deref()
-        .or_else(|| {
-            bootstrap
-                .as_ref()
-                .map(|bootstrap| bootstrap.release_profile.as_str())
-        })
-        .ok_or_else(|| {
-            CliError::InvalidArgument(
-                "missing release profile; pass `--profile <profile>`".to_owned(),
-            )
-        })?;
+    let plan = resolve_start_plan(options)?;
 
     note(
         "Start plan",
         format!(
-            "config: {}\nprofile: {profile}\nmanifest: {manifest_url}",
-            config_path.display()
+            "config: {}\nprofile: {}\nmanifest: {}",
+            plan.config_path.display(),
+            plan.profile,
+            plan.manifest_url
         ),
     )?;
 
-    let manifest = fetch_manifest(&manifest_url)?;
-    validate_release_component(&manifest.version, "manifest version")?;
-    let artifact = manifest
-        .hub
-        .iter()
-        .find(|artifact| artifact.profile == profile)
-        .ok_or_else(|| {
-            CliError::InvalidArgument(format!(
-                "release manifest `{}` does not contain hub profile `{profile}`",
-                manifest.version
-            ))
-        })?;
-    validate_hub_artifact(artifact)?;
-    let install_dir = lumen_dir
-        .join("hub")
-        .join(&manifest.version)
-        .join(&artifact.profile);
-    let hub = ensure_hub_installed(&install_dir, artifact)?;
+    let mut observer = CliLaunchObserver;
+    let hub = prepare_hub(&plan, &mut observer)?;
 
-    log::step(format!("starting {}", hub.display()))?;
     outro("Lumen Hub output follows.")?;
-    let mut command = Command::new(&hub);
-    command
-        .arg("--config")
-        .arg(&config_path)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
-    let status = command.status().map_err(|source| CliError::SpawnHub {
-        path: hub.clone(),
-        source,
-    })?;
+    let mut running = spawn_hub(
+        &plan,
+        &hub,
+        lumen_launcher::HubStdio::Inherit,
+        &mut observer,
+    )?;
+    let status = running
+        .wait()
+        .map_err(|source| LauncherError::SpawnHub { path: hub, source })?;
     if !status.success() {
-        return Err(CliError::HubExited(FormattedExitStatus(status)));
+        return Err(CliError::Launcher(LauncherError::HubExited(
+            lumen_launcher::FormattedExitStatus(status),
+        )));
     }
     Ok(())
 }
 
-fn read_bootstrap(path: &Path) -> Result<Bootstrap, CliError> {
-    let contents = fs::read_to_string(path).map_err(|source| CliError::ReadFile {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    Ok(serde_json::from_str(&contents)?)
-}
+struct CliLaunchObserver;
 
-fn fetch_manifest(url: &str) -> Result<ReleaseManifest, CliError> {
-    validate_manifest_url(url)?;
-    let spinner = spinner();
-    spinner.start(format!("fetching release manifest"));
-    let mut response = ureq::get(url).call()?;
-    let body = response.body_mut().read_to_string()?;
-    let manifest = serde_json::from_str::<ReleaseManifest>(&body)?;
-    spinner.stop(format!("release manifest {}", manifest.version));
-    Ok(manifest)
-}
+impl LaunchObserver for CliLaunchObserver {
+    fn manifest_fetch_started(&mut self, _url: &str) {
+        let _ = log::step("fetching release manifest");
+    }
 
-fn ensure_hub_installed(install_dir: &Path, artifact: &HubArtifact) -> Result<PathBuf, CliError> {
-    let exe_name = hub_exe_name();
-    let hub_path = install_dir.join("bin").join(exe_name);
-    let marker = install_dir.join(".lumen-hub-installed.json");
-    if hub_path.is_file() && marker.is_file() {
-        log::success(format!(
+    fn manifest_fetched(&mut self, version: &str) {
+        let _ = log::success(format!("release manifest {version}"));
+    }
+
+    fn hub_already_installed(&mut self, hub_path: &Path) {
+        let _ = log::success(format!(
             "lumen-hub already installed: {}",
             hub_path.display()
-        ))?;
-        return Ok(hub_path);
+        ));
     }
 
-    fs::create_dir_all(install_dir).map_err(|source| CliError::CreateDir {
-        path: install_dir.to_path_buf(),
-        source,
-    })?;
-    let downloads_dir = install_dir.join(".downloads");
-    fs::create_dir_all(&downloads_dir).map_err(|source| CliError::CreateDir {
-        path: downloads_dir.clone(),
-        source,
-    })?;
-    let archive_path = downloads_dir.join(&artifact.file_name);
-    download_artifact(artifact, &archive_path)?;
-    verify_sha256(&archive_path, &artifact.sha256)?;
-    extract_artifact(&archive_path, install_dir, artifact)?;
-    fs::write(&marker, serde_json::to_string_pretty(artifact)? + "\n").map_err(|source| {
-        CliError::WriteFile {
-            path: marker,
-            source,
-        }
-    })?;
-
-    if !hub_path.is_file() {
-        return Err(CliError::InvalidArgument(format!(
-            "installed artifact did not contain `{}`",
-            hub_path.display()
-        )));
-    }
-    make_executable(&hub_path)?;
-    log::success(format!("lumen-hub ready: {}", hub_path.display()))?;
-    Ok(hub_path)
-}
-
-fn download_artifact(artifact: &HubArtifact, target: &Path) -> Result<(), CliError> {
-    validate_hub_artifact(artifact)?;
-    if target.is_file() {
-        if sha256_file(target)? == artifact.sha256 {
-            log::success(format!("using cached {}", target.display()))?;
-            return Ok(());
-        }
-        fs::remove_file(target).map_err(|source| CliError::WriteFile {
-            path: target.to_path_buf(),
-            source,
-        })?;
+    fn download_started(&mut self, file_name: &str, total: Option<u64>) {
+        let detail = total
+            .map(format_bytes)
+            .map(|size| format!(" ({size})"))
+            .unwrap_or_default();
+        let _ = log::step(format!("downloading {file_name}{detail}"));
     }
 
-    let tmp = target.with_extension("download");
-    if tmp.exists() {
-        fs::remove_file(&tmp).map_err(|source| CliError::WriteFile {
-            path: tmp.clone(),
-            source,
-        })?;
-    }
-
-    let mut response = ureq::get(&artifact.url).call()?;
-    let content_len = response
-        .headers()
-        .get("content-length")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok());
-    let mut output = fs::File::create(&tmp).map_err(|source| CliError::WriteFile {
-        path: tmp.clone(),
-        source,
-    })?;
-    let mut reader = response.body_mut().as_reader();
-    let mut buffer = [0_u8; 128 * 1024];
-    let progress = content_len.map(|len| {
-        let progress = progress_bar(len).with_download_template();
-        progress.start(format!("downloading {}", artifact.file_name));
-        progress
-    });
-    let fallback_spinner = if progress.is_none() {
-        let spinner = spinner();
-        spinner.start(format!("downloading {}", artifact.file_name));
-        Some(spinner)
-    } else {
-        None
-    };
-    let mut written = 0_u64;
-
-    loop {
-        let read = reader.read(&mut buffer).map_err(CliError::Io)?;
-        if read == 0 {
-            break;
-        }
-        output
-            .write_all(&buffer[..read])
-            .map_err(|source| CliError::WriteFile {
-                path: tmp.clone(),
-                source,
-            })?;
-        written += read as u64;
-        if let Some(progress) = &progress {
-            progress.inc(read as u64);
-        }
-    }
-    output.flush().map_err(|source| CliError::WriteFile {
-        path: tmp.clone(),
-        source,
-    })?;
-    if let Some(progress) = progress {
-        progress.stop(format!("downloaded {}", artifact.file_name));
-    }
-    if let Some(spinner) = fallback_spinner {
-        spinner.stop(format!(
-            "downloaded {} ({})",
-            artifact.file_name,
+    fn download_finished(&mut self, file_name: &str, written: u64) {
+        let _ = log::success(format!(
+            "downloaded {file_name} ({})",
             format_bytes(written)
         ));
     }
 
-    fs::rename(&tmp, target).map_err(|source| CliError::WriteFile {
-        path: target.to_path_buf(),
-        source,
-    })?;
-    Ok(())
-}
-
-fn verify_sha256(path: &Path, expected: &str) -> Result<(), CliError> {
-    log::step(format!("verifying {}", path.display()))?;
-    let actual = sha256_file(path)?;
-    if actual != expected {
-        return Err(CliError::ChecksumMismatch {
-            path: path.to_path_buf(),
-            expected: expected.to_owned(),
-            actual,
-        });
+    fn verify_started(&mut self, path: &Path) {
+        let _ = log::step(format!("verifying {}", path.display()));
     }
-    log::success("checksum ok")?;
-    Ok(())
-}
 
-fn extract_artifact(
-    archive_path: &Path,
-    install_dir: &Path,
-    artifact: &HubArtifact,
-) -> Result<(), CliError> {
-    log::step(format!("extracting {}", archive_path.display()))?;
-    if artifact.file_name.ends_with(".zip") {
-        extract_zip(archive_path, install_dir)?;
-    } else if artifact.file_name.ends_with(".tar.gz") || artifact.file_name.ends_with(".tgz") {
-        extract_tar_gz(archive_path, install_dir)?;
-    } else {
-        return Err(CliError::InvalidArgument(format!(
-            "unsupported archive format `{}`",
-            artifact.file_name
-        )));
+    fn verify_finished(&mut self, _path: &Path) {
+        let _ = log::success("checksum ok");
     }
-    Ok(())
-}
 
-fn extract_zip(archive_path: &Path, install_dir: &Path) -> Result<(), CliError> {
-    let file = fs::File::open(archive_path).map_err(|source| CliError::ReadFile {
-        path: archive_path.to_path_buf(),
-        source,
-    })?;
-    let mut archive = zip::ZipArchive::new(file)?;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index)?;
-        let path = normalize_zip_archive_path(entry.name())?;
-        if entry.is_dir() {
-            continue;
-        }
-        let relative = strip_archive_root(&path);
-        if relative.as_os_str().is_empty() {
-            continue;
-        }
-        let target = install_dir.join(relative);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|source| CliError::CreateDir {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-        let mut output = fs::File::create(&target).map_err(|source| CliError::WriteFile {
-            path: target.clone(),
-            source,
-        })?;
-        io::copy(&mut entry, &mut output).map_err(CliError::Io)?;
-        #[cfg(unix)]
-        if let Some(mode) = entry.unix_mode() {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&target, fs::Permissions::from_mode(mode)).map_err(|source| {
-                CliError::WriteFile {
-                    path: target.clone(),
-                    source,
-                }
-            })?;
-        }
+    fn extract_started(&mut self, path: &Path) {
+        let _ = log::step(format!("extracting {}", path.display()));
     }
-    Ok(())
-}
 
-fn extract_tar_gz(archive_path: &Path, install_dir: &Path) -> Result<(), CliError> {
-    let file = fs::File::open(archive_path).map_err(|source| CliError::ReadFile {
-        path: archive_path.to_path_buf(),
-        source,
-    })?;
-    let decoder = GzDecoder::new(file);
-    let mut archive = tar::Archive::new(decoder);
-
-    for entry in archive.entries().map_err(CliError::Io)? {
-        let mut entry = entry.map_err(CliError::Io)?;
-        let raw_path = entry.path().map_err(CliError::Io)?.into_owned();
-        validate_archive_path(&raw_path)?;
-        let entry_type = entry.header().entry_type();
-        if entry_type.is_symlink() || entry_type.is_hard_link() {
-            return Err(CliError::InvalidArgument(format!(
-                "archive contains link entry `{}`",
-                raw_path.display()
-            )));
-        }
-
-        let relative = strip_archive_root(&raw_path);
-        if relative.as_os_str().is_empty() {
-            continue;
-        }
-        let target = install_dir.join(relative);
-        if entry_type.is_dir() {
-            fs::create_dir_all(&target).map_err(|source| CliError::CreateDir {
-                path: target,
-                source,
-            })?;
-            continue;
-        }
-        if !entry_type.is_file() {
-            return Err(CliError::InvalidArgument(format!(
-                "archive contains unsupported entry `{}`",
-                raw_path.display()
-            )));
-        }
-
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|source| CliError::CreateDir {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-        let mut output = fs::File::create(&target).map_err(|source| CliError::WriteFile {
-            path: target.clone(),
-            source,
-        })?;
-        io::copy(&mut entry, &mut output).map_err(CliError::Io)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = entry.header().mode().map_err(CliError::Io)?;
-            fs::set_permissions(&target, fs::Permissions::from_mode(mode)).map_err(|source| {
-                CliError::WriteFile {
-                    path: target.clone(),
-                    source,
-                }
-            })?;
-        }
+    fn hub_installed(&mut self, hub_path: &Path) {
+        let _ = log::success(format!("lumen-hub ready: {}", hub_path.display()));
     }
-    Ok(())
-}
 
-fn strip_archive_root(path: &Path) -> PathBuf {
-    let mut components = path.components();
-    let _ = components.next();
-    components.as_path().to_path_buf()
-}
-
-fn validate_manifest_url(url: &str) -> Result<(), CliError> {
-    validate_https_url(url, "manifest URL")?;
-    if untrusted_release_urls_allowed() {
-        return Ok(());
-    }
-    if url == DEFAULT_MANIFEST_URL || matches_official_release_asset_url(url, "manifest.json") {
-        return Ok(());
-    }
-    Err(CliError::InvalidArgument(format!(
-        "refusing untrusted manifest URL `{url}`; set LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS=1 only if you control that mirror"
-    )))
-}
-
-fn validate_hub_artifact(artifact: &HubArtifact) -> Result<(), CliError> {
-    validate_release_component(&artifact.profile, "release profile")?;
-    validate_artifact_file_name(&artifact.file_name)?;
-    validate_sha256_text(&artifact.sha256, &artifact.file_name)?;
-    validate_artifact_url(&artifact.url, &artifact.file_name)
-}
-
-fn validate_artifact_url(url: &str, file_name: &str) -> Result<(), CliError> {
-    validate_https_url(url, "artifact URL")?;
-    if untrusted_release_urls_allowed() || matches_official_release_asset_url(url, file_name) {
-        return Ok(());
-    }
-    Err(CliError::InvalidArgument(format!(
-        "refusing untrusted artifact URL `{url}` for `{file_name}`; set LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS=1 only if you control that mirror"
-    )))
-}
-
-fn validate_https_url(url: &str, label: &str) -> Result<(), CliError> {
-    if url.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
-        return Err(CliError::InvalidArgument(format!(
-            "{label} contains whitespace or control characters"
-        )));
-    }
-    if !url.starts_with("https://") {
-        return Err(CliError::InvalidArgument(format!("{label} must use https")));
-    }
-    Ok(())
-}
-
-fn matches_official_release_asset_url(url: &str, file_name: &str) -> bool {
-    if let Some(actual) = url.strip_prefix(OFFICIAL_RELEASE_LATEST_DOWNLOAD_PREFIX) {
-        return actual == file_name;
-    }
-    let Some(rest) = url.strip_prefix(OFFICIAL_RELEASE_DOWNLOAD_PREFIX) else {
-        return false;
-    };
-    let Some((tag, actual)) = rest.rsplit_once('/') else {
-        return false;
-    };
-    !tag.is_empty() && !tag.contains('/') && actual == file_name
-}
-
-fn untrusted_release_urls_allowed() -> bool {
-    env::var("LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS").is_ok_and(|value| value == "1")
-}
-
-fn validate_release_component(value: &str, label: &str) -> Result<(), CliError> {
-    if value.is_empty()
-        || value == "."
-        || value == ".."
-        || value.contains('/')
-        || value.contains('\\')
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-    {
-        return Err(CliError::InvalidArgument(format!(
-            "invalid {label} `{value}`"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_artifact_file_name(file_name: &str) -> Result<(), CliError> {
-    validate_release_component(file_name, "artifact file name")?;
-    if file_name.ends_with(".zip") || file_name.ends_with(".tar.gz") || file_name.ends_with(".tgz")
-    {
-        Ok(())
-    } else {
-        Err(CliError::InvalidArgument(format!(
-            "unsupported artifact file name `{file_name}`"
-        )))
-    }
-}
-
-fn validate_sha256_text(value: &str, file_name: &str) -> Result<(), CliError> {
-    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(CliError::InvalidArgument(format!(
-            "invalid sha256 for `{file_name}`"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_archive_path(path: &Path) -> Result<(), CliError> {
-    let path_text = path.to_string_lossy();
-    if path_text.contains('\\') || is_unsafe_normalized_archive_name(&path_text) {
-        return Err(CliError::InvalidArgument(format!(
-            "unsafe archive entry `{}`",
-            path.display()
-        )));
-    }
-    Ok(())
-}
-
-fn normalize_zip_archive_path(name: &str) -> Result<PathBuf, CliError> {
-    let normalized = name.replace('\\', "/");
-    if is_unsafe_normalized_archive_name(&normalized) {
-        return Err(CliError::InvalidArgument(format!(
-            "unsafe archive entry `{name}`"
-        )));
-    }
-    Ok(PathBuf::from(normalized))
-}
-
-fn is_unsafe_normalized_archive_name(name: &str) -> bool {
-    name.is_empty()
-        || name.starts_with('/')
-        || name.contains(':')
-        || name.split('/').any(|part| part == "..")
-}
-
-fn sha256_file(path: &Path) -> Result<String, CliError> {
-    let mut file = fs::File::open(path).map_err(|source| CliError::ReadFile {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let read = file.read(&mut buffer).map_err(CliError::Io)?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn hub_exe_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "lumen-hub.exe"
-    } else {
-        "lumen-hub"
-    }
-}
-
-#[cfg(unix)]
-fn make_executable(path: &Path) -> Result<(), CliError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = fs::metadata(path)
-        .map_err(|source| CliError::ReadFile {
-            path: path.to_path_buf(),
-            source,
-        })?
-        .permissions();
-    permissions.set_mode(permissions.mode() | 0o755);
-    fs::set_permissions(path, permissions).map_err(|source| CliError::WriteFile {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-#[cfg(not(unix))]
-fn make_executable(_path: &Path) -> Result<(), CliError> {
-    Ok(())
-}
-
-fn format_bytes(bytes: u64) -> String {
-    const KIB: f64 = 1024.0;
-    const MIB: f64 = KIB * 1024.0;
-    const GIB: f64 = MIB * 1024.0;
-    let bytes_f = bytes as f64;
-    if bytes_f >= GIB {
-        format!("{:.2} GiB", bytes_f / GIB)
-    } else if bytes_f >= MIB {
-        format!("{:.1} MiB", bytes_f / MIB)
-    } else if bytes_f >= KIB {
-        format!("{:.1} KiB", bytes_f / KIB)
-    } else {
-        format!("{bytes} B")
+    fn hub_starting(&mut self, hub_path: &Path) {
+        let _ = log::step(format!("starting {}", hub_path.display()));
     }
 }
 
@@ -1495,32 +1004,6 @@ struct MemoryInfo {
     total_gb: Option<f64>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct Bootstrap {
-    version: String,
-    region: String,
-    preset: String,
-    platform: String,
-    backend: String,
-    release_profile: String,
-    cache_dir: String,
-    config_path: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReleaseManifest {
-    version: String,
-    hub: Vec<HubArtifact>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct HubArtifact {
-    profile: String,
-    file_name: String,
-    url: String,
-    sha256: String,
-}
-
 #[derive(Debug, Error)]
 enum CliError {
     #[error("help requested")]
@@ -1538,33 +1021,11 @@ enum CliError {
     #[error("failed to create directory `{}`: {source}", path.display())]
     CreateDir { path: PathBuf, source: io::Error },
 
-    #[error("failed to read file `{}`: {source}", path.display())]
-    ReadFile { path: PathBuf, source: io::Error },
-
     #[error("failed to write file `{}`: {source}", path.display())]
     WriteFile { path: PathBuf, source: io::Error },
 
-    #[error("failed to spawn lumen-hub `{}`: {source}", path.display())]
-    SpawnHub { path: PathBuf, source: io::Error },
-
-    #[error("lumen-hub {0}")]
-    HubExited(FormattedExitStatus),
-
-    #[error("checksum mismatch for `{}`: expected {expected}, got {actual}", path.display())]
-    ChecksumMismatch {
-        path: PathBuf,
-        expected: String,
-        actual: String,
-    },
-
     #[error("io error: {0}")]
     Io(#[from] io::Error),
-
-    #[error("http error: {0}")]
-    Http(#[from] ureq::Error),
-
-    #[error("zip error: {0}")]
-    Zip(#[from] zip::result::ZipError),
 
     #[error("yaml error: {0}")]
     Yaml(#[from] serde_yaml::Error),
@@ -1574,49 +1035,9 @@ enum CliError {
 
     #[error("generated config failed validation: {0}")]
     Config(#[from] lumen_schema::ConfigValidationError),
-}
 
-#[derive(Debug, Clone)]
-struct FormattedExitStatus(std::process::ExitStatus);
-
-impl std::fmt::Display for FormattedExitStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let status = self.0;
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::ExitStatusExt;
-            if let Some(code) = status.code() {
-                write!(f, "exited with status code: {code}")
-            } else if let Some(signal) = status.signal() {
-                let signal_desc = match signal {
-                    1 => "SIGHUP (hangup)",
-                    2 => "SIGINT (interrupt)",
-                    3 => "SIGQUIT (quit)",
-                    4 => "SIGILL (illegal instruction)",
-                    5 => "SIGTRAP (trace trap)",
-                    6 => "SIGABRT (abort)",
-                    8 => "SIGFPE (floating-point exception)",
-                    9 => "SIGKILL (kill)",
-                    11 => "SIGSEGV (segmentation fault)",
-                    13 => "SIGPIPE (broken pipe)",
-                    14 => "SIGALRM (alarm clock)",
-                    15 => "SIGTERM (termination)",
-                    _ => "unknown signal",
-                };
-                write!(f, "was terminated by signal {signal} ({signal_desc})")
-            } else {
-                write!(f, "exited for unknown reasons")
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            if let Some(code) = status.code() {
-                write!(f, "exited with status code: {code}")
-            } else {
-                write!(f, "exited")
-            }
-        }
-    }
+    #[error("{0}")]
+    Launcher(#[from] LauncherError),
 }
 
 #[cfg(test)]
@@ -1766,47 +1187,5 @@ mod tests {
         );
         validate_yaml_config(&config).unwrap();
         assert!(config.contains(r"cache_dir: 'C:\Users\edwin\.lumen\models'"));
-    }
-
-    #[test]
-    fn validates_release_artifact_metadata() {
-        let sha256 = "a".repeat(64);
-        let artifact = HubArtifact {
-            profile: "linux-x64-cuda".to_owned(),
-            file_name: "lumen-hub-linux-x64-cuda.tar.gz".to_owned(),
-            url: "https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/v0.1.0/lumen-hub-linux-x64-cuda.tar.gz".to_owned(),
-            sha256,
-        };
-        validate_hub_artifact(&artifact).unwrap();
-
-        let mut bad_file = artifact.clone();
-        bad_file.file_name = "../lumen-hub.tar.gz".to_owned();
-        assert!(validate_hub_artifact(&bad_file).is_err());
-
-        let mut bad_url = artifact.clone();
-        bad_url.url = "https://example.com/lumen-hub-linux-x64-cuda.tar.gz".to_owned();
-        assert!(validate_hub_artifact(&bad_url).is_err());
-    }
-
-    #[test]
-    fn validates_archive_entry_paths() {
-        assert!(validate_archive_path(Path::new("lumen-hub/bin/lumen-hub")).is_ok());
-        assert!(validate_archive_path(Path::new("../bin/lumen-hub")).is_err());
-        assert!(validate_archive_path(Path::new("lumen-hub/../bin/lumen-hub")).is_err());
-        assert!(validate_archive_path(Path::new("/tmp/lumen-hub")).is_err());
-        assert!(validate_archive_path(Path::new(r"lumen-hub\bin\lumen-hub")).is_err());
-    }
-
-    #[test]
-    fn normalizes_legacy_windows_zip_entry_paths() {
-        assert_eq!(
-            normalize_zip_archive_path(r"lumen-hub-windows-x64-dml\README.md")
-                .unwrap()
-                .to_string_lossy(),
-            "lumen-hub-windows-x64-dml/README.md"
-        );
-        assert!(normalize_zip_archive_path(r"..\lumen-hub.exe").is_err());
-        assert!(normalize_zip_archive_path(r"C:\tmp\lumen-hub.exe").is_err());
-        assert!(normalize_zip_archive_path(r"\\server\share\lumen-hub.exe").is_err());
     }
 }

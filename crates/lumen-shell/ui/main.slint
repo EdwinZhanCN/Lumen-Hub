@@ -1,0 +1,85 @@
+import { Button, HorizontalBox, ScrollView, VerticalBox } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    in property <string> status-text;
+    in property <string> config-path;
+    in property <string> profile-text;
+    in property <string> log-text;
+
+    callback start-requested();
+    callback stop-requested();
+
+    title: "Lumen Hub";
+    width: 960px;
+    height: 640px;
+    background: #f7f8fb;
+
+    VerticalBox {
+        padding: 18px;
+        spacing: 12px;
+
+        HorizontalBox {
+            spacing: 12px;
+            Text {
+                text: "Lumen Hub";
+                font-size: 28px;
+                color: #172033;
+                horizontal-stretch: 1;
+            }
+            Button {
+                text: "Start";
+                clicked => { root.start-requested(); }
+            }
+            Button {
+                text: "Stop";
+                clicked => { root.stop-requested(); }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: #d8deea;
+        }
+
+        VerticalBox {
+            spacing: 4px;
+            Text {
+                text: "Status: " + root.status-text;
+                font-size: 16px;
+                color: #172033;
+            }
+            Text {
+                text: "Config: " + root.config-path;
+                color: #4a5568;
+            }
+            Text {
+                text: root.profile-text;
+                color: #4a5568;
+            }
+        }
+
+        Rectangle {
+            background: #ffffff;
+            border-color: #d8deea;
+            border-width: 1px;
+            border-radius: 6px;
+            vertical-stretch: 1;
+
+            ScrollView {
+                viewport-width: parent.width;
+                viewport-height: parent.height;
+
+                Text {
+                    x: 12px;
+                    y: 12px;
+                    width: parent.width - 24px;
+                    text: root.log-text;
+                    color: #172033;
+                    font-family: "monospace";
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}
