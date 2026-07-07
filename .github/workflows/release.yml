@@ -298,7 +298,7 @@ jobs:
               run: cargo install cargo-packager --locked
 
             - name: Package Lumen Shell
-              run: cargo packager --release --config ${{ matrix.config }}
+              run: cargo packager --config ${{ matrix.config }}
 
             - uses: actions/upload-artifact@v4
               with:
