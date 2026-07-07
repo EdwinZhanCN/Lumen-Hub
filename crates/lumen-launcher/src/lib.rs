@@ -5,6 +5,9 @@ use std::{
     process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
 };
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -222,6 +225,7 @@ where
                 .stderr(Stdio::inherit());
         }
         HubStdio::Piped => {
+            hide_console_window(&mut command);
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
@@ -611,6 +615,15 @@ fn matches_official_release_asset_url(url: &str, file_name: &str) -> bool {
 fn untrusted_release_urls_allowed() -> bool {
     env::var("LUMEN_ALLOW_UNTRUSTED_RELEASE_URLS").is_ok_and(|value| value == "1")
 }
+
+#[cfg(target_os = "windows")]
+fn hide_console_window(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_console_window(_command: &mut Command) {}
 
 fn validate_release_component(value: &str, label: &str) -> Result<(), LauncherError> {
     if value.is_empty()

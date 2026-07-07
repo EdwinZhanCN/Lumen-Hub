@@ -9,6 +9,9 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use lumen_launcher::{
     HubStdio, LaunchObserver, LauncherError, RunningHub, StartOptions, format_bytes, prepare_hub,
     resolve_start_plan, setup, spawn_hub,
@@ -700,10 +703,15 @@ where
     R: Read + Send + 'static,
 {
     thread::spawn(move || {
-        let reader = BufReader::new(reader);
-        for line in reader.lines() {
-            match line {
-                Ok(line) => {
+        let mut reader = BufReader::new(reader);
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            match reader.read_until(b'\n', &mut buffer) {
+                Ok(0) => return,
+                Ok(_) => {
+                    trim_line_end(&mut buffer);
+                    let line = decode_output_bytes(&buffer);
                     let _ = tx.send(UiMessage::Log(format!("[{label}] {line}")));
                 }
                 Err(error) => {
@@ -713,6 +721,87 @@ where
             }
         }
     });
+}
+
+fn trim_line_end(bytes: &mut Vec<u8>) {
+    while matches!(bytes.last(), Some(b'\n' | b'\r')) {
+        bytes.pop();
+    }
+}
+
+fn decode_output_bytes(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    decode_non_utf8_output(bytes)
+}
+
+#[cfg(target_os = "windows")]
+fn decode_non_utf8_output(bytes: &[u8]) -> String {
+    let acp = decode_windows_code_page(bytes, windows_sys::Win32::Globalization::CP_ACP);
+    let gbk = decode_windows_code_page(bytes, 936);
+
+    match (acp, gbk) {
+        (Some(acp), Some(gbk)) if contains_cjk(&gbk) && !contains_cjk(&acp) => gbk,
+        (Some(acp), _) => acp,
+        (None, Some(gbk)) => gbk,
+        (None, None) => String::from_utf8_lossy(bytes).into_owned(),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn decode_non_utf8_output(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+#[cfg(target_os = "windows")]
+fn decode_windows_code_page(bytes: &[u8], code_page: u32) -> Option<String> {
+    use windows_sys::Win32::Globalization::{MB_ERR_INVALID_CHARS, MultiByteToWideChar};
+
+    if bytes.is_empty() {
+        return Some(String::new());
+    }
+    let byte_len = i32::try_from(bytes.len()).ok()?;
+    unsafe {
+        let wide_len = MultiByteToWideChar(
+            code_page,
+            MB_ERR_INVALID_CHARS,
+            bytes.as_ptr(),
+            byte_len,
+            std::ptr::null_mut(),
+            0,
+        );
+        if wide_len == 0 {
+            return None;
+        }
+        let mut wide = vec![0_u16; wide_len as usize];
+        let written = MultiByteToWideChar(
+            code_page,
+            MB_ERR_INVALID_CHARS,
+            bytes.as_ptr(),
+            byte_len,
+            wide.as_mut_ptr(),
+            wide_len,
+        );
+        if written == 0 {
+            return None;
+        }
+        wide.truncate(written as usize);
+        String::from_utf16(&wide).ok()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn contains_cjk(text: &str) -> bool {
+    text.chars().any(|ch| {
+        ('\u{3400}'..='\u{4dbf}').contains(&ch) || ('\u{4e00}'..='\u{9fff}').contains(&ch)
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn hide_console_window(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
 }
 
 fn apply_message(app: &AppWindow, message: UiMessage) {
@@ -892,8 +981,12 @@ fn escape_applescript(value: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn run_powershell_dialog(script: &str) -> Result<Option<PathBuf>, String> {
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", script])
+    let script =
+        format!("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); {script}");
+    let mut command = Command::new("powershell");
+    hide_console_window(&mut command);
+    let output = command
+        .args(["-NoProfile", "-STA", "-Command", &script])
         .output()
         .map_err(|error| format!("failed to run PowerShell picker: {error}"))?;
     picker_output(output)
@@ -910,14 +1003,14 @@ fn run_zenity(args: &[&str]) -> Result<Option<PathBuf>, String> {
 
 fn picker_output(output: std::process::Output) -> Result<Option<PathBuf>, String> {
     if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let stdout = decode_output_bytes(&output.stdout).trim().to_owned();
         if stdout.is_empty() {
             Ok(None)
         } else {
             Ok(Some(PathBuf::from(stdout)))
         }
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = decode_output_bytes(&output.stderr);
         if stderr.trim().is_empty() || stderr.contains("User canceled") || stderr.contains("-128") {
             Ok(None)
         } else {

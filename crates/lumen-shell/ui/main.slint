@@ -190,6 +190,7 @@ export component AppWindow inherits Window {
     max-width: 100000px;
     max-height: 100000px;
     background: #f5f7fb;
+    default-font-family: "Microsoft YaHei UI";
 
     if root.setup-visible: VerticalBox {
         padding: 28px;
@@ -645,11 +646,10 @@ export component AppWindow inherits Window {
                 ScrollView {
                     vertical-stretch: 1;
 
-                        Text {
-                            width: parent.width;
-                            text: root.log-text;
+                    Text {
+                        width: parent.width;
+                        text: root.log-text;
                         color: #172033;
-                        font-family: "monospace";
                         font-size: 13px;
                         wrap: word-wrap;
                     }

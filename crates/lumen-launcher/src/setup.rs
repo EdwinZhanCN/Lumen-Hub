@@ -4,6 +4,9 @@ use std::{
     process::Command,
 };
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
 use lumen_schema::LumenConfig;
 use thiserror::Error;
 
@@ -512,7 +515,9 @@ pub fn total_memory_bytes() -> Option<u64> {
 
     #[cfg(target_os = "windows")]
     {
-        let output = Command::new("powershell")
+        let mut command = Command::new("powershell");
+        hide_console_window(&mut command);
+        let output = command
             .args([
                 "-NoProfile",
                 "-Command",
@@ -570,7 +575,9 @@ pub fn free_disk_gb(path: &Path) -> Option<f64> {
     #[cfg(windows)]
     {
         let root = path.components().next()?.as_os_str().to_string_lossy();
-        let output = Command::new("powershell")
+        let mut command = Command::new("powershell");
+        hide_console_window(&mut command);
+        let output = command
             .args([
                 "-NoProfile",
                 "-Command",
@@ -676,6 +683,12 @@ fn command_stdout(name: &str, args: &[&str]) -> Option<String> {
         return None;
     }
     String::from_utf8(output.stdout).ok()
+}
+
+#[cfg(target_os = "windows")]
+fn hide_console_window(command: &mut Command) {
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    command.creation_flags(CREATE_NO_WINDOW);
 }
 
 fn home_dir() -> Option<PathBuf> {

@@ -12,5 +12,8 @@ dist = false
 lumen-launcher = { path = "../lumen-launcher" }
 slint = "1.17.0"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Globalization"] }
+
 [build-dependencies]
 slint-build = "1.17.0"
