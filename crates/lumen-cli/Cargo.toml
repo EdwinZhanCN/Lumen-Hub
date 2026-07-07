@@ -7,8 +7,4 @@ repository = "https://github.com/EdwinZhanCN/Lumen-Hub"
 [dependencies]
 cliclack = "0.5.4"
 lumen-launcher = { path = "../lumen-launcher" }
-lumen-schema = { path = "../lumen-schema" }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-serde_yaml = "0.9.34"
 thiserror = "2.0.18"

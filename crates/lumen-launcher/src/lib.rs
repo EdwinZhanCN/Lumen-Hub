@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod setup;
+
 pub const DEFAULT_MANIFEST_URL: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/manifest.json";
 const OFFICIAL_RELEASE_DOWNLOAD_PREFIX: &str =

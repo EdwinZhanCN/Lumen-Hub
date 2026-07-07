@@ -1,38 +1,593 @@
-import { Button, HorizontalBox, ScrollView, VerticalBox } from "std-widgets.slint";
+import { HorizontalBox, LineEdit, ScrollView, VerticalBox } from "std-widgets.slint";
+export { I18n } from "i18n.slint";
+import { I18n } from "i18n.slint";
+
+component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    in property <length> button-width: 112px;
+    callback clicked();
+
+    width: root.button-width;
+    height: 40px;
+    border-radius: 6px;
+    background: !root.enabled ? #e5e9f2 : root.danger ? #ffe7e2 : #183b6b;
+    border-color: !root.enabled ? #cbd3e1 : root.danger ? #e0553f : #183b6b;
+    border-width: 1px;
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        color: !root.enabled ? #667085 : root.danger ? #9f2f21 : #ffffff;
+        font-size: 14px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+component ChoiceButton inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    in property <bool> compact: false;
+    callback clicked();
+
+    min-height: root.compact ? 58px : 64px;
+    horizontal-stretch: 1;
+    border-radius: 8px;
+    background: !root.enabled ? #f2f4f7 : root.selected ? #eaf2ff : #ffffff;
+    border-color: !root.enabled ? #d0d5dd : root.selected ? #183b6b : touch.has-hover ? #6c86ad : #cad3e2;
+    border-width: root.selected ? 2px : 1px;
+
+    VerticalBox {
+        padding: 12px;
+        spacing: 4px;
+
+        Text {
+            text: root.title;
+            color: !root.enabled ? #667085 : #172033;
+            font-size: 14px;
+            font-weight: 700;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: root.detail;
+            color: !root.enabled ? #98a2b3 : #4a5568;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            if (root.enabled) {
+                root.clicked();
+            }
+        }
+    }
+}
+
+component FieldRow inherits Rectangle {
+    in property <string> label;
+    in-out property <string> value;
+    callback browse();
+
+    min-height: 38px;
+    background: transparent;
+
+    HorizontalBox {
+        spacing: 10px;
+
+        Text {
+            text: root.label;
+            width: 136px;
+            color: #344054;
+            font-size: 12px;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+
+        LineEdit {
+            text <=> root.value;
+            horizontal-stretch: 1;
+        }
+
+        ActionButton {
+            text: I18n.browse;
+            button-width: 96px;
+            clicked => {
+                root.browse();
+            }
+        }
+    }
+}
+
+component StepDot inherits Rectangle {
+    in property <bool> active: false;
+    in property <bool> completed: false;
+
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    background: root.active ? #183b6b : root.completed ? #6c86ad : #d0d5dd;
+}
 
 export component AppWindow inherits Window {
     in property <string> status-text;
     in property <string> config-path;
     in property <string> profile-text;
+    in property <string> setup-step-title;
+    in property <string> setup-step-detail;
+    in property <string> setup-progress-text;
+    in property <string> detected-text;
+    in property <string> setup-warning;
+    in property <string> setup-review-text;
     in property <string> log-text;
+    in property <bool> setup-visible;
+    in property <bool> can-start;
+    in property <bool> can-stop;
+    in property <bool> existing-visible;
+    in property <bool> setup-back-enabled;
+    in property <bool> setup-next-enabled;
+    in property <bool> setup-finish-visible;
+
+    in property <int> setup-step-id;
+    in property <int> setup-step-index;
+    in property <int> setup-step-total;
+    in-out property <int> setup-wizard-cursor;
+
+    in-out property <int> selected-region-index;
+    in-out property <int> selected-preset-index;
+    in-out property <int> selected-backend-index;
+    in-out property <int> selected-existing-action;
+    in-out property <string> cache-dir-input;
+    in-out property <string> config-path-input;
+    in-out property <string> bootstrap-path-input;
+    in-out property <bool> advanced-settings-open;
+
+    in property <string> backend-0-title;
+    in property <string> backend-0-detail;
+    in property <bool> backend-0-enabled;
+    in property <string> backend-1-title;
+    in property <string> backend-1-detail;
+    in property <bool> backend-1-enabled;
+    in property <string> backend-2-title;
+    in property <string> backend-2-detail;
+    in property <bool> backend-2-enabled;
+    in property <string> backend-3-title;
+    in property <string> backend-3-detail;
+    in property <bool> backend-3-enabled;
 
     callback start-requested();
     callback stop-requested();
+    callback setup-selection-changed();
+    callback setup-create-requested();
+    callback setup-conflict-action-changed();
+    callback setup-back-requested();
+    callback setup-next-requested();
+    callback browse-cache-dir-requested();
+    callback browse-config-path-requested();
+    callback browse-bootstrap-path-requested();
 
     title: "Lumen Hub";
-    width: 960px;
-    height: 640px;
-    background: #f7f8fb;
+    preferred-width: 1120px;
+    preferred-height: 820px;
+    min-width: 640px;
+    min-height: 480px;
+    max-width: 100000px;
+    max-height: 100000px;
+    background: #f5f7fb;
 
-    VerticalBox {
-        padding: 18px;
-        spacing: 12px;
+    if root.setup-visible: VerticalBox {
+        padding: 28px;
+        spacing: 18px;
+        vertical-stretch: 1;
+        horizontal-stretch: 1;
 
-        HorizontalBox {
-            spacing: 12px;
+        VerticalBox {
+            spacing: 6px;
+
             Text {
                 text: "Lumen Hub";
                 font-size: 28px;
-                color: #172033;
+                font-weight: 700;
+                color: #101828;
+            }
+
+            Text {
+                text: root.setup-progress-text;
+                color: #667085;
+                font-size: 13px;
+            }
+        }
+
+        HorizontalBox {
+            spacing: 8px;
+            for dot[i] in root.setup-step-total: StepDot {
+                active: i + 1 == root.setup-step-index;
+                completed: i + 1 < root.setup-step-index;
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            border-radius: 10px;
+            background: #ffffff;
+            border-color: #d8deea;
+            border-width: 1px;
+
+            VerticalBox {
+                padding: 24px;
+                spacing: 16px;
+                vertical-stretch: 1;
+
+                VerticalBox {
+                    spacing: 6px;
+
+                    Text {
+                        text: root.setup-step-title;
+                        color: #102a4c;
+                        font-size: 22px;
+                        font-weight: 700;
+                    }
+
+                    Text {
+                        text: root.setup-step-detail;
+                        color: #475467;
+                        font-size: 14px;
+                        wrap: word-wrap;
+                    }
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+
+                    VerticalBox {
+                        spacing: 12px;
+                        width: parent.width;
+
+                        if root.setup-step-id == 0: VerticalBox {
+                            spacing: 10px;
+
+                            Text {
+                                text: root.detected-text;
+                                color: #344054;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        if root.setup-step-id == 1: VerticalBox {
+                            spacing: 10px;
+
+                            ChoiceButton {
+                                title: I18n.conflict-overwrite-title;
+                                detail: I18n.conflict-overwrite-detail;
+                                selected: root.selected-existing-action == 0;
+                                clicked => {
+                                    root.selected-existing-action = 0;
+                                    root.setup-conflict-action-changed();
+                                }
+                            }
+
+                            ChoiceButton {
+                                title: I18n.conflict-next-title;
+                                detail: I18n.conflict-next-detail;
+                                selected: root.selected-existing-action == 1;
+                                clicked => {
+                                    root.selected-existing-action = 1;
+                                    root.setup-conflict-action-changed();
+                                }
+                            }
+
+                            ChoiceButton {
+                                title: I18n.conflict-cancel-title;
+                                detail: I18n.conflict-cancel-detail;
+                                selected: root.selected-existing-action == 2;
+                                clicked => {
+                                    root.selected-existing-action = 2;
+                                    root.setup-conflict-action-changed();
+                                }
+                            }
+                        }
+
+                        if root.setup-step-id == 2: VerticalBox {
+                            spacing: 10px;
+
+                            ChoiceButton {
+                                title: I18n.region-other-title;
+                                detail: I18n.region-other-detail;
+                                selected: root.selected-region-index == 0;
+                                clicked => {
+                                    root.selected-region-index = 0;
+                                    root.setup-selection-changed();
+                                }
+                            }
+
+                            ChoiceButton {
+                                title: I18n.region-cn-title;
+                                detail: I18n.region-cn-detail;
+                                selected: root.selected-region-index == 1;
+                                clicked => {
+                                    root.selected-region-index = 1;
+                                    root.setup-selection-changed();
+                                }
+                            }
+                        }
+
+                        if root.setup-step-id == 3: VerticalBox {
+                            spacing: 10px;
+
+                            ChoiceButton {
+                                title: I18n.preset-0-title;
+                                detail: I18n.preset-0-detail;
+                                selected: root.selected-preset-index == 0;
+                                clicked => {
+                                    root.selected-preset-index = 0;
+                                    root.setup-selection-changed();
+                                }
+                            }
+
+                            ChoiceButton {
+                                title: I18n.preset-1-title;
+                                detail: I18n.preset-1-detail;
+                                selected: root.selected-preset-index == 1;
+                                clicked => {
+                                    root.selected-preset-index = 1;
+                                    root.setup-selection-changed();
+                                }
+                            }
+
+                            ChoiceButton {
+                                title: I18n.preset-2-title;
+                                detail: I18n.preset-2-detail;
+                                selected: root.selected-preset-index == 2;
+                                clicked => {
+                                    root.selected-preset-index = 2;
+                                    root.setup-selection-changed();
+                                }
+                            }
+                        }
+
+                        if root.setup-step-id == 4: VerticalBox {
+                            spacing: 10px;
+
+                            ChoiceButton {
+                                title: root.backend-0-title;
+                                detail: root.backend-0-detail;
+                                enabled: root.backend-0-enabled;
+                                selected: root.selected-backend-index == 0;
+                                clicked => {
+                                    root.selected-backend-index = 0;
+                                    root.setup-selection-changed();
+                                }
+                            }
+
+                            ChoiceButton {
+                                title: root.backend-1-title;
+                                detail: root.backend-1-detail;
+                                enabled: root.backend-1-enabled;
+                                selected: root.selected-backend-index == 1;
+                                clicked => {
+                                    root.selected-backend-index = 1;
+                                    root.setup-selection-changed();
+                                }
+                            }
+
+                            if !root.backend-2-title.is-empty: ChoiceButton {
+                                title: root.backend-2-title;
+                                detail: root.backend-2-detail;
+                                enabled: root.backend-2-enabled;
+                                selected: root.selected-backend-index == 2;
+                                clicked => {
+                                    root.selected-backend-index = 2;
+                                    root.setup-selection-changed();
+                                }
+                            }
+
+                            if !root.backend-3-title.is-empty: ChoiceButton {
+                                title: root.backend-3-title;
+                                detail: root.backend-3-detail;
+                                enabled: root.backend-3-enabled;
+                                selected: root.selected-backend-index == 3;
+                                clicked => {
+                                    root.selected-backend-index = 3;
+                                    root.setup-selection-changed();
+                                }
+                            }
+                        }
+
+                        if root.setup-step-id == 5: VerticalBox {
+                            spacing: 12px;
+
+                            FieldRow {
+                                label: I18n.cache-label;
+                                value <=> root.cache-dir-input;
+                                browse => {
+                                    root.browse-cache-dir-requested();
+                                }
+                            }
+
+                            Rectangle {
+                                border-radius: 8px;
+                                border-color: #cad3e2;
+                                border-width: 1px;
+                                background: #f8fafc;
+
+                                VerticalBox {
+                                    padding: 12px;
+                                    spacing: 10px;
+
+                                    Rectangle {
+                                        height: 28px;
+                                        background: transparent;
+
+                                        HorizontalBox {
+                                            spacing: 8px;
+
+                                            Text {
+                                                text: root.advanced-settings-open ? "▾" : "▸";
+                                                color: #475467;
+                                                font-size: 13px;
+                                                vertical-alignment: center;
+                                            }
+
+                                            Text {
+                                                text: I18n.advanced-settings-label;
+                                                color: #344054;
+                                                font-size: 13px;
+                                                font-weight: 600;
+                                                vertical-alignment: center;
+                                            }
+                                        }
+
+                                        TouchArea {
+                                            clicked => {
+                                                root.advanced-settings-open = !root.advanced-settings-open;
+                                            }
+                                        }
+                                    }
+
+                                    if root.advanced-settings-open: Text {
+                                        text: I18n.advanced-settings-hint;
+                                        color: #667085;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                    }
+
+                                    if root.advanced-settings-open: FieldRow {
+                                        label: I18n.config-field-label;
+                                        value <=> root.config-path-input;
+                                        browse => {
+                                            root.browse-config-path-requested();
+                                        }
+                                    }
+
+                                    if root.advanced-settings-open: FieldRow {
+                                        label: I18n.bootstrap-label;
+                                        value <=> root.bootstrap-path-input;
+                                        browse => {
+                                            root.browse-bootstrap-path-requested();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.setup-step-id == 6: VerticalBox {
+                            spacing: 10px;
+
+                            Text {
+                                text: root.setup-review-text;
+                                color: #344054;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+
+                            if root.setup-warning != "": Text {
+                                text: root.setup-warning;
+                                color: #9f2f21;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalBox {
+            spacing: 12px;
+
+            ActionButton {
+                text: I18n.back;
+                button-width: 120px;
+                enabled: root.setup-back-enabled;
+                clicked => {
+                    root.setup-back-requested();
+                }
+            }
+
+            Rectangle {
                 horizontal-stretch: 1;
             }
-            Button {
-                text: "Start";
-                clicked => { root.start-requested(); }
+
+            if !root.setup-finish-visible: ActionButton {
+                text: I18n.next;
+                button-width: 120px;
+                enabled: root.setup-next-enabled;
+                clicked => {
+                    root.setup-next-requested();
+                }
             }
-            Button {
-                text: "Stop";
-                clicked => { root.stop-requested(); }
+
+            if root.setup-finish-visible: ActionButton {
+                text: I18n.create-setup;
+                button-width: 148px;
+                enabled: root.setup-next-enabled;
+                clicked => {
+                    root.setup-create-requested();
+                }
+            }
+        }
+    }
+
+    if !root.setup-visible: VerticalBox {
+        padding: 24px;
+        spacing: 14px;
+        vertical-stretch: 1;
+        horizontal-stretch: 1;
+
+        HorizontalBox {
+            spacing: 14px;
+
+            VerticalBox {
+                spacing: 3px;
+                horizontal-stretch: 1;
+
+                Text {
+                    text: "Lumen Hub";
+                    font-size: 30px;
+                    font-weight: 700;
+                    color: #101828;
+                }
+
+                Text {
+                    text: I18n.app-subtitle;
+                    font-size: 13px;
+                    color: #667085;
+                }
+            }
+
+            ActionButton {
+                text: I18n.start;
+                enabled: root.can-start;
+                clicked => {
+                    root.start-requested();
+                }
+            }
+
+            ActionButton {
+                text: I18n.stop;
+                enabled: root.can-stop;
+                danger: true;
+                clicked => {
+                    root.stop-requested();
+                }
             }
         }
 
@@ -42,19 +597,27 @@ export component AppWindow inherits Window {
         }
 
         VerticalBox {
-            spacing: 4px;
+            spacing: 7px;
+
             Text {
-                text: "Status: " + root.status-text;
-                font-size: 16px;
+                text: I18n.status-label + ": " + root.status-text;
+                font-size: 17px;
+                font-weight: 700;
                 color: #172033;
             }
+
             Text {
-                text: "Config: " + root.config-path;
+                text: I18n.config-label + ": " + root.config-path;
                 color: #4a5568;
+                font-size: 13px;
+                wrap: word-wrap;
             }
+
             Text {
                 text: root.profile-text;
                 color: #4a5568;
+                font-size: 13px;
+                wrap: word-wrap;
             }
         }
 
@@ -62,22 +625,34 @@ export component AppWindow inherits Window {
             background: #ffffff;
             border-color: #d8deea;
             border-width: 1px;
-            border-radius: 6px;
+            border-radius: 8px;
             vertical-stretch: 1;
+            horizontal-stretch: 1;
+            min-height: 200px;
 
-            ScrollView {
-                viewport-width: parent.width;
-                viewport-height: parent.height;
+            VerticalBox {
+                padding: 14px;
+                spacing: 8px;
+                vertical-stretch: 1;
 
                 Text {
-                    x: 12px;
-                    y: 12px;
-                    width: parent.width - 24px;
-                    text: root.log-text;
-                    color: #172033;
-                    font-family: "monospace";
-                    font-size: 13px;
-                    wrap: word-wrap;
+                    text: I18n.log-label;
+                    color: #667085;
+                    font-size: 12px;
+                    font-weight: 600;
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+
+                        Text {
+                            width: parent.width;
+                            text: root.log-text;
+                        color: #172033;
+                        font-family: "monospace";
+                        font-size: 13px;
+                        wrap: word-wrap;
+                    }
                 }
             }
         }

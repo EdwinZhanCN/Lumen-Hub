@@ -5293,10 +5293,6 @@ version = "0.1.0-alpha.3"
 dependencies = [
  "cliclack",
  "lumen-launcher",
- "lumen-schema",
- "serde",
- "serde_json",
- "serde_yaml",
  "thiserror 2.0.18",
 ]
 
@@ -5356,8 +5352,10 @@ name = "lumen-launcher"
 version = "0.1.0-alpha.3"
 dependencies = [
  "flate2",
+ "lumen-schema",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "tar",
  "thiserror 2.0.18",
