@@ -1,7 +1,7 @@
 name = "lumen-shell"
 product_name = "Lumen Hub"
 identifier = "org.lumilio.lumen-hub"
-version = "0.1.0-alpha.3"
+version = "0.1.0-alpha.4"
 out_dir = "../dist/shell"
 binaries_dir = "../target/release"
 before_packaging_command = "cargo build --release -p lumen-shell"
