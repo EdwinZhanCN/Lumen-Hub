@@ -23,15 +23,28 @@ TreeOfLife taxon catalog.
 
 ## Quick start
 
+Pick the path that matches the machine the hub will run on:
+
+| Machine | Path |
+|---|---|
+| Same PC as Lumilio Photos | Enable AI from the Lumilio Photos desktop app (it downloads and supervises the hub for you) |
+| Linux server / NAS | Docker — see below |
+| A spare Mac/Windows/Linux box on your LAN | `lumen-cli` — see below |
+| Anything else / scripting | Bare binary: `lumen-hub --config config.yaml` |
+
+**Docker** (tags: `cpu` = any machine, `vulkan` = Intel iGPU/AMD, `cuda` = NVIDIA;
+details and compose file in [`packaging/docker/`](packaging/docker/README.md)):
+
 ```bash
-lumen-cli init      # detect hardware, pick a backend + preset, write config
-lumen-cli start     # download the matching hub build + models, then run
+docker run -d -p 50051:50051 -v lumen-models:/models ghcr.io/edwinzhancn/lumen-hub:cpu
 ```
 
-Or run the hub directly against a config:
+**CLI** (detects hardware, picks a backend + preset, writes config, downloads
+the matching hub build, runs it):
 
 ```bash
-lumen-hub --config config.yaml
+lumen-cli init
+lumen-cli start
 ```
 
 Models are fetched on first start into `metadata.cache_dir` from

@@ -1,0 +1,65 @@
+# Default Lumen Hub configuration baked into the container image.
+#
+# Services: SigLIP (semantic image/text), InsightFace (face), PP-OCR (text in
+# images) — the set a Lumilio Photos library uses out of the box. BioCLIP is
+# not enabled by default because its Tree of Life catalog is a large extra
+# download; enable it by mounting your own config over /etc/lumen/config.yaml.
+#
+# In mainland China set `region: cn` (models download via the HF mirror).
+#
+# The compute backend is baked into the image flavor (cpu / vulkan / cuda),
+# not configured here.
+
+metadata:
+    version: "0.1.0"
+    region: other
+    cache_dir: "/models"
+
+deployment:
+    mode: hub
+    services:
+        - siglip
+        - face
+        - ocr
+
+server:
+    host: "0.0.0.0"
+    port: 50051
+    # Dynamic batching off: concurrent batch-1 inference is faster and
+    # lower-memory on CubeCL backends. See
+    # docs/lumen-hub-tensor-batching-decision.md.
+    batching:
+        enabled: false
+        max_batch_size: 8
+        queue_latency_ms: 2
+
+services:
+    # SigLIP base: semantic image + text embeddings (768-dim).
+    siglip:
+        enabled: true
+        package: siglip
+        models:
+            default:
+                model: siglip2-base-patch16-224
+                runtime: burn
+                precision: fp16q8
+
+    # InsightFace antelopev2: face detection + recognition.
+    face:
+        enabled: true
+        package: insightface
+        models:
+            default:
+                model: antelopev2
+                runtime: burn
+                precision: fp16q8
+
+    # PP-OCRv6 small: in-image text detection + recognition.
+    ocr:
+        enabled: true
+        package: ppocr
+        models:
+            default:
+                model: pp-ocrv6-small
+                runtime: burn
+                precision: fp16q8

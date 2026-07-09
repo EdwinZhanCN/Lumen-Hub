@@ -467,3 +467,87 @@ jobs:
                       release-assets/sha256.sum
                       release-assets/manifest.json
                       release-assets/checksums.txt
+
+    # Container images for Linux servers / NAS, assembled from the prebuilt hub
+    # dist artifacts (no recompilation). Three flavors (see packaging/docker/):
+    #   cpu    = linux-{x64,arm64}-cpu, multi-arch, also tagged `latest`
+    #   vulkan = linux-x64-gpu + Mesa ICDs (Intel iGPU via ANV, AMD via RADV)
+    #   cuda   = linux-x64-cuda on the NVIDIA runtime base (ships NVRTC)
+    docker:
+        name: docker-images
+        runs-on: ubuntu-24.04
+        permissions:
+            contents: read
+            packages: write
+        needs:
+            - dist
+        if: startsWith(github.ref, 'refs/tags/')
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - name: Download hub Linux archives
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: hub-linux-*
+                  path: dist
+                  merge-multiple: true
+
+            - name: Stage per-platform build contexts
+              run: |
+                  set -euo pipefail
+                  stage() { # zip-profile dest-dir
+                    unzip -q "dist/lumen-hub-$1.zip" -d dist/docker-tmp
+                    mv "dist/docker-tmp/lumen-hub-$1" "dist/docker/$2"
+                    rm -rf dist/docker-tmp
+                  }
+                  mkdir -p dist/docker
+                  stage linux-x64-cpu   linux-amd64
+                  stage linux-arm64-cpu linux-arm64
+                  stage linux-x64-gpu   vulkan
+                  stage linux-x64-cuda  cuda
+
+            - uses: docker/setup-qemu-action@v3
+            - uses: docker/setup-buildx-action@v3
+
+            - name: Log in to GHCR
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Build and push images
+              env:
+                  TAG: ${{ github.ref_name }}
+              run: |
+                  set -euo pipefail
+                  IMG="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lumen-hub"
+                  VERSION="${TAG#v}"
+
+                  # cpu (multi-arch; DIST resolves per-platform via TARGETARCH)
+                  docker buildx build --push \
+                    --platform linux/amd64,linux/arm64 \
+                    -f packaging/docker/Dockerfile \
+                    --build-arg FLAVOR=cpu \
+                    -t "$IMG:$VERSION-cpu" -t "$IMG:cpu" -t "$IMG:latest" .
+
+                  # vulkan (x64; Mesa covers Intel iGPU + AMD)
+                  docker buildx build --push \
+                    --platform linux/amd64 \
+                    -f packaging/docker/Dockerfile \
+                    --build-arg FLAVOR=vulkan \
+                    --build-arg DIST=dist/docker/vulkan \
+                    -t "$IMG:$VERSION-vulkan" -t "$IMG:vulkan" .
+
+                  # cuda (x64; runtime base ships the NVRTC CubeCL loads — any
+                  # 12.x runtime satisfies the libnvrtc.so.12 soname)
+                  docker buildx build --push \
+                    --platform linux/amd64 \
+                    -f packaging/docker/Dockerfile \
+                    --build-arg FLAVOR=cuda \
+                    --build-arg BASE=nvidia/cuda:12.6.3-runtime-ubuntu24.04 \
+                    --build-arg DIST=dist/docker/cuda \
+                    -t "$IMG:$VERSION-cuda" -t "$IMG:cuda" .

@@ -781,6 +781,13 @@ mod tests {
             load_config(&path)
                 .unwrap_or_else(|error| panic!("expected `{}` to parse: {error}", path.display()));
         }
+
+        // The default config baked into the container image must stay parseable.
+        let docker_default = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/docker/config.default.yaml");
+        load_config(&docker_default).unwrap_or_else(|error| {
+            panic!("expected `{}` to parse: {error}", docker_default.display())
+        });
     }
 
     #[test]

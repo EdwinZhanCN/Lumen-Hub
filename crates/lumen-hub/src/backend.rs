@@ -160,7 +160,25 @@ where
         memory_config,
         ..RuntimeOptions::default()
     };
-    let _ = init_setup::<G>(&device, options);
+    let setup = init_setup::<G>(&device, options);
+
+    // Surface which physical adapter wgpu actually picked: a silent fallback to
+    // a software rasterizer (llvmpipe) looks like "GPU enabled" but performs
+    // worse than the plain cpu build, so make it loud. The raw `wgpu` crate is
+    // not re-exported by burn/cubecl, so match the device type by its Debug
+    // name rather than adding a version-locked direct dependency for one enum.
+    let info = setup.adapter.get_info();
+    println!(
+        "backend: wgpu adapter \"{}\" ({:?}, {:?}), driver {} {}",
+        info.name, info.device_type, info.backend, info.driver, info.driver_info
+    );
+    if format!("{:?}", info.device_type) == "Cpu" {
+        eprintln!(
+            "backend: WARNING: wgpu selected a software (CPU) rasterizer — no usable GPU was \
+             found. This is slower than the plain cpu build. In Docker, pass the GPU through \
+             (devices: [/dev/dri] plus the render group) or switch to the cpu image."
+        );
+    }
 }
 
 /// Returns the default device for the selected backend.
