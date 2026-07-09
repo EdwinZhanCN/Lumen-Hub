@@ -22,23 +22,7 @@ jobs:
             # gracefully when LUMEN_MODELS_DIR has no assets, so the workspace
             # suite is self-contained on CI.
             - name: Test workspace
-              run: cargo test --workspace --exclude lumen-shell
-
-    shell:
-        name: check shell (${{ matrix.os }})
-        runs-on: ${{ matrix.os }}
-        strategy:
-            fail-fast: false
-            matrix:
-                os: [macos-15, windows-2025]
-        steps:
-            - uses: actions/checkout@v4
-            - uses: dtolnay/rust-toolchain@master
-              with:
-                  toolchain: "1.94.1"
-            - uses: Swatinem/rust-cache@v2
-            - name: Check shell
-              run: cargo check -p lumen-shell
+              run: cargo test --workspace
 
     backends:
         name: build ${{ matrix.backend }} (${{ matrix.os }})

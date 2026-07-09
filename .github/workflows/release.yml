@@ -262,50 +262,6 @@ jobs:
                       target/distrib/sha256.sum
                   if-no-files-found: error
 
-    shell-package:
-        name: shell-${{ matrix.name }}
-        runs-on: ${{ matrix.os }}
-        strategy:
-            fail-fast: false
-            matrix:
-                include:
-                    - name: macos-arm64-dmg
-                      os: macos-15
-                      config: packaging/lumen-shell-macos.toml
-                      artifact_glob: dist/shell/*.dmg
-                    - name: windows-x64-msi
-                      os: windows-2025
-                      config: packaging/lumen-shell-windows.toml
-                      artifact_glob: dist/shell/*.msi
-
-        steps:
-            - uses: actions/checkout@v4
-              with:
-                  persist-credentials: false
-
-            - uses: dtolnay/rust-toolchain@master
-              with:
-                  toolchain: "1.94.1"
-
-            - name: Install WiX Toolset
-              if: runner.os == 'Windows'
-              shell: pwsh
-              run: |
-                  choco install wixtoolset --no-progress -y
-                  "C:\Program Files (x86)\WiX Toolset v3.14\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-
-            - name: Install cargo-packager
-              run: cargo install cargo-packager --locked
-
-            - name: Package Lumen Shell
-              run: cargo packager --config ${{ matrix.config }}
-
-            - uses: actions/upload-artifact@v4
-              with:
-                  name: shell-${{ matrix.name }}
-                  path: ${{ matrix.artifact_glob }}
-                  if-no-files-found: error
-
     metadata:
         name: metadata
         runs-on: ubuntu-24.04
@@ -313,7 +269,6 @@ jobs:
             - dist
             - cli-local
             - cli-global
-            - shell-package
 
         steps:
             - uses: actions/checkout@v4
@@ -353,7 +308,6 @@ jobs:
             - dist
             - cli-local
             - cli-global
-            - shell-package
             - metadata
         if: startsWith(github.ref, 'refs/tags/')
 
@@ -376,8 +330,6 @@ jobs:
                   test -f release-assets/lumen-cli-installer.sh
                   test -f release-assets/lumen-cli-installer.ps1
                   test -f release-assets/sha256.sum
-                  test "$(find release-assets -maxdepth 1 -name '*.dmg' | wc -l)" -ge 1
-                  test "$(find release-assets -maxdepth 1 -name '*.msi' | wc -l)" -ge 1
                   test -f release-assets/manifest.json
                   test -f release-assets/checksums.txt
                   ls -lah release-assets
@@ -395,10 +347,6 @@ jobs:
                   # ${TAG}
 
                   ## Install
-
-                  Desktop shell:
-                  - macOS Apple Silicon: download the DMG asset.
-                  - Windows x64: download the MSI asset.
 
                   macOS/Linux:
                   \`\`\`bash
@@ -462,8 +410,6 @@ jobs:
                       release-assets/lumen-cli-x86_64-pc-windows-msvc.zip.sha256
                       release-assets/lumen-cli-installer.sh
                       release-assets/lumen-cli-installer.ps1
-                      release-assets/*.dmg
-                      release-assets/*.msi
                       release-assets/sha256.sum
                       release-assets/manifest.json
                       release-assets/checksums.txt
