@@ -3,17 +3,14 @@ name = "lumen-shell"
 version = "0.1.0-alpha.4"
 edition = "2024"
 repository = "https://github.com/EdwinZhanCN/Lumen-Hub"
-build = "build.rs"
 
 [package.metadata.dist]
 dist = false
 
 [dependencies]
+gpui = "0.2.2"
+gpui-component = "0.5.1"
 lumen-launcher = { path = "../lumen-launcher" }
-slint = "1.17.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Globalization"] }
-
-[build-dependencies]
-slint-build = "1.17.0"
