@@ -4,3 +4,10 @@ pub mod home_native {
         include!("home_native.v1.rs");
     }
 }
+pub mod lumen {
+    pub mod control {
+        pub mod v1 {
+            include!("lumen.control.v1.rs");
+        }
+    }
+}

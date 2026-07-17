@@ -7,6 +7,7 @@ pub mod inference_worker;
 pub mod model_arch;
 pub mod model_download;
 pub mod service;
+pub mod status;
 pub mod warmup;
 
 pub mod models {
