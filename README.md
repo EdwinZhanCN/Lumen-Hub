@@ -66,6 +66,26 @@ services:
 
 `runtime` is always `burn`; the compute backend is a build-time choice, not config.
 
+## Control plane & health
+
+The gRPC port binds immediately on startup — before models are downloaded or
+loaded — and serves three services side by side:
+
+- `home_native.v1.Inference` — the data plane (frozen contract). Returns
+  `UNAVAILABLE` until the hub is ready.
+- `lumen.control.v1.Control` (`proto/control.proto`) — read-only observability:
+  `GetStatus` / `WatchStatus` stream the lifecycle phase (starting →
+  downloading → loading → warmup → ready | failed), per-file download progress,
+  per-service state, and the last fatal error; `TailLogs` streams structured
+  log entries from an in-memory ring. Supervisors (the Lumilio Photos desktop
+  app) use this instead of tailing log files.
+- `grpc.health.v1.Health` — the standard health protocol (`NOT_SERVING` until
+  warmup completes), so `grpc_health_probe`, Docker `HEALTHCHECK`, and k8s
+  probes work out of the box.
+
+If startup fails, the process stays up in `PHASE_FAILED` with health
+`NOT_SERVING` so the error is queryable; mDNS is only advertised once ready.
+
 ## Build
 
 ```bash

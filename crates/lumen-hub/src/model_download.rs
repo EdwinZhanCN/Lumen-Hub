@@ -16,18 +16,45 @@ const HF_ORG: &str = "Lumilio-Photos";
 const MODEL_INFO_FILE: &str = "model_info.json";
 const DEFAULT_PRECISION: &str = "fp32";
 
+/// Observer for model-artifact download progress. All methods have no-op
+/// defaults; implementations must be cheap and non-blocking — byte progress is
+/// invoked from the download read loop.
+pub trait DownloadObserver: Send + Sync {
+    /// The set of artifacts a model needs is known (after listing the repo).
+    fn on_model_plan(&self, _model: &str, _files_total: u32) {}
+    /// Byte progress for the file currently transferring. `bytes_total` is 0
+    /// when the remote did not report a length.
+    fn on_file_progress(&self, _model: &str, _file: &str, _bytes_done: u64, _bytes_total: u64) {}
+    /// A required artifact is present (freshly downloaded or cache hit).
+    fn on_file_complete(&self, _model: &str, _file: &str) {}
+}
+
+/// Default observer: progress is only visible via logs and the terminal bar.
+pub struct NoopObserver;
+
+impl DownloadObserver for NoopObserver {}
+
 pub fn ensure_models_for_config(
     config: &LumenConfig,
     cache_dir: impl AsRef<Path>,
 ) -> Result<(), ModelDownloadError> {
+    ensure_models_for_config_observed(config, cache_dir, &NoopObserver)
+}
+
+pub fn ensure_models_for_config_observed(
+    config: &LumenConfig,
+    cache_dir: impl AsRef<Path>,
+    observer: &dyn DownloadObserver,
+) -> Result<(), ModelDownloadError> {
     let client = HfHubClient::new(config.metadata.region);
-    ensure_models_with_client(config, cache_dir.as_ref(), &client)
+    ensure_models_with_client(config, cache_dir.as_ref(), &client, observer)
 }
 
 fn ensure_models_with_client<C: ModelRepoClient>(
     config: &LumenConfig,
     cache_dir: &Path,
     client: &C,
+    observer: &dyn DownloadObserver,
 ) -> Result<(), ModelDownloadError> {
     info!(cache = %cache_dir.display(), endpoint = client.endpoint_label(), "model cache");
     let mut seen = BTreeSet::new();
@@ -77,7 +104,7 @@ fn ensure_models_with_client<C: ModelRepoClient>(
             dataset = %dataset.trim(),
             "ensuring model artifacts"
         );
-        ensure_model(cache_dir, client, &requirement)?;
+        ensure_model(cache_dir, client, &requirement, observer)?;
     }
 
     Ok(())
@@ -87,14 +114,18 @@ fn ensure_model<C: ModelRepoClient>(
     cache_dir: &Path,
     client: &C,
     requirement: &ModelRequirement,
+    observer: &dyn DownloadObserver,
 ) -> Result<(), ModelDownloadError> {
     let model_dir = cache_dir.join(&requirement.model);
     let model_info_path = model_dir.join(MODEL_INFO_FILE);
+    // Pre-plan fetch: model_info.json is also part of remote_paths below, so
+    // report it there (a cache hit by then) rather than double-counting here.
     ensure_remote_file(
         client,
         &requirement.model,
         MODEL_INFO_FILE,
         &model_info_path,
+        &NoopObserver,
     )?;
 
     let model_info_json =
@@ -126,9 +157,10 @@ fn ensure_model<C: ModelRepoClient>(
         }
     }
 
+    observer.on_model_plan(&requirement.model, remote_paths.len() as u32);
     for remote_path in remote_paths {
         let target = target_path_for_remote(&model_dir, &remote_path)?;
-        ensure_remote_file(client, &requirement.model, &remote_path, &target)?;
+        ensure_remote_file(client, &requirement.model, &remote_path, &target, observer)?;
     }
 
     Ok(())
@@ -253,6 +285,7 @@ trait ModelRepoClient {
         model: &str,
         remote_path: &str,
         target: &Path,
+        observer: &dyn DownloadObserver,
     ) -> Result<(), ModelDownloadError>;
 }
 
@@ -309,6 +342,7 @@ impl ModelRepoClient for HfHubClient {
         model: &str,
         remote_path: &str,
         target: &Path,
+        observer: &dyn DownloadObserver,
     ) -> Result<(), ModelDownloadError> {
         let url = format!(
             "{}/{HF_ORG}/{}/resolve/main/{}",
@@ -363,6 +397,7 @@ impl ModelRepoClient for HfHubClient {
             if let Some(progress) = &progress {
                 progress.inc(read as u64);
             }
+            observer.on_file_progress(model, remote_path, written, content_len.unwrap_or(0));
         }
 
         output
@@ -388,6 +423,7 @@ fn ensure_remote_file<C: ModelRepoClient>(
     model: &str,
     remote_path: &str,
     target: &Path,
+    observer: &dyn DownloadObserver,
 ) -> Result<(), ModelDownloadError> {
     if target.is_file() {
         let size = fs::metadata(target)
@@ -396,6 +432,7 @@ fn ensure_remote_file<C: ModelRepoClient>(
             .map(format_bytes)
             .unwrap_or_else(|| "unknown size".to_owned());
         info!(file = %format!("{model}/{remote_path}"), size = %size, "model cache hit");
+        observer.on_file_complete(model, remote_path);
         return Ok(());
     }
 
@@ -423,11 +460,12 @@ fn ensure_remote_file<C: ModelRepoClient>(
         })?;
     }
 
-    client.download_file(model, remote_path, &tmp)?;
+    client.download_file(model, remote_path, &tmp, observer)?;
     fs::rename(&tmp, target).map_err(|source| ModelDownloadError::WriteFile {
         path: target.to_path_buf(),
         source,
     })?;
+    observer.on_file_complete(model, remote_path);
 
     Ok(())
 }
@@ -548,7 +586,10 @@ mod tests {
 
     use serde_json::json;
 
-    use super::{ModelDownloadError, ModelRepoClient, ensure_models_with_client};
+    use super::{
+        DownloadObserver, ModelDownloadError, ModelRepoClient, NoopObserver,
+        ensure_models_with_client,
+    };
     use lumen_schema::LumenConfig;
 
     #[test]
@@ -574,7 +615,7 @@ mod tests {
         );
         let config = test_config(Some("TreeOfLife200M"), Some("fp32"));
 
-        ensure_models_with_client(&config, &cache, &client).unwrap();
+        ensure_models_with_client(&config, &cache, &client, &NoopObserver).unwrap();
 
         let downloaded = client.downloaded_paths();
         assert_eq!(
@@ -613,7 +654,7 @@ mod tests {
         let client = FakeClient::new(vec![], model_info_json(&["fp32"], true));
         let config = test_config(None, Some("fp16"));
 
-        let error = ensure_models_with_client(&config, &cache, &client).unwrap_err();
+        let error = ensure_models_with_client(&config, &cache, &client, &NoopObserver).unwrap_err();
         assert!(matches!(
             error,
             ModelDownloadError::MissingPrecision {
@@ -641,7 +682,7 @@ mod tests {
         let client = FakeClient::new(vec![], model_info_json(&["fp32"], true));
         let config = test_config(None, Some("fp32"));
 
-        ensure_models_with_client(&config, &cache, &client).unwrap();
+        ensure_models_with_client(&config, &cache, &client, &NoopObserver).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(model_dir.join("burn/vision.fp32.bpk")).unwrap(),
@@ -747,6 +788,7 @@ mod tests {
             model: &str,
             remote_path: &str,
             target: &Path,
+            _observer: &dyn DownloadObserver,
         ) -> Result<(), ModelDownloadError> {
             self.downloads
                 .borrow_mut()

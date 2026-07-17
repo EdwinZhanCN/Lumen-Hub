@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     process,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -21,10 +21,14 @@ use lumen_hub::models::ppocr::PpocrService;
 use lumen_hub::models::siglip::SiglipService;
 use lumen_hub::{
     backend::{configure_runtime, default_device},
-    daemon::{DaemonError, bind_addr, serve_grpc_with_shutdown},
+    daemon::{
+        DaemonError, HubGrpcService, MdnsAdvertisement, ReadyHandle, advertised_capabilities,
+        bind_addr, control_plane, hub_batcher_config,
+    },
     inference_worker,
-    model_download::{ModelDownloadError, ensure_models_for_config},
+    model_download::{DownloadObserver, ModelDownloadError, ensure_models_for_config_observed},
     service::ServiceHub,
+    status::{self, DownloadProgress, LogBuffer, Phase, ServiceState, StatusBus},
     warmup::{WarmupError, default_warmup_dir, run_startup_warmup},
 };
 #[cfg(test)]
@@ -87,7 +91,8 @@ where
     I: IntoIterator<Item = OsString>,
 {
     let cli = parse_args(args)?;
-    init_logging(cli.log_level)?;
+    let logs = Arc::new(LogBuffer::new());
+    init_logging(cli.log_level, Arc::clone(&logs))?;
     info!("lumen-hub starting");
     info!(config = %cli.config_path.display(), "loading config");
     let config = load_config(&cli.config_path)?;
@@ -105,25 +110,202 @@ where
         services = %config.deployment_service_names().join(", "),
         "startup plan"
     );
-    info!("ensuring model cache");
-    ensure_models_for_config(&config, &cache_dir)?;
-
-    info!("building service hub");
-    let hub_config = config.clone();
-    let hub_cache_dir = cache_dir.clone();
-    let hub =
-        inference_worker::run(move || build_service_hub_from_config(&hub_config, &hub_cache_dir))
-            .await??;
-    info!("running mandatory warmup");
-    run_startup_warmup(&hub, &default_warmup_dir()).await?;
 
     let server_config = server_config_with_override(&config.server, cli.port_override);
     let addr = bind_addr(&server_config)?;
 
-    info!(addr = %addr, services = hub.len(), "lumen-hub ready");
+    // The control plane binds before any model work so supervisors can watch
+    // download progress and errors over gRPC instead of tailing logs. The
+    // data plane answers UNAVAILABLE until initialization completes.
+    let bus = Arc::new(StatusBus::new(
+        env!("CARGO_PKG_VERSION").to_owned(),
+        backend_label().to_owned(),
+    ));
+    let (server, ready) = control_plane(Arc::clone(&bus), logs);
+    ready.init().await;
 
-    serve_grpc_with_shutdown(Arc::new(hub), &server_config, shutdown_signal()).await?;
+    // mDNS is advertised only once the hub is ready; the guard lives here so
+    // the advertisement survives until the server stops.
+    let mdns_guard: Arc<Mutex<Option<MdnsAdvertisement>>> = Arc::default();
+
+    {
+        let bus = Arc::clone(&bus);
+        let config = config.clone();
+        let cache_dir = cache_dir.clone();
+        let server_config = server_config.clone();
+        let mdns_guard = Arc::clone(&mdns_guard);
+        let port = addr.port();
+        tokio::spawn(async move {
+            match initialize(
+                &bus,
+                &config,
+                &cache_dir,
+                &server_config,
+                port,
+                &ready,
+                &mdns_guard,
+            )
+            .await
+            {
+                Ok(()) => info!("lumen-hub ready"),
+                Err(error) => {
+                    // Keep serving: the control plane stays queryable so the
+                    // failure (and its cause) is visible to supervisors;
+                    // health reports NOT_SERVING.
+                    tracing::error!(%error, "lumen-hub startup failed");
+                    ready.set_failed().await;
+                    bus.fail(error.to_string());
+                }
+            }
+        });
+    }
+
+    info!(addr = %addr, "control plane listening");
+    let shutdown = {
+        let bus = Arc::clone(&bus);
+        async move {
+            shutdown_signal().await;
+            bus.set_phase(Phase::Stopping);
+        }
+    };
+    server.serve_with_shutdown(addr, shutdown).await?;
     Ok(())
+}
+
+/// Download → build → warmup → ready, publishing each transition on the bus.
+async fn initialize(
+    bus: &Arc<StatusBus>,
+    config: &LumenConfig,
+    cache_dir: &str,
+    server_config: &ServerConfig,
+    port: u16,
+    ready: &ReadyHandle,
+    mdns_guard: &Mutex<Option<MdnsAdvertisement>>,
+) -> StartupResult<()> {
+    bus.set_phase(Phase::Downloading);
+    info!("ensuring model cache");
+    {
+        // ureq downloads are blocking; keep them off the async runtime.
+        let config = config.clone();
+        let cache_dir = cache_dir.to_owned();
+        let observer_bus = Arc::clone(bus);
+        tokio::task::spawn_blocking(move || {
+            let observer = BusDownloadObserver::new(observer_bus);
+            ensure_models_for_config_observed(&config, &cache_dir, &observer)
+        })
+        .await
+        .expect("model download task panicked")?;
+    }
+
+    bus.set_phase(Phase::Loading);
+    info!("building service hub");
+    let hub_config = config.clone();
+    let hub_cache_dir = cache_dir.to_owned();
+    let hub =
+        inference_worker::run(move || build_service_hub_from_config(&hub_config, &hub_cache_dir))
+            .await??;
+
+    bus.set_phase(Phase::Warmup);
+    info!("running mandatory warmup");
+    run_startup_warmup(&hub, &default_warmup_dir()).await?;
+
+    let hub = Arc::new(hub);
+    bus.set_services(
+        hub.capabilities()
+            .into_iter()
+            .map(|capability| ServiceState {
+                service: capability.service_name,
+                phase: Phase::Ready,
+                error: String::new(),
+            })
+            .collect(),
+    );
+
+    let advertisement =
+        MdnsAdvertisement::register(&server_config.mdns, port, &advertised_capabilities(&hub))?;
+    *mdns_guard.lock().expect("mdns guard poisoned") = advertisement;
+
+    ready
+        .set_ready(HubGrpcService::new(
+            Arc::clone(&hub),
+            hub_batcher_config(server_config),
+        ))
+        .await;
+    bus.set_phase(Phase::Ready);
+    Ok(())
+}
+
+/// Compute backend compiled into this binary, mirroring the priority order in
+/// `backend.rs`. Reported as the control-plane `profile`.
+fn backend_label() -> &'static str {
+    if cfg!(feature = "cuda") {
+        "cuda"
+    } else if cfg!(feature = "rocm") {
+        "rocm"
+    } else if cfg!(feature = "vulkan") {
+        "vulkan"
+    } else if cfg!(feature = "metal") {
+        "metal"
+    } else if cfg!(feature = "wgpu") {
+        "wgpu"
+    } else {
+        "cpu"
+    }
+}
+
+/// Bridges download progress onto the status bus, tracking per-model file
+/// counts (the byte counter is throttled by the bus itself).
+struct BusDownloadObserver {
+    bus: Arc<StatusBus>,
+    counts: Mutex<(String, u32, u32)>, // (model, files_done, files_total)
+}
+
+impl BusDownloadObserver {
+    fn new(bus: Arc<StatusBus>) -> Self {
+        Self {
+            bus,
+            counts: Mutex::new((String::new(), 0, 0)),
+        }
+    }
+
+    fn progress(
+        &self,
+        model: &str,
+        file: &str,
+        bytes_done: u64,
+        bytes_total: u64,
+    ) -> DownloadProgress {
+        let counts = self.counts.lock().expect("download counts poisoned");
+        DownloadProgress {
+            model: model.to_owned(),
+            file: file.to_owned(),
+            bytes_done,
+            bytes_total,
+            files_done: counts.1,
+            files_total: counts.2,
+        }
+    }
+}
+
+impl DownloadObserver for BusDownloadObserver {
+    fn on_model_plan(&self, model: &str, files_total: u32) {
+        *self.counts.lock().expect("download counts poisoned") = (model.to_owned(), 0, files_total);
+    }
+
+    fn on_file_progress(&self, model: &str, file: &str, bytes_done: u64, bytes_total: u64) {
+        self.bus
+            .set_download(self.progress(model, file, bytes_done, bytes_total));
+    }
+
+    fn on_file_complete(&self, model: &str, file: &str) {
+        {
+            let mut counts = self.counts.lock().expect("download counts poisoned");
+            if counts.0 == model {
+                counts.1 = counts.1.saturating_add(1);
+            }
+        }
+        self.bus.set_download(self.progress(model, file, 0, 0));
+    }
 }
 
 fn parse_args<I, S>(args: I) -> StartupResult<CliArgs>
@@ -413,8 +595,8 @@ fn expand_tilde(path: &str) -> String {
     path.to_owned()
 }
 
-fn init_logging(level: LogLevel) -> StartupResult<()> {
-    set_global_default(SimpleSubscriber::new(level))?;
+fn init_logging(level: LogLevel, sink: Arc<LogBuffer>) -> StartupResult<()> {
+    set_global_default(SimpleSubscriber::new(level, sink))?;
     Ok(())
 }
 
@@ -529,13 +711,16 @@ impl LogLevel {
 struct SimpleSubscriber {
     max_level: LogLevel,
     next_span_id: AtomicU64,
+    /// Structured copy of every emitted event, served by `Control.TailLogs`.
+    sink: Arc<LogBuffer>,
 }
 
 impl SimpleSubscriber {
-    fn new(max_level: LogLevel) -> Self {
+    fn new(max_level: LogLevel, sink: Arc<LogBuffer>) -> Self {
         Self {
             max_level,
             next_span_id: AtomicU64::new(1),
+            sink,
         }
     }
 }
@@ -579,22 +764,35 @@ impl Subscriber for SimpleSubscriber {
         event.record(&mut fields);
         let level = styled_level(metadata.level());
         let target = style(metadata.target()).dim();
+        let rendered_fields = fields
+            .fields
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>();
 
-        if let Some(message) = fields.message {
-            if fields.fields.is_empty() {
+        if let Some(message) = &fields.message {
+            if rendered_fields.is_empty() {
                 eprintln!("{level} [{target}] {message}");
             } else {
                 eprintln!(
                     "{level} [{target}] {message} {}",
-                    style(fields.fields.join(" ")).dim()
+                    style(rendered_fields.join(" ")).dim()
                 );
             }
         } else {
             eprintln!(
                 "{level} [{target}] {}",
-                style(fields.fields.join(" ")).dim()
+                style(rendered_fields.join(" ")).dim()
             );
         }
+
+        self.sink.push(status::LogEntry {
+            time_unix_ms: status::unix_ms_now(),
+            level: status_level(metadata.level()),
+            target: metadata.target().to_owned(),
+            message: fields.message.unwrap_or_default(),
+            fields: fields.fields,
+        });
     }
 
     fn enter(&self, _span: &Id) {}
@@ -605,7 +803,7 @@ impl Subscriber for SimpleSubscriber {
 #[derive(Default)]
 struct LogFields {
     message: Option<String>,
-    fields: Vec<String>,
+    fields: Vec<(String, String)>,
 }
 
 impl LogFields {
@@ -613,7 +811,7 @@ impl LogFields {
         if field.name() == "message" {
             self.message = Some(value);
         } else {
-            self.fields.push(format!("{}={value}", field.name()));
+            self.fields.push((field.name().to_owned(), value));
         }
     }
 }
@@ -625,6 +823,16 @@ impl Visit for LogFields {
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
         self.record_value(field, format!("{value:?}"));
+    }
+}
+
+fn status_level(level: &Level) -> status::LogLevel {
+    match *level {
+        Level::ERROR => status::LogLevel::Error,
+        Level::WARN => status::LogLevel::Warn,
+        Level::INFO => status::LogLevel::Info,
+        Level::DEBUG => status::LogLevel::Debug,
+        Level::TRACE => status::LogLevel::Trace,
     }
 }
 
