@@ -11,7 +11,7 @@ use burn::nn::{Linear, LinearConfig};
 use burn::tensor::backend::Backend as BackendTrait;
 use burn::tensor::ops::QuantizedTensor;
 use burn::tensor::quantization::{QTensorPrimitive, QuantLevel, QuantScheme, QuantValue};
-use burn::tensor::{ElementConversion, Tensor, TensorData};
+use burn::tensor::{ElementConversion, Tensor};
 use burn_store::{BurnpackStore, ModuleSnapshot};
 
 use lumen_hub::backend::{Backend, default_device};
