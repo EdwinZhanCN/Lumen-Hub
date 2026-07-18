@@ -1,58 +1,37 @@
 # Lumen Hub
 
-A self-hosted, multi-model ML inference server in Rust. Every model runs natively
-on [Burn](https://burn.dev) — the compute backend (CPU, Metal, Vulkan/wgpu, CUDA,
-ROCm) is chosen at build time, so there are no external runtime libraries to ship.
-
-Models are exposed over gRPC behind a uniform task API, with dynamic request
-batching for tensor inputs.
+A self-hosted, multi-model ML inference server in Rust. Every model runs
+natively on [Burn](https://burn.dev) — the compute backend (CPU, Metal,
+Vulkan/wgpu, CUDA, ROCm) is chosen at build time, so there are no external
+runtime libraries to ship. Models are exposed over gRPC behind a uniform task
+API with dynamic request batching.
 
 ## Models & tasks
 
 | Service | Task | Input → Output |
 |---|---|---|
-| `siglip` | `semantic_text_embed` / `semantic_image_embed` | text / image → L2-normalized `embedding_v1` |
-| `ppocr` | `ocr` | image → `ocr_v1` (boxes + recognized text) |
-| `insightface` | `face_recognition` | image → `face_v1` (boxes, landmarks, 512-d embeddings) |
+| `siglip` | `semantic_text_embed` / `semantic_image_embed` | text / image → `embedding_v1` |
+| `ppocr` | `ocr` | image → `ocr_v1` (boxes + text) |
+| `insightface` | `face_recognition` | image → `face_v1` (boxes, landmarks, embeddings) |
 | `bioclip` | `bioclip_classify` | image → `labels_v1` top-k taxonomy labels |
 
-Bundled architectures: SigLIP 2 (`base-patch16-224`, `so400m-patch14-384`),
-PP-OCRv5, antelopev2 (SCRFD + ArcFace), and BioCLIP-2. BioCLIP classification runs
-the vision encoder, then does HNSW ANN search + exact rerank over a precomputed
-TreeOfLife taxon catalog.
+Bundled: SigLIP 2, PP-OCRv5, antelopev2 (SCRFD + ArcFace), BioCLIP-2 (HNSW +
+rerank over a TreeOfLife catalog).
 
 ## Quick start
 
-Pick the path that matches the machine the hub will run on:
-
 | Machine | Path |
 |---|---|
-| Same PC as Lumilio Photos | Enable AI from the Lumilio Photos desktop app (it downloads and supervises the hub for you) |
-| Linux server / NAS | Docker — see below |
-| A spare Mac/Windows/Linux box on your LAN | `lumen-cli` — see below |
-| Anything else / scripting | Bare binary: `lumen-hub --config config.yaml` |
+| Same PC as Lumilio Photos | Enable AI in the desktop app — it installs and supervises the hub |
+| Linux server / NAS | Docker: `docker run -d -p 50051:50051 -v lumen-models:/models ghcr.io/edwinzhancn/lumen-hub:cpu` (tags `cpu`/`vulkan`/`cuda`; see [`packaging/docker/`](packaging/docker/README.md)) |
+| Spare box on your LAN | `lumen-cli init && lumen-cli start` (detects hardware, downloads the matching build) |
+| Anything else | `lumen-hub --config config.yaml` |
 
-**Docker** (tags: `cpu` = any machine, `vulkan` = Intel iGPU/AMD, `cuda` = NVIDIA;
-details and compose file in [`packaging/docker/`](packaging/docker/README.md)):
-
-```bash
-docker run -d -p 50051:50051 -v lumen-models:/models ghcr.io/edwinzhancn/lumen-hub:cpu
-```
-
-**CLI** (detects hardware, picks a backend + preset, writes config, downloads
-the matching hub build, runs it):
-
-```bash
-lumen-cli init
-lumen-cli start
-```
-
-Models are fetched on first start into `metadata.cache_dir` from
-`Lumilio-Photos/<model>` on Hugging Face (`region: cn` uses the hf-mirror).
-
-### Config sketch
+Model weights download on first start into `metadata.cache_dir` from
+`Lumilio-Photos/<model>` on Hugging Face (`region: cn` → hf-mirror).
 
 ```yaml
+# config sketch — `runtime` is always burn; the compute backend is build-time
 metadata:   { version: "0.1.0", region: other, cache_dir: "~/.lumen/models" }
 deployment: { mode: hub, services: [siglip, face] }
 server:     { host: "0.0.0.0", port: 50051, batching: { enabled: true, max_batch_size: 8, queue_latency_ms: 2 } }
@@ -64,80 +43,60 @@ services:
       default: { model: siglip2-base-patch16-224, runtime: burn, precision: fp16q8 }
 ```
 
-`runtime` is always `burn`; the compute backend is a build-time choice, not config.
-
 ## Control plane & health
 
-The gRPC port binds immediately on startup — before models are downloaded or
-loaded — and serves three services side by side:
+The gRPC port binds immediately — before models download — and serves:
 
-- `home_native.v1.Inference` — the data plane (frozen contract). Returns
-  `UNAVAILABLE` until the hub is ready.
-- `lumen.control.v1.Control` (`proto/control.proto`) — read-only observability:
-  `GetStatus` / `WatchStatus` stream the lifecycle phase (starting →
-  downloading → loading → warmup → ready | failed), per-file download progress,
-  per-service state, and the last fatal error; `TailLogs` streams structured
-  log entries from an in-memory ring. Supervisors (the Lumilio Photos desktop
-  app) use this instead of tailing log files.
-- `grpc.health.v1.Health` — the standard health protocol (`NOT_SERVING` until
-  warmup completes), so `grpc_health_probe`, Docker `HEALTHCHECK`, and k8s
-  probes work out of the box.
+- `home_native.v1.Inference` — data plane (frozen contract); `UNAVAILABLE` until ready.
+- `lumen.control.v1.Control` ([`proto/control.proto`](crates/lumen-hub/proto/control.proto)) —
+  read-only observability: `GetStatus`/`WatchStatus` (lifecycle phase, download
+  progress, per-service state, last fatal error) and `TailLogs` (structured log
+  ring). Supervisors use this instead of tailing files.
+- `grpc.health.v1.Health` — `NOT_SERVING` until warmup completes; works with
+  `grpc_health_probe`, Docker `HEALTHCHECK`, k8s probes.
 
-If startup fails, the process stays up in `PHASE_FAILED` with health
-`NOT_SERVING` so the error is queryable; mDNS is only advertised once ready.
+Startup failure keeps the process serving (`PHASE_FAILED`, error queryable);
+mDNS is advertised only once ready.
 
-## Build
-
-```bash
-cargo build --release                      # default: cpu backend + all models
-cargo build --release --no-default-features --features metal,siglip,ppocr,insightface,clip
-```
-
-Backend features (pick one; priority cuda > rocm > vulkan > metal > wgpu > cpu):
-`cpu` (Burn Flex), `metal`, `vulkan`, `wgpu`, `cuda`, `rocm`.
-Model features: `siglip`, `ppocr`, `insightface`, `clip` (BioCLIP).
+## Build & test
 
 Requires Rust 1.94+ (pinned in `rust-toolchain.toml`).
 
-## Develop & test
-
 ```bash
-cargo test --workspace                     # unit/integration (E2E skip if models absent)
+cargo build --release      # default: cpu backend + all models
+cargo build --release --no-default-features --features metal,siglip,ppocr,insightface,clip
 
-# End-to-end against real weights (set LUMEN_MODELS_DIR to the model repo root):
-cargo test --release --test e2e_siglip --test e2e_ppocr --test e2e_insightface --test e2e_bioclip
-cargo test --release --features metal --test e2e_siglip   # same, on Metal
+cargo test --workspace     # E2E tests skip when LUMEN_MODELS_DIR has no weights
+LUMEN_MODELS_DIR=/path/to/lumen-models cargo test --release --test e2e_siglip
 ```
 
-E2E tests load FP32 weights from `LUMEN_MODELS_DIR` (default
-`/Volumes/CodeBase/Projects/lumen-models`) and skip gracefully when absent.
+Backend features (pick one; priority cuda > rocm > vulkan > metal > wgpu > cpu):
+`cpu`, `metal`, `vulkan`, `wgpu`, `cuda`, `rocm`.
+Model features: `siglip`, `ppocr`, `insightface`, `clip` (BioCLIP).
 
 ## Release
 
-```bash
-cargo xtask dist --profile linux-x64-gpu   # build + package one profile to dist/
-cargo xtask release-metadata               # write manifest.json + checksums.txt
-```
-
-Profiles: `{darwin-arm64,windows-x64,linux-x64,linux-arm64}` × backend, e.g.
-`darwin-arm64-metal`, `linux-x64-{cpu,gpu,cuda,rocm}`, `linux-arm64-{cpu,gpu,jetson}`
-(`*-gpu` = wgpu/Vulkan; `jetson` = arm64 CUDA on L4T). CI builds every hosted
-profile and runs the test suite; `.github/workflows/release.yml` produces the
-signed artifacts + installer on tag push.
+Tag `v<version>` (matching the `lumen-cli` crate version) →
+`.github/workflows/release.yml` builds every profile
+(`{darwin-arm64,windows-x64,linux-x64,linux-arm64}` × backend, plus
+`linux-arm64-jetson`), the CLI installers, and `manifest.json` + checksums.
+Locally: `cargo xtask dist --profile <profile>`.
 
 ## Workspace layout
 
 ```
 crates/
-  lumen-hub/      # the server: models/, model_arch/ (generated Burn graphs),
-                  #   service/ + daemon/ (gRPC, batching), backend.rs
-  lumen-schema/   # config + result schemas (embedding_v1, ocr_v1, face_v1, labels_v1)
-  lumen-cli/      # installer/launcher (hardware detect, backend select, download)
-  xtask/          # dist packaging + release metadata
+  lumen-hub/         # the server: models/, model_arch/ (generated Burn graphs),
+                     #   service/ + daemon/ (gRPC, batching), status.rs (control plane)
+  lumen-schema/      # config + result schemas (embedding_v1, ocr_v1, face_v1, labels_v1)
+  lumen-launcher/    # install/config/run library behind lumen-cli
+  lumen-cli/         # end-user installer/launcher CLI
+  lumen-quant-core/  # int8 weight-quantization primitives (runtime fp16q8 + offline)
+  xtask/             # dist packaging + release metadata
 ```
 
-Adding a model variant = drop a generated arch under `model_arch/<id>/` and add one
-match arm in the matching `models::<family>::model` dispatcher.
+Adding a model variant = drop a generated arch under `model_arch/<id>/` and add
+one match arm in the matching `models::<family>::model` dispatcher.
 
 ## License
 
