@@ -561,6 +561,31 @@ fn build_service_hub_from_config(
                     feature: "ppocr",
                 });
             }
+            #[cfg(feature = "qa")]
+            "qa" => {
+                let service = lumen_hub::models::qa::QaService::from_config(
+                    service_name,
+                    svc_config,
+                    &cache_dir,
+                    Arc::clone(&device),
+                )
+                .map_err(|e| StartupError::ServiceConstruction {
+                    service: service_name.to_owned(),
+                    message: e.to_string(),
+                })?;
+                hub.register(service)
+                    .map_err(|e| StartupError::ServiceConstruction {
+                        service: service_name.to_owned(),
+                        message: e.to_string(),
+                    })?;
+            }
+            #[cfg(not(feature = "qa"))]
+            "qa" => {
+                return Err(StartupError::PackageDisabled {
+                    package: svc_config.package.clone(),
+                    feature: "qa",
+                });
+            }
             other => {
                 return Err(StartupError::UnknownPackage {
                     package: other.to_owned(),

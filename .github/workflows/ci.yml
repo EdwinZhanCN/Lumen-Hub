@@ -24,6 +24,15 @@ jobs:
             - name: Test workspace
               run: cargo test --workspace
 
+            # L0 e2e: real binary + mock model repo + QA fixture model (no
+            # weight downloads). The qa feature is test-only; dist profiles
+            # never enable it.
+            - name: L0 e2e suites (cpu)
+              run: >
+                  cargo test -p lumen-hub --features qa
+                  --test l0_lifecycle --test l0_infer --test l0_batcher
+                  --test l0_control --test l0_contract
+
     backends:
         name: build ${{ matrix.backend }} (${{ matrix.os }})
         runs-on: ${{ matrix.os }}
@@ -50,6 +59,16 @@ jobs:
               run: >
                   cargo check -p lumen-hub --no-default-features
                   --features ${{ matrix.backend }},siglip,ppocr,insightface,clip
+
+            # Metal runners have a real GPU: run the L0 e2e suites on the
+            # metal backend so cpu↔metal behavior is exercised on every PR.
+            - name: L0 e2e suites (metal)
+              if: matrix.backend == 'metal'
+              run: >
+                  cargo test -p lumen-hub --no-default-features
+                  --features metal,siglip,ppocr,insightface,clip,qa
+                  --test l0_lifecycle --test l0_infer --test l0_batcher
+                  --test l0_control --test l0_contract
 
     # CUDA / ROCm require vendor toolkits to compile (cubecl-cuda / cubecl-rocm)
     # and are not exercised on hosted runners; they are validated on

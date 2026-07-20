@@ -6,6 +6,11 @@
 //! tests skip gracefully so they remain green in environments without the
 //! (large) model assets.
 
+#[cfg(feature = "qa")]
+pub mod harness;
+#[cfg(feature = "qa")]
+pub mod mock_repo;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

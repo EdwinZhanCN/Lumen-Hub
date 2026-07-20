@@ -66,8 +66,15 @@ Requires Rust 1.94+ (pinned in `rust-toolchain.toml`).
 cargo build --release      # default: cpu backend + all models
 cargo build --release --no-default-features --features metal,siglip,ppocr,insightface,clip
 
-cargo test --workspace     # E2E tests skip when LUMEN_MODELS_DIR has no weights
-LUMEN_MODELS_DIR=/path/to/lumen-models cargo test --release --test e2e_siglip
+cargo test --workspace     # unit + integration
+
+# L0 e2e (every PR in CI): real binary + mock model repo + a tiny deterministic
+# QA model — lifecycle, control plane, batching, quantization. No downloads.
+cargo test -p lumen-hub --features qa --test l0_lifecycle --test l0_infer     --test l0_batcher --test l0_control --test l0_contract
+
+# L1 (nightly in CI): real weights — semantic checks + golden regression.
+LUMEN_MODELS_DIR=/path/to/lumen-models cargo test --release --test l1_models --test l1_parity
+cargo xtask golden         # regenerate tests/golden/ after intentional changes
 ```
 
 Backend features (pick one; priority cuda > rocm > vulkan > metal > wgpu > cpu):

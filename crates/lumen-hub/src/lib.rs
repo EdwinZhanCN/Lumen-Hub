@@ -17,6 +17,8 @@ pub mod models {
     pub mod insightface;
     #[cfg(feature = "ppocr")]
     pub mod ppocr;
+    #[cfg(feature = "qa")]
+    pub mod qa;
     #[cfg(feature = "siglip")]
     pub mod siglip;
 }
