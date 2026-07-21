@@ -66,12 +66,28 @@ Requires Rust 1.94+ (pinned in `rust-toolchain.toml`).
 cargo build --release      # default: cpu backend + all models
 cargo build --release --no-default-features --features metal,siglip,ppocr,insightface,clip
 
-cargo test --workspace     # E2E tests skip when LUMEN_MODELS_DIR has no weights
-LUMEN_MODELS_DIR=/path/to/lumen-models cargo test --release --test e2e_siglip
+cargo test --workspace     # unit + integration
+
+# L0 e2e (every PR in CI): real binary + mock model repo + a tiny deterministic
+# QA model — lifecycle, control plane, batching, quantization. No downloads.
+cargo test -p lumen-hub --features qa --test l0_lifecycle --test l0_infer \
+    --test l0_batcher --test l0_control --test l0_contract
+
+# L1 (nightly in CI): real weights — semantic checks + golden regression.
+LUMEN_MODELS_DIR=/path/to/lumen-models cargo test --release --test l1_models --test l1_parity
+cargo xtask golden         # regenerate tests/golden/ after intentional changes
 ```
 
 Backend features (pick one; priority cuda > rocm > vulkan > metal > wgpu > cpu):
-`cpu`, `metal`, `vulkan`, `wgpu`, `cuda`, `rocm`.
+`cpu`, `metal`, `vulkan`, `wgpu`, `cuda`, `rocm`. `metal`, `vulkan`, and `wgpu` are
+the same `cubecl-wgpu` backend parameterized by which `GraphicsApi` it hands to
+the `wgpu` crate (`Metal` / `Vulkan` / auto-detect) — not three separate
+implementations. `wgpu` (auto) is what the dist profiles actually ship on
+Linux/Windows; `vulkan` exists as an escape hatch to force that API instead of
+relying on auto-detection. `metal` is required on macOS (no Vulkan there —
+auto-detect resolves to Metal anyway, so the named feature just makes that
+explicit). `cuda`/`rocm` are unrelated: they talk to the vendor compute API
+directly (`cubecl-cuda`/`cubecl-hip`), bypassing the graphics-API layer entirely.
 Model features: `siglip`, `ppocr`, `insightface`, `clip` (BioCLIP).
 
 ## Release
@@ -81,6 +97,13 @@ Tag `v<version>` (matching the `lumen-cli` crate version) →
 (`{darwin-arm64,windows-x64,linux-x64,linux-arm64}` × backend, plus
 `linux-arm64-jetson`), the CLI installers, and `manifest.json` + checksums.
 Locally: `cargo xtask dist --profile <profile>`.
+
+Linux profiles build on `ubuntu-22.04` (glibc 2.35), not 24.04 (glibc 2.39):
+glibc is forward-compatible only, so building on the oldest practical host
+maximizes which end-user distros the shipped binary runs on. 20.04 isn't an
+option — GitHub retired the `ubuntu-20.04` hosted runner in April 2025, and
+AMD's ROCm 7.1.1 apt repo has no `focal` channel either, so 22.04 is the actual
+floor for this toolchain.
 
 ## Workspace layout
 

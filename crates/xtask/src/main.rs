@@ -113,6 +113,7 @@ fn run() -> Result<(), String> {
     match args.next().as_deref() {
         Some("dist") => dist(args.collect()),
         Some("release-metadata") => release_metadata(args.collect()),
+        Some("golden") => golden(args.collect()),
         Some("--help" | "-h") | None => {
             print_help();
             Ok(())
@@ -123,7 +124,7 @@ fn run() -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "Usage:\n  cargo xtask dist --profile <profile>\n  cargo xtask release-metadata [--assets-dir <dir>]\n\nProfiles:\n  {}",
+        "Usage:\n  cargo xtask dist --profile <profile>\n  cargo xtask release-metadata [--assets-dir <dir>]\n  cargo xtask golden [--models-dir <dir>]   Regenerate l1 golden embeddings\n\nProfiles:\n  {}",
         PROFILES
             .iter()
             .map(|p| p.name)
@@ -465,4 +466,44 @@ mod tests {
             Some("darwin-arm64-metal".to_owned())
         );
     }
+}
+
+/// Regenerates the l1 golden embeddings from real weights by running the
+/// l1_models suite with LUMEN_GOLDEN_WRITE=1. Review the resulting diff under
+/// crates/lumen-hub/tests/golden/ before committing.
+fn golden(args: Vec<String>) -> Result<(), String> {
+    let mut args = args.into_iter();
+    let mut models_dir: Option<String> = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--models-dir" => {
+                models_dir = Some(args.next().ok_or("missing value for --models-dir")?);
+            }
+            other => return Err(format!("unknown golden argument `{other}`")),
+        }
+    }
+
+    let mut command = Command::new("cargo");
+    command.args([
+        "test",
+        "-p",
+        "lumen-hub",
+        "--release",
+        "--test",
+        "l1_models",
+        "--",
+        "--test-threads=1",
+    ]);
+    command.env("LUMEN_GOLDEN_WRITE", "1");
+    if let Some(dir) = models_dir {
+        command.env("LUMEN_MODELS_DIR", dir);
+    }
+    let status = command
+        .status()
+        .map_err(|e| format!("failed to run cargo test: {e}"))?;
+    if !status.success() {
+        return Err("golden regeneration run failed".to_owned());
+    }
+    println!("golden files updated under crates/lumen-hub/tests/golden/ — review the diff");
+    Ok(())
 }

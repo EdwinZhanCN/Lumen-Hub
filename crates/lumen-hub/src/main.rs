@@ -20,7 +20,7 @@ use lumen_hub::models::ppocr::PpocrService;
 #[cfg(feature = "siglip")]
 use lumen_hub::models::siglip::SiglipService;
 use lumen_hub::{
-    backend::{configure_runtime, default_device},
+    backend::{BACKEND_NAME, configure_runtime, default_device},
     daemon::{
         DaemonError, HubGrpcService, MdnsAdvertisement, ReadyHandle, advertised_capabilities,
         bind_addr, control_plane, hub_batcher_config,
@@ -119,7 +119,7 @@ where
     // data plane answers UNAVAILABLE until initialization completes.
     let bus = Arc::new(StatusBus::new(
         env!("CARGO_PKG_VERSION").to_owned(),
-        backend_label().to_owned(),
+        BACKEND_NAME.to_owned(),
     ));
     let (server, ready) = control_plane(Arc::clone(&bus), logs);
     ready.init().await;
@@ -233,24 +233,6 @@ async fn initialize(
         .await;
     bus.set_phase(Phase::Ready);
     Ok(())
-}
-
-/// Compute backend compiled into this binary, mirroring the priority order in
-/// `backend.rs`. Reported as the control-plane `profile`.
-fn backend_label() -> &'static str {
-    if cfg!(feature = "cuda") {
-        "cuda"
-    } else if cfg!(feature = "rocm") {
-        "rocm"
-    } else if cfg!(feature = "vulkan") {
-        "vulkan"
-    } else if cfg!(feature = "metal") {
-        "metal"
-    } else if cfg!(feature = "wgpu") {
-        "wgpu"
-    } else {
-        "cpu"
-    }
 }
 
 /// Bridges download progress onto the status bus, tracking per-model file
@@ -559,6 +541,31 @@ fn build_service_hub_from_config(
                 return Err(StartupError::PackageDisabled {
                     package: svc_config.package.clone(),
                     feature: "ppocr",
+                });
+            }
+            #[cfg(feature = "qa")]
+            "qa" => {
+                let service = lumen_hub::models::qa::QaService::from_config(
+                    service_name,
+                    svc_config,
+                    &cache_dir,
+                    Arc::clone(&device),
+                )
+                .map_err(|e| StartupError::ServiceConstruction {
+                    service: service_name.to_owned(),
+                    message: e.to_string(),
+                })?;
+                hub.register(service)
+                    .map_err(|e| StartupError::ServiceConstruction {
+                        service: service_name.to_owned(),
+                        message: e.to_string(),
+                    })?;
+            }
+            #[cfg(not(feature = "qa"))]
+            "qa" => {
+                return Err(StartupError::PackageDisabled {
+                    package: svc_config.package.clone(),
+                    feature: "qa",
                 });
             }
             other => {

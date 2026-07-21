@@ -1,0 +1,67 @@
+name: Nightly Model Suite
+
+# L1: real production weights — semantic quality + golden-embedding regression
+# (the shared goldens double as the cpu ↔ metal parity check). Weights are
+# cached between runs; the curated fp32/fp16q8 subset stays within the
+# repository cache budget.
+
+on:
+    schedule:
+        - cron: "0 3 * * *"
+    workflow_dispatch:
+
+jobs:
+    l1:
+        name: l1 ${{ matrix.backend }} (macos-15)
+        runs-on: macos-15
+        strategy:
+            fail-fast: false
+            matrix:
+                backend: [cpu, metal]
+        env:
+            LUMEN_MODELS_DIR: ${{ github.workspace }}/lumen-models
+        steps:
+            - uses: actions/checkout@v4
+
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: "1.94.1"
+            - uses: Swatinem/rust-cache@v2
+
+            - name: Restore model cache
+              uses: actions/cache@v4
+              with:
+                  path: lumen-models
+                  key: lumen-models-v1
+
+            - name: Install huggingface CLI
+              run: pip3 install --quiet --break-system-packages "huggingface_hub[cli]"
+
+            # Curated subset: exactly what the l1 suites load. Cache hits skip
+            # the network entirely (hf reuses existing files).
+            - name: Fetch model weights
+              run: |
+                  set -euo pipefail
+                  fetch() { # repo, patterns...
+                      local repo="$1"; shift
+                      local includes=()
+                      for p in "$@"; do includes+=(--include "$p"); done
+                      hf download "Lumilio-Photos/$repo" "${includes[@]}" \
+                          --local-dir "$LUMEN_MODELS_DIR/$repo"
+                  }
+                  fetch siglip2-base-patch16-224 "model_info.json" "tokenizer.json" "burn/*.fp32.bpk"
+                  fetch antelopev2 "model_info.json" "burn/*.fp32.bpk"
+                  fetch pp-ocrv5 "model_info.json" "*.txt" "burn/*.fp32.bpk"
+                  fetch pp-ocrv6-small "model_info.json" "*.txt" "burn/*.fp16q8.bpk"
+                  du -sh "$LUMEN_MODELS_DIR"/* || true
+
+            - name: L1 model suites
+              run: |
+                  set -euo pipefail
+                  if [ "${{ matrix.backend }}" = "metal" ]; then
+                      FEATURES="--no-default-features --features metal,siglip,ppocr,insightface,clip"
+                  else
+                      FEATURES=""
+                  fi
+                  cargo test -p lumen-hub --release $FEATURES \
+                      --test l1_models --test l1_parity -- --test-threads=1

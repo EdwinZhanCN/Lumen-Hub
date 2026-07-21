@@ -291,15 +291,20 @@ trait ModelRepoClient {
 
 struct HfHubClient {
     agent: ureq::Agent,
-    endpoint: &'static str,
+    endpoint: String,
 }
 
 impl HfHubClient {
     fn new(region: Region) -> Self {
-        let endpoint = match region {
-            Region::Cn => "https://hf-mirror.com",
-            Region::Other => "https://huggingface.co",
-        };
+        // Test/e2e escape hatch: point artifact downloads at a local mock
+        // repository. Production configs never set this.
+        let endpoint = std::env::var("LUMEN_MODEL_ENDPOINT").unwrap_or_else(|_| {
+            match region {
+                Region::Cn => "https://hf-mirror.com",
+                Region::Other => "https://huggingface.co",
+            }
+            .to_owned()
+        });
         Self {
             agent: ureq::Agent::new_with_defaults(),
             endpoint,
@@ -309,7 +314,7 @@ impl HfHubClient {
 
 impl ModelRepoClient for HfHubClient {
     fn endpoint_label(&self) -> &str {
-        self.endpoint
+        &self.endpoint
     }
 
     fn list_repo_files(&self, model: &str) -> Result<Vec<String>, ModelDownloadError> {

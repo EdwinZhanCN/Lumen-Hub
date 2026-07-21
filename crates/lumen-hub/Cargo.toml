@@ -14,6 +14,9 @@ default = ["cpu", "clip", "insightface", "ppocr", "siglip"]
 
 # --- Model packages ---
 clip = []
+# QA harness package: tiny deterministic model for the e2e suites. Never
+# enabled by dist profiles; CI enables it explicitly for the l0 tests.
+qa = []
 insightface = []
 ppocr = ["imageproc", "rten-imageproc"]
 siglip = []
@@ -73,6 +76,22 @@ tonic-health = "0.14.5"
 tonic-prost = "0.14.5"
 tracing = "0.1.44"
 ureq = "3.3.0"
+
+[[test]]
+name = "l0_lifecycle"
+required-features = ["qa"]
+
+[[test]]
+name = "l0_infer"
+required-features = ["qa"]
+
+[[test]]
+name = "l0_batcher"
+required-features = ["qa"]
+
+[[test]]
+name = "l0_control"
+required-features = ["qa"]
 
 [build-dependencies]
 protoc-bin-vendored = "3.2.0"
