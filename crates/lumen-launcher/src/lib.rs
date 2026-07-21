@@ -22,6 +22,8 @@ const OFFICIAL_RELEASE_DOWNLOAD_PREFIX: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/";
 const OFFICIAL_RELEASE_LATEST_DOWNLOAD_PREFIX: &str =
     "https://github.com/EdwinZhanCN/Lumen-Hub/releases/latest/download/";
+const GH_PROXY_PRIMARY: &str = "https://gh-proxy.org/";
+const GH_PROXY_FALLBACK: &str = "https://v4.gh-proxy.org/";
 
 #[derive(Debug, Clone, Default)]
 pub struct StartOptions {
@@ -39,6 +41,7 @@ pub struct StartPlan {
     pub config_path: PathBuf,
     pub manifest_url: String,
     pub profile: String,
+    pub github_proxy: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,6 +177,14 @@ pub fn resolve_start_plan(options: StartOptions) -> Result<StartPlan, LauncherEr
         })?
         .to_owned();
 
+    let github_proxy = bootstrap.as_ref().and_then(|b| {
+        if b.region == setup::REGION_CN {
+            Some(GH_PROXY_PRIMARY.to_owned())
+        } else {
+            None
+        }
+    });
+
     Ok(StartPlan {
         lumen_dir,
         bootstrap_path,
@@ -181,6 +192,7 @@ pub fn resolve_start_plan(options: StartOptions) -> Result<StartPlan, LauncherEr
         config_path,
         manifest_url,
         profile,
+        github_proxy,
     })
 }
 
@@ -188,7 +200,7 @@ pub fn prepare_hub<O>(plan: &StartPlan, observer: &mut O) -> Result<PathBuf, Lau
 where
     O: LaunchObserver,
 {
-    let manifest = fetch_manifest(&plan.manifest_url, observer)?;
+    let manifest = fetch_manifest(&plan.manifest_url, plan.github_proxy.as_deref(), observer)?;
     validate_release_component(&manifest.version, "manifest version")?;
     let artifact = manifest
         .hub
@@ -206,7 +218,12 @@ where
         .join("hub")
         .join(&manifest.version)
         .join(&artifact.profile);
-    ensure_hub_installed(&install_dir, artifact, observer)
+    ensure_hub_installed(
+        &install_dir,
+        artifact,
+        plan.github_proxy.as_deref(),
+        observer,
+    )
 }
 
 pub fn spawn_hub<O>(
@@ -288,22 +305,47 @@ pub fn read_server_port(config_path: &Path) -> u16 {
     config.server.port
 }
 
-pub fn fetch_manifest<O>(url: &str, observer: &mut O) -> Result<ReleaseManifest, LauncherError>
+fn fetch_candidates(url: &str, github_proxy: Option<&str>) -> Vec<String> {
+    match github_proxy {
+        Some(_) => vec![
+            format!("{GH_PROXY_PRIMARY}{url}"),
+            format!("{GH_PROXY_FALLBACK}{url}"),
+            url.to_owned(),
+        ],
+        None => vec![url.to_owned()],
+    }
+}
+
+pub fn fetch_manifest<O>(
+    url: &str,
+    github_proxy: Option<&str>,
+    observer: &mut O,
+) -> Result<ReleaseManifest, LauncherError>
 where
     O: LaunchObserver,
 {
     validate_manifest_url(url)?;
     observer.manifest_fetch_started(url);
-    let mut response = ureq::get(url).call()?;
-    let body = response.body_mut().read_to_string()?;
-    let manifest = serde_json::from_str::<ReleaseManifest>(&body)?;
-    observer.manifest_fetched(&manifest.version);
-    Ok(manifest)
+    let candidates = fetch_candidates(url, github_proxy);
+    let mut last_err = None;
+    for candidate in &candidates {
+        match ureq::get(candidate).call() {
+            Ok(mut response) => {
+                let body = response.body_mut().read_to_string()?;
+                let manifest = serde_json::from_str::<ReleaseManifest>(&body)?;
+                observer.manifest_fetched(&manifest.version);
+                return Ok(manifest);
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap().into())
 }
 
 pub fn ensure_hub_installed<O>(
     install_dir: &Path,
     artifact: &HubArtifact,
+    github_proxy: Option<&str>,
     observer: &mut O,
 ) -> Result<PathBuf, LauncherError>
 where
@@ -327,7 +369,7 @@ where
         source,
     })?;
     let archive_path = downloads_dir.join(&artifact.file_name);
-    download_artifact(artifact, &archive_path, observer)?;
+    download_artifact(artifact, &archive_path, github_proxy, observer)?;
     verify_sha256(&archive_path, &artifact.sha256, observer)?;
     extract_artifact(&archive_path, install_dir, artifact, observer)?;
     fs::write(&marker, serde_json::to_string_pretty(artifact)? + "\n").map_err(|source| {
@@ -351,6 +393,7 @@ where
 fn download_artifact<O>(
     artifact: &HubArtifact,
     target: &Path,
+    github_proxy: Option<&str>,
     observer: &mut O,
 ) -> Result<(), LauncherError>
 where
@@ -376,14 +419,40 @@ where
         })?;
     }
 
-    let mut response = ureq::get(&artifact.url).call()?;
+    let candidates = fetch_candidates(&artifact.url, github_proxy);
+    let mut last_err = None;
+    for candidate in &candidates {
+        match ureq::get(candidate).call() {
+            Ok(response) => {
+                stream_download(response, artifact, &tmp, observer)?;
+                fs::rename(&tmp, target).map_err(|source| LauncherError::WriteFile {
+                    path: target.to_path_buf(),
+                    source,
+                })?;
+                return Ok(());
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap().into())
+}
+
+fn stream_download<O>(
+    mut response: ureq::http::Response<ureq::Body>,
+    artifact: &HubArtifact,
+    tmp: &Path,
+    observer: &mut O,
+) -> Result<(), LauncherError>
+where
+    O: LaunchObserver,
+{
     let content_len = response
         .headers()
         .get("content-length")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse::<u64>().ok());
-    let mut output = fs::File::create(&tmp).map_err(|source| LauncherError::WriteFile {
-        path: tmp.clone(),
+    let mut output = fs::File::create(tmp).map_err(|source| LauncherError::WriteFile {
+        path: tmp.to_path_buf(),
         source,
     })?;
     let mut reader = response.body_mut().as_reader();
@@ -399,22 +468,17 @@ where
         output
             .write_all(&buffer[..read])
             .map_err(|source| LauncherError::WriteFile {
-                path: tmp.clone(),
+                path: tmp.to_path_buf(),
                 source,
             })?;
         written += read as u64;
         observer.download_progress(&artifact.file_name, read as u64, written, content_len);
     }
     output.flush().map_err(|source| LauncherError::WriteFile {
-        path: tmp.clone(),
+        path: tmp.to_path_buf(),
         source,
     })?;
     observer.download_finished(&artifact.file_name, written);
-
-    fs::rename(&tmp, target).map_err(|source| LauncherError::WriteFile {
-        path: target.to_path_buf(),
-        source,
-    })?;
     Ok(())
 }
 

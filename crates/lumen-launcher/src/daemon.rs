@@ -65,7 +65,7 @@ pub fn is_process_alive(pid: u32) -> bool {
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle == 0 {
+        if handle.is_null() {
             return false;
         }
         CloseHandle(handle);
@@ -232,7 +232,7 @@ fn force_kill(pid: u32) -> Result<(), DaemonError> {
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if handle == 0 {
+        if handle.is_null() {
             let err = io::Error::last_os_error();
             if err.raw_os_error() == Some(87) {
                 return Ok(());
