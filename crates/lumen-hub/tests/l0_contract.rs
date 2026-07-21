@@ -182,7 +182,7 @@ async fn grpc_rejects_malformed_tensor_requests_with_invalid_argument() {
                     META_TENSOR_SHAPE.to_owned(),
                     shape_json(&[1_usize, 3, 224, 225]),
                 );
-                request.payload = vec![0; 1 * 3 * 224 * 225 * 4];
+                request.payload = vec![0; 3 * 224 * 225 * 4];
             }),
         ),
         (
@@ -437,7 +437,7 @@ fn valid_tensor_meta() -> HashMap<String, String> {
 }
 
 fn filled_tensor_payload(marker: u8) -> Vec<u8> {
-    vec![marker; 1 * 3 * 224 * 224 * 4]
+    vec![marker; 3 * 224 * 224 * 4]
 }
 
 struct ContractService {

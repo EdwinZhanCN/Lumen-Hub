@@ -25,8 +25,7 @@ pub fn daemon_paths(lumen_dir: &Path) -> DaemonPaths {
 
 pub fn write_pid_file(path: &Path, pid: u32) -> Result<(), DaemonError> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|source| DaemonError::Io(path.to_path_buf(), source))?;
+        fs::create_dir_all(parent).map_err(|source| DaemonError::Io(path.to_path_buf(), source))?;
     }
     fs::write(path, format!("{pid}\n"))
         .map_err(|source| DaemonError::Io(path.to_path_buf(), source))?;
@@ -63,9 +62,7 @@ pub fn is_process_alive(pid: u32) -> bool {
 #[cfg(windows)]
 pub fn is_process_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle == 0 {
@@ -110,7 +107,11 @@ pub fn spawn_background(config: &BackgroundSpawnConfig) -> Result<u32, DaemonErr
         .arg("--config")
         .arg(&config.config_path)
         .stdin(std::process::Stdio::null())
-        .stdout(log_file.try_clone().map_err(|e| DaemonError::Io(config.log_file.clone(), e))?)
+        .stdout(
+            log_file
+                .try_clone()
+                .map_err(|e| DaemonError::Io(config.log_file.clone(), e))?,
+        )
         .stderr(log_file);
 
     configure_detached(&mut command);
@@ -198,10 +199,7 @@ pub fn stop_process(pid: u32, grace_period: Duration) -> Result<(), DaemonError>
 fn send_terminate(pid: u32) -> Result<(), DaemonError> {
     let ret = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
     if ret != 0 {
-        return Err(DaemonError::SignalFailed(
-            pid,
-            io::Error::last_os_error(),
-        ));
+        return Err(DaemonError::SignalFailed(pid, io::Error::last_os_error()));
     }
     Ok(())
 }
@@ -231,9 +229,7 @@ fn force_kill(pid: u32) -> Result<(), DaemonError> {
 #[cfg(windows)]
 fn force_kill(pid: u32) -> Result<(), DaemonError> {
     use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, TerminateProcess, PROCESS_TERMINATE,
-    };
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
         if handle == 0 {
@@ -263,14 +259,13 @@ pub fn prepare_log_file(log_file: &Path, max_size: u64) -> Result<fs::File, Daem
             .map_err(|source| DaemonError::Io(parent.to_path_buf(), source))?;
     }
 
-    if log_file.exists() {
-        if let Ok(meta) = fs::metadata(log_file) {
-            if meta.len() > max_size {
-                let old = log_file.with_extension("log.old");
-                let _ = fs::remove_file(&old);
-                let _ = fs::rename(log_file, &old);
-            }
-        }
+    if log_file.exists()
+        && let Ok(meta) = fs::metadata(log_file)
+        && meta.len() > max_size
+    {
+        let old = log_file.with_extension("log.old");
+        let _ = fs::remove_file(&old);
+        let _ = fs::rename(log_file, &old);
     }
 
     fs::OpenOptions::new()

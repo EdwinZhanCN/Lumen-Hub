@@ -3,6 +3,7 @@ pub mod error;
 pub mod factory;
 pub mod hub;
 pub mod registry;
+#[allow(clippy::module_inception)]
 pub mod service;
 pub mod task;
 pub mod tensor;

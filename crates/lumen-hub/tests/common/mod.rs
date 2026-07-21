@@ -57,6 +57,7 @@ pub fn require_model_precision(
     Some((dir.to_string_lossy().into_owned(), model_name.to_owned()))
 }
 
+#[allow(dead_code)]
 pub fn has_burn_weights(
     cache_dir: &str,
     model_name: &str,
@@ -71,6 +72,7 @@ pub fn has_burn_weights(
     })
 }
 
+#[allow(dead_code)]
 pub fn service_config(package: &str, model_name: &str) -> ServiceConfig {
     ServiceConfig {
         enabled: true,

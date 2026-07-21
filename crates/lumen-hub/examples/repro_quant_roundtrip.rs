@@ -40,7 +40,7 @@ impl<B: BackendTrait> ModuleMapper<B> for Q {
             let last = p.val().dims()[D - 1];
             let b = (2..=last.min(32))
                 .rev()
-                .find(|d| last % d == 0)
+                .find(|d| last.is_multiple_of(*d))
                 .unwrap_or(1) as u8;
             let scheme = self.scheme.with_level(QuantLevel::block([b]));
             p.map(|t| t.quantize_dynamic(&scheme))

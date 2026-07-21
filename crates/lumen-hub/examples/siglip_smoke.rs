@@ -32,7 +32,7 @@ fn main() {
         model_name,
         &vision_path,
         &precision,
-        device.clone(),
+        device,
         std::path::Path::new(&head_path)
             .exists()
             .then_some(head_path.as_str()),

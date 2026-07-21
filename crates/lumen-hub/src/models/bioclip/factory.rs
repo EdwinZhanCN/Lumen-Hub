@@ -75,7 +75,7 @@ impl BioClipModelFactory {
                 path.display()
             ))
         })?;
-        BioClipVisionModel::load(model_name, path_str, precision, device.clone())
+        BioClipVisionModel::load(model_name, path_str, precision, *device)
             .map_err(ServiceError::InvalidArgument)
     }
 
@@ -173,7 +173,7 @@ fn strip_dataset_size_suffix(dataset: &str) -> Option<String> {
         .and_then(|stem| stem.to_str())
         .unwrap_or(dataset);
     let trimmed = stem.trim_end_matches(|ch: char| ch.is_ascii_digit());
-    let trimmed = trimmed.trim_end_matches(|ch| matches!(ch, 'K' | 'M' | 'B' | 'k' | 'm' | 'b'));
+    let trimmed = trimmed.trim_end_matches(['K', 'M', 'B', 'k', 'm', 'b']);
     let trimmed = trimmed.trim_end_matches(|ch: char| ch.is_ascii_digit());
     if trimmed.len() < stem.len() {
         Some(trimmed.to_owned())

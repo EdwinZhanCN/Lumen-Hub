@@ -84,7 +84,7 @@ impl PpocrModelFactory {
         device: &Device,
     ) -> ServiceResult<PpocrDetectionModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        PpocrDetectionModel::load(model_name, &path, precision, device.clone())
+        PpocrDetectionModel::load(model_name, &path, precision, *device)
             .map_err(ServiceError::InvalidArgument)
     }
 
@@ -97,7 +97,7 @@ impl PpocrModelFactory {
         device: &Device,
     ) -> ServiceResult<PpocrRecognitionModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        PpocrRecognitionModel::load(model_name, &path, precision, device.clone())
+        PpocrRecognitionModel::load(model_name, &path, precision, *device)
             .map_err(ServiceError::InvalidArgument)
     }
 
@@ -110,7 +110,7 @@ impl PpocrModelFactory {
         device: &Device,
     ) -> ServiceResult<PpocrClassificationModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        PpocrClassificationModel::load(model_name, &path, precision, device.clone())
+        PpocrClassificationModel::load(model_name, &path, precision, *device)
             .map_err(ServiceError::InvalidArgument)
     }
 

@@ -107,7 +107,7 @@ impl<B: BackendTrait> ModuleMapper<B> for SelectiveQuantizer {
 fn block_size_for(last: usize, cap: usize) -> Option<u8> {
     (2..=last.min(cap).min(255))
         .rev()
-        .find(|d| last % d == 0)
+        .find(|d| last.is_multiple_of(*d))
         .map(|d| d as u8)
 }
 

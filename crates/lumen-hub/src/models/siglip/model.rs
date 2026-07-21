@@ -111,7 +111,7 @@ impl SiglipVisionModel {
                     path,
                     precision,
                 )?,
-                device: device.clone(),
+                device,
             }),
             "siglip2-so400m-patch14-384" => Box::new(So400mVision {
                 model: load_burnpack(
@@ -119,7 +119,7 @@ impl SiglipVisionModel {
                     path,
                     precision,
                 )?,
-                device: device.clone(),
+                device,
             }),
             other => return Err(unsupported(other)),
         };

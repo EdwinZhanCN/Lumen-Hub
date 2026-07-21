@@ -441,8 +441,8 @@ fn scrfd_postprocess(
                 center_y + b[3] * mapping.stride as f32,
             ];
             let mut decoded_kps = [[0.0f32; 2]; 5];
-            for point in 0..5 {
-                decoded_kps[point] = [
+            for (point, kps_entry) in decoded_kps.iter_mut().enumerate() {
+                *kps_entry = [
                     center_x + kps.values[index * 10 + point * 2] * mapping.stride as f32,
                     center_y + kps.values[index * 10 + point * 2 + 1] * mapping.stride as f32,
                 ];
@@ -481,7 +481,7 @@ fn scrfd_postprocess(
 }
 
 fn tensor_rows(output: &TensorOutput, width: usize) -> ServiceResult<usize> {
-    if output.values.len() % width != 0 {
+    if !output.values.len().is_multiple_of(width) {
         return Err(ServiceError::Internal(format!(
             "tensor shape {:?} has {} values, not divisible by row width {width}",
             output.shape,
@@ -625,8 +625,8 @@ fn solve_6x6(mut a: [[f32; 6]; 6], mut b: [f32; 6]) -> Option<[f32; 6]> {
         b.swap(col, pivot);
 
         let div = a[col][col];
-        for j in col..6 {
-            a[col][j] /= div;
+        for val in &mut a[col][col..6] {
+            *val /= div;
         }
         b[col] /= div;
 
@@ -635,8 +635,9 @@ fn solve_6x6(mut a: [[f32; 6]; 6], mut b: [f32; 6]) -> Option<[f32; 6]> {
                 continue;
             }
             let factor = a[row][col];
-            for j in col..6 {
-                a[row][j] -= factor * a[col][j];
+            let col_row = a[col];
+            for (row_val, col_val) in a[row][col..6].iter_mut().zip(col_row[col..6].iter()) {
+                *row_val -= factor * *col_val;
             }
             b[row] -= factor * b[col];
         }

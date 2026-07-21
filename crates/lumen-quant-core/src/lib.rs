@@ -68,7 +68,7 @@ pub fn block_size_for(last: usize, cap: usize, multiple: usize) -> Option<u8> {
     let multiple = multiple.max(1);
     (2..=last.min(cap).min(255))
         .rev()
-        .find(|d| last % d == 0 && d % multiple == 0)
+        .find(|d| last.is_multiple_of(*d) && d.is_multiple_of(multiple))
         .map(|d| d as u8)
 }
 

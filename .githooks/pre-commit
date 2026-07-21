@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+echo "pre-commit: checking format..."
+cargo fmt --all -- --check
+
+echo "pre-commit: running clippy..."
+cargo clippy --all-targets --quiet -- -D warnings
+
+echo "pre-commit: all checks passed."

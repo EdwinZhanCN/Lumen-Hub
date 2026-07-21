@@ -251,7 +251,7 @@ pub fn tensor_response_meta(
 }
 
 pub fn f32_to_le_bytes(values: &[f32]) -> Bytes {
-    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<f32>());
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -267,7 +267,7 @@ pub fn f16_to_le_bytes(values: &[half::f16]) -> Bytes {
 }
 
 pub fn i64_to_le_bytes(values: &[i64]) -> Bytes {
-    let mut bytes = Vec::with_capacity(values.len() * std::mem::size_of::<i64>());
+    let mut bytes = Vec::with_capacity(std::mem::size_of_val(values));
     for value in values {
         bytes.extend_from_slice(&value.to_le_bytes());
     }
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn validates_tensor_request_metadata_and_size() {
-        let request = TaskRequest::new(vec![0; 1 * 7 * 896 * 4], DEFAULT_TENSOR_MIME)
+        let request = TaskRequest::new(vec![0; 7 * 896 * 4], DEFAULT_TENSOR_MIME)
             .with_meta(META_INPUT_KIND, INPUT_KIND_TENSOR)
             .with_meta(META_TENSOR_DTYPE, "fp32")
             .with_meta(META_TENSOR_SHAPE, "[1,7,896]")
@@ -463,7 +463,7 @@ mod tests {
 
     #[test]
     fn validates_dynamic_det_tensor_shape() {
-        let request = TaskRequest::new(vec![0; 1 * 3 * 736 * 1280 * 4], DEFAULT_TENSOR_MIME)
+        let request = TaskRequest::new(vec![0; 3 * 736 * 1280 * 4], DEFAULT_TENSOR_MIME)
             .with_meta(META_INPUT_KIND, INPUT_KIND_TENSOR)
             .with_meta(META_TENSOR_DTYPE, "fp32")
             .with_meta(META_TENSOR_SHAPE, "[1,3,736,1280]")
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn rejects_det_tensor_shape_not_aligned_to_32() {
-        let request = TaskRequest::new(vec![0; 1 * 3 * 100 * 100 * 4], DEFAULT_TENSOR_MIME)
+        let request = TaskRequest::new(vec![0; 3 * 100 * 100 * 4], DEFAULT_TENSOR_MIME)
             .with_meta(META_INPUT_KIND, INPUT_KIND_TENSOR)
             .with_meta(META_TENSOR_DTYPE, "fp32")
             .with_meta(META_TENSOR_SHAPE, "[1,3,100,100]")

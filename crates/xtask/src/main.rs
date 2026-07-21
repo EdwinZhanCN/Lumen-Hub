@@ -429,45 +429,6 @@ fn parse_named_arg(args: &[String], flag: &str) -> Result<Option<String>, String
     Ok(None)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn profiles_have_unique_names() {
-        let mut names: Vec<_> = PROFILES.iter().map(|p| p.name).collect();
-        names.sort();
-        let len = names.len();
-        names.dedup();
-        assert_eq!(names.len(), len, "duplicate profile names");
-    }
-
-    #[test]
-    fn every_profile_selects_a_backend_feature() {
-        for profile in PROFILES {
-            assert!(
-                profile.features.iter().any(|f| !MODEL_FEATURES.contains(f)),
-                "profile {} has no backend feature",
-                profile.name
-            );
-        }
-    }
-
-    #[test]
-    fn parses_named_args() {
-        let args = vec!["--profile".to_owned(), "linux-x64-cpu".to_owned()];
-        assert_eq!(
-            parse_named_arg(&args, "--profile").unwrap(),
-            Some("linux-x64-cpu".to_owned())
-        );
-        let eq = vec!["--profile=darwin-arm64-metal".to_owned()];
-        assert_eq!(
-            parse_named_arg(&eq, "--profile").unwrap(),
-            Some("darwin-arm64-metal".to_owned())
-        );
-    }
-}
-
 /// Regenerates the l1 golden embeddings from real weights by running the
 /// l1_models suite with LUMEN_GOLDEN_WRITE=1. Review the resulting diff under
 /// crates/lumen-hub/tests/golden/ before committing.
@@ -506,4 +467,43 @@ fn golden(args: Vec<String>) -> Result<(), String> {
     }
     println!("golden files updated under crates/lumen-hub/tests/golden/ — review the diff");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profiles_have_unique_names() {
+        let mut names: Vec<_> = PROFILES.iter().map(|p| p.name).collect();
+        names.sort();
+        let len = names.len();
+        names.dedup();
+        assert_eq!(names.len(), len, "duplicate profile names");
+    }
+
+    #[test]
+    fn every_profile_selects_a_backend_feature() {
+        for profile in PROFILES {
+            assert!(
+                profile.features.iter().any(|f| !MODEL_FEATURES.contains(f)),
+                "profile {} has no backend feature",
+                profile.name
+            );
+        }
+    }
+
+    #[test]
+    fn parses_named_args() {
+        let args = vec!["--profile".to_owned(), "linux-x64-cpu".to_owned()];
+        assert_eq!(
+            parse_named_arg(&args, "--profile").unwrap(),
+            Some("linux-x64-cpu".to_owned())
+        );
+        let eq = vec!["--profile=darwin-arm64-metal".to_owned()];
+        assert_eq!(
+            parse_named_arg(&eq, "--profile").unwrap(),
+            Some("darwin-arm64-metal".to_owned())
+        );
+    }
 }

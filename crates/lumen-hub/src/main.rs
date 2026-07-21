@@ -2,7 +2,7 @@ use std::{
     env,
     ffi::OsString,
     fmt, fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process,
     sync::{
         Arc, Mutex,
@@ -391,7 +391,7 @@ fn load_config(path: &PathBuf) -> StartupResult<LumenConfig> {
     }
 }
 
-fn is_yaml_path(path: &PathBuf) -> bool {
+fn is_yaml_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| matches!(extension, "yaml" | "yml"))
@@ -448,7 +448,7 @@ fn build_service_hub_from_config(
                 let service = BioclipService::from_config(
                     service_name,
                     svc_config,
-                    &cache_dir,
+                    cache_dir,
                     Arc::clone(&device),
                 )
                 .map_err(|e| StartupError::ServiceConstruction {
@@ -473,7 +473,7 @@ fn build_service_hub_from_config(
                 let service = InsightFaceService::from_config(
                     service_name,
                     svc_config,
-                    &cache_dir,
+                    cache_dir,
                     Arc::clone(&device),
                 )
                 .map_err(|e| StartupError::ServiceConstruction {
@@ -498,7 +498,7 @@ fn build_service_hub_from_config(
                 let service = SiglipService::from_config(
                     service_name,
                     svc_config,
-                    &cache_dir,
+                    cache_dir,
                     Arc::clone(&device),
                 )
                 .map_err(|e| StartupError::ServiceConstruction {
@@ -523,7 +523,7 @@ fn build_service_hub_from_config(
                 let service = PpocrService::from_config(
                     service_name,
                     svc_config,
-                    &cache_dir,
+                    cache_dir,
                     Arc::clone(&device),
                 )
                 .map_err(|e| StartupError::ServiceConstruction {

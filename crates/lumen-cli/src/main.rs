@@ -140,9 +140,7 @@ fn start_background(args: &[String]) -> Result<(), CliError> {
         .parse()
         .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], port)));
 
-    log::step(format!(
-        "waiting for lumen-hub to become healthy on {addr}"
-    ))?;
+    log::step(format!("waiting for lumen-hub to become healthy on {addr}"))?;
     match daemon::wait_for_healthy(&daemon::HealthCheckConfig {
         addr,
         ..Default::default()
