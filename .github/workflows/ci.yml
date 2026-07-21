@@ -8,7 +8,10 @@ on:
 jobs:
     workspace:
         name: fmt + test (cpu)
-        runs-on: ubuntu-24.04
+        # 22.04 to match the Linux dist build floor (see release.yml) — no
+        # artifacts ship from this job, but keeping it aligned avoids CI
+        # passing on a newer glibc than what actually gets released.
+        runs-on: ubuntu-22.04
         steps:
             - uses: actions/checkout@v4
             - uses: dtolnay/rust-toolchain@master
@@ -41,11 +44,14 @@ jobs:
             matrix:
                 include:
                     - backend: cpu
-                      os: ubuntu-24.04
+                      os: ubuntu-22.04
+                    # No separate `vulkan` job: burn's Vulkan/Metal/Wgpu backends
+                    # are the same cubecl-wgpu code parameterized by GraphicsApi
+                    # (Vulkan/Metal/AutoGraphicsApi) — checking `wgpu` (auto) here
+                    # compiles the identical generic instantiation an explicit
+                    # `vulkan` feature check would, so it was pure duplication.
                     - backend: wgpu
-                      os: ubuntu-24.04
-                    - backend: vulkan
-                      os: ubuntu-24.04
+                      os: ubuntu-22.04
                     - backend: metal
                       os: macos-15
         steps:

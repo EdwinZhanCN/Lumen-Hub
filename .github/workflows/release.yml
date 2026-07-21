@@ -30,14 +30,19 @@ jobs:
                     # Windows
                     - { profile: windows-x64-cpu, os: windows-2025 }
                     - { profile: windows-x64-gpu, os: windows-2025 }
-                    # Linux x64
-                    - { profile: linux-x64-cpu, os: ubuntu-24.04 }
-                    - { profile: linux-x64-gpu, os: ubuntu-24.04 }
-                    - { profile: linux-x64-cuda, os: ubuntu-24.04, toolkit: cuda }
-                    - { profile: linux-x64-rocm, os: ubuntu-24.04, toolkit: rocm }
+                    # Linux x64 — built on the oldest glibc we can (22.04/2.35, not
+                    # 24.04/2.39): glibc is forward-compatible only, so an older build
+                    # host maximizes which end-user distros the shipped binary runs on.
+                    # 20.04 is not an option: GitHub retired the ubuntu-20.04 hosted
+                    # runner in April 2025, and AMD's ROCm 7.1.1 apt repo doesn't
+                    # publish a focal channel either — 22.04 is the actual floor.
+                    - { profile: linux-x64-cpu, os: ubuntu-22.04 }
+                    - { profile: linux-x64-gpu, os: ubuntu-22.04 }
+                    - { profile: linux-x64-cuda, os: ubuntu-22.04, toolkit: cuda }
+                    - { profile: linux-x64-rocm, os: ubuntu-22.04, toolkit: rocm }
                     # Linux arm64
-                    - { profile: linux-arm64-cpu, os: ubuntu-24.04-arm }
-                    - { profile: linux-arm64-gpu, os: ubuntu-24.04-arm }
+                    - { profile: linux-arm64-cpu, os: ubuntu-22.04-arm }
+                    - { profile: linux-arm64-gpu, os: ubuntu-22.04-arm }
                     - {
                           profile: linux-arm64-jetson,
                           os: ubuntu-24.04-arm,
@@ -85,8 +90,8 @@ jobs:
                   sudo apt-get install -y wget gnupg
                   sudo mkdir -p /etc/apt/keyrings
                   wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-                  echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.1.1 noble main' | sudo tee /etc/apt/sources.list.d/rocm.list
-                  # Ubuntu 24.04 universe ships conflicting rocminfo/rocm-cmake/hipcc
+                  echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.1.1 jammy main' | sudo tee /etc/apt/sources.list.d/rocm.list
+                  # Ubuntu's universe repo ships conflicting rocminfo/rocm-cmake/hipcc
                   # versions; prefer the AMD repo so the SDK's pinned deps resolve.
                   printf 'Package: *\nPin: origin "repo.radeon.com"\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600
                   sudo apt-get update
