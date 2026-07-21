@@ -1,3 +1,5 @@
+#![allow(clippy::clone_on_copy)]
+
 use std::{fs, path::PathBuf};
 
 use lumen_schema::{ModelInfo, Runtime};
@@ -93,7 +95,7 @@ impl SiglipModelFactory {
         device: &Device,
     ) -> ServiceResult<SiglipTextModel> {
         let path = self.component_path_str(model_name, runtime, "text", precision)?;
-        SiglipTextModel::load(model_name, &path, precision, *device)
+        SiglipTextModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 
@@ -130,8 +132,14 @@ impl SiglipModelFactory {
         // same burn dir. Present → image embeddings also carry an aesthetic score.
         let head_path =
             self.optional_component_path_str(model_name, runtime, "aesthetic", precision)?;
-        SiglipVisionModel::load(model_name, &path, precision, *device, head_path.as_deref())
-            .map_err(ServiceError::InvalidArgument)
+        SiglipVisionModel::load(
+            model_name,
+            &path,
+            precision,
+            device.clone(),
+            head_path.as_deref(),
+        )
+        .map_err(ServiceError::InvalidArgument)
     }
 
     /// Loads the tokenizer and enforces truncation to the encoder's fixed

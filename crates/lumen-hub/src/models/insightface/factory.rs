@@ -1,3 +1,5 @@
+#![allow(clippy::clone_on_copy)]
+
 use std::{fs, path::PathBuf};
 
 use lumen_schema::{ModelInfo, Runtime};
@@ -76,7 +78,7 @@ impl InsightFaceModelFactory {
         device: &Device,
     ) -> ServiceResult<InsightFaceDetectionModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        InsightFaceDetectionModel::load(model_name, &path, precision, *device)
+        InsightFaceDetectionModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 
@@ -89,7 +91,7 @@ impl InsightFaceModelFactory {
         device: &Device,
     ) -> ServiceResult<InsightFaceRecognitionModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        InsightFaceRecognitionModel::load(model_name, &path, precision, *device)
+        InsightFaceRecognitionModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 }

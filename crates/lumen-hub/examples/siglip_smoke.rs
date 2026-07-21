@@ -3,6 +3,8 @@
 //! Run with:
 //!   cargo run --example siglip_smoke --no-default-features --features cpu,siglip -- <model_dir>
 
+#![allow(clippy::clone_on_copy)]
+
 use lumen_hub::backend::default_device;
 use lumen_hub::models::siglip::{SiglipTextModel, SiglipVisionModel};
 
@@ -32,7 +34,7 @@ fn main() {
         model_name,
         &vision_path,
         &precision,
-        device,
+        device.clone(),
         std::path::Path::new(&head_path)
             .exists()
             .then_some(head_path.as_str()),
@@ -53,7 +55,7 @@ fn main() {
 
     let text_path = format!("{model_dir}/burn/text.{precision}.bpk");
     println!("loading text model for `{model_name}` (precision={precision})");
-    let text = SiglipTextModel::load(model_name, &text_path, &precision, device)
+    let text = SiglipTextModel::load(model_name, &text_path, &precision, device.clone())
         .expect("text model loads");
     // 64 token ids padded with 0; a trivial sequence just to exercise forward.
     let mut ids = vec![0i64; 64];

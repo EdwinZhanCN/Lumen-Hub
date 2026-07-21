@@ -9,6 +9,8 @@
 //! arm here. Precision (fp32/fp16) reuses the same module — only the `.bpk`
 //! differs.
 
+#![allow(clippy::clone_on_copy)]
+
 use burn::tensor::{Int, Tensor, TensorData};
 
 use crate::backend::{Backend, Device};
@@ -59,7 +61,7 @@ impl SiglipTextModel {
                         path,
                         precision,
                     )?,
-                    device,
+                    device: device.clone(),
                 }),
                 64,
             ),
@@ -70,7 +72,7 @@ impl SiglipTextModel {
                         path,
                         precision,
                     )?,
-                    device,
+                    device: device.clone(),
                 }),
                 64,
             ),
@@ -111,7 +113,7 @@ impl SiglipVisionModel {
                     path,
                     precision,
                 )?,
-                device,
+                device: device.clone(),
             }),
             "siglip2-so400m-patch14-384" => Box::new(So400mVision {
                 model: load_burnpack(
@@ -119,7 +121,7 @@ impl SiglipVisionModel {
                     path,
                     precision,
                 )?,
-                device,
+                device: device.clone(),
             }),
             other => return Err(unsupported(other)),
         };
@@ -159,7 +161,7 @@ fn load_head(
                 path,
                 precision,
             )?,
-            device,
+            device: device.clone(),
         }),
         "siglip2-so400m-patch14-384" => Box::new(So400mHead {
             model: load_aesthetic_head(
@@ -167,7 +169,7 @@ fn load_head(
                 path,
                 precision,
             )?,
-            device,
+            device: device.clone(),
         }),
         other => return Err(unsupported(other)),
     };

@@ -1,3 +1,5 @@
+#![allow(clippy::clone_on_copy)]
+
 use std::{fs, path::PathBuf};
 
 use lumen_schema::{ModelInfo, Runtime};
@@ -84,7 +86,7 @@ impl PpocrModelFactory {
         device: &Device,
     ) -> ServiceResult<PpocrDetectionModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        PpocrDetectionModel::load(model_name, &path, precision, *device)
+        PpocrDetectionModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 
@@ -97,7 +99,7 @@ impl PpocrModelFactory {
         device: &Device,
     ) -> ServiceResult<PpocrRecognitionModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        PpocrRecognitionModel::load(model_name, &path, precision, *device)
+        PpocrRecognitionModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 
@@ -110,7 +112,7 @@ impl PpocrModelFactory {
         device: &Device,
     ) -> ServiceResult<PpocrClassificationModel> {
         let path = self.component_path_str(model_name, runtime, component, precision)?;
-        PpocrClassificationModel::load(model_name, &path, precision, *device)
+        PpocrClassificationModel::load(model_name, &path, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 

@@ -1,3 +1,5 @@
+#![allow(clippy::clone_on_copy)]
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -75,7 +77,7 @@ impl BioClipModelFactory {
                 path.display()
             ))
         })?;
-        BioClipVisionModel::load(model_name, path_str, precision, *device)
+        BioClipVisionModel::load(model_name, path_str, precision, device.clone())
             .map_err(ServiceError::InvalidArgument)
     }
 
