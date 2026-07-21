@@ -429,7 +429,7 @@ pub fn platform_profile(system: &SystemInfo) -> Result<PlatformProfile, SetupErr
             name: "linux-arm64",
         }),
         _ => Err(SetupError::UnsupportedPlatform(format!(
-            "{} / {} is not in the alpha matrix",
+            "{} / {} is not in the release matrix",
             system.os_label(),
             system.arch
         ))),

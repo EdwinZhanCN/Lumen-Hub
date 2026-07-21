@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod daemon;
 pub mod setup;
 
 pub const DEFAULT_MANIFEST_URL: &str =
@@ -82,6 +83,10 @@ impl RunningHub {
 
     pub fn kill(&mut self) -> io::Result<()> {
         self.child.kill()
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
     }
 }
 
@@ -270,6 +275,17 @@ pub fn read_bootstrap(path: &Path) -> Result<Bootstrap, LauncherError> {
         source,
     })?;
     Ok(serde_json::from_str(&contents)?)
+}
+
+pub fn read_server_port(config_path: &Path) -> u16 {
+    const DEFAULT_PORT: u16 = 50051;
+    let Ok(contents) = fs::read_to_string(config_path) else {
+        return DEFAULT_PORT;
+    };
+    let Ok(config) = serde_yaml::from_str::<lumen_schema::LumenConfig>(&contents) else {
+        return DEFAULT_PORT;
+    };
+    config.server.port
 }
 
 pub fn fetch_manifest<O>(url: &str, observer: &mut O) -> Result<ReleaseManifest, LauncherError>
