@@ -7,7 +7,8 @@ use std::{
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use lumen_schema::LumenConfig;
+pub use lumen_schema::Preset;
+use lumen_schema::{BIOCLIP_DEFAULT_MODEL, FACE_DEFAULT_MODEL, LumenConfig, OCR_DEFAULT_MODEL};
 use thiserror::Error;
 
 use crate::Bootstrap;
@@ -151,56 +152,54 @@ pub fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: 
     yaml.push_str("    max_batch_size: 8\n");
     yaml.push_str("    queue_latency_ms: 2\n\n");
     yaml.push_str("services:\n");
-    let siglip = siglip_preset_config(preset, backend);
-    yaml.push_str("  # SigLIP: semantic image + text embeddings.\n");
+    yaml.push_str("  # Image Semantic Analysis / 图像语义分析 (SigLIP).\n");
     yaml.push_str("  siglip:\n");
     yaml.push_str("    enabled: true\n");
     yaml.push_str("    package: siglip\n");
     yaml.push_str("    models:\n");
     yaml.push_str("      default:\n");
-    yaml.push_str(&format!("        model: {}\n", siglip.model));
+    yaml.push_str(&format!("        model: {}\n", preset.siglip_model));
     yaml.push_str(&format!("        runtime: {}\n", backend.semantic_runtime));
-    yaml.push_str(&format!("        precision: {}\n\n", siglip.precision));
+    yaml.push_str(&format!(
+        "        precision: {}\n\n",
+        backend.semantic_precision
+    ));
 
-    yaml.push_str("  # InsightFace antelopev2: face detection + recognition.\n");
+    yaml.push_str("  # Person Recognition / 人物识别 (InsightFace).\n");
     yaml.push_str("  face:\n");
     yaml.push_str("    enabled: true\n");
     yaml.push_str("    package: insightface\n");
     yaml.push_str("    models:\n");
     yaml.push_str("      default:\n");
-    yaml.push_str("        model: antelopev2\n");
+    yaml.push_str(&format!("        model: {FACE_DEFAULT_MODEL}\n"));
     yaml.push_str(&format!("        runtime: {}\n", backend.cv_runtime));
     yaml.push_str("        precision: fp16q8\n");
 
     if preset.includes("ocr") {
         yaml.push('\n');
-        yaml.push_str("  # PP-OCRv6 small: in-image text detection + recognition.\n");
+        yaml.push_str("  # OCR Text Recognition / OCR文字识别 (PP-OCR).\n");
         yaml.push_str("  ocr:\n");
         yaml.push_str("    enabled: true\n");
         yaml.push_str("    package: ppocr\n");
         yaml.push_str("    models:\n");
         yaml.push_str("      default:\n");
-        yaml.push_str("        model: pp-ocrv6-small\n");
+        yaml.push_str(&format!("        model: {OCR_DEFAULT_MODEL}\n"));
         yaml.push_str(&format!("        runtime: {}\n", backend.cv_runtime));
         yaml.push_str("        precision: fp16q8\n");
     }
 
     if preset.includes("bioclip") {
         yaml.push('\n');
-        // brave uses the full TreeOfLife200M catalog for long-tail species
-        // coverage; other presets use the smaller Core subset.
-        let dataset = if preset.name == "brave" {
-            "TreeOfLife200M"
-        } else {
-            "TreeOfLife200MCore"
-        };
-        yaml.push_str("  # BioCLIP-2: species classification over the Tree of Life catalog.\n");
+        let dataset = preset
+            .bioclip_dataset
+            .expect("a preset containing BioCLIP must select a dataset");
+        yaml.push_str("  # BioCLIP Species Recognition / BioCLIP物种识别.\n");
         yaml.push_str("  bioclip:\n");
         yaml.push_str("    enabled: true\n");
         yaml.push_str("    package: clip\n");
         yaml.push_str("    models:\n");
         yaml.push_str("      default:\n");
-        yaml.push_str("        model: bioclip-2\n");
+        yaml.push_str(&format!("        model: {BIOCLIP_DEFAULT_MODEL}\n"));
         yaml.push_str(&format!("        runtime: {}\n", backend.semantic_runtime));
         yaml.push_str(&format!(
             "        precision: {}\n",
@@ -210,78 +209,6 @@ pub fn render_config(preset: Preset, region: &str, backend: Backend, cache_dir: 
     }
 
     yaml
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Preset {
-    pub name: &'static str,
-    pub components: &'static [&'static str],
-    pub min_ram_gb: u64,
-    pub min_vram_gb: u64,
-    pub min_disk_gb: u64,
-}
-
-impl Preset {
-    pub fn all() -> &'static [Self] {
-        &[
-            // RAM/VRAM/disk are measured guidance (Apple M2 Pro, Metal,
-            // fp16q8). Weights and BioCLIP catalogs are memory-mapped, so model
-            // size lands on disk and cold faults, not resident RAM; the RAM
-            // figures cover the Hub working set plus same-host Photos/OS. See
-            // docs/lumen-hub-tensor-batching-decision.md.
-            Self {
-                name: "minimal",
-                components: &["siglip", "face"],
-                min_ram_gb: 4,
-                min_vram_gb: 2,
-                min_disk_gb: 2,
-            },
-            Self {
-                name: "basic",
-                components: &["siglip", "face", "ocr", "bioclip"],
-                min_ram_gb: 6,
-                min_vram_gb: 3,
-                min_disk_gb: 6,
-            },
-            Self {
-                name: "brave",
-                components: &["siglip", "face", "ocr", "bioclip"],
-                min_ram_gb: 8,
-                min_vram_gb: 4,
-                min_disk_gb: 10,
-            },
-        ]
-    }
-
-    pub fn by_name(name: &str) -> Option<Self> {
-        Self::all()
-            .iter()
-            .copied()
-            .find(|preset| preset.name == name)
-    }
-
-    pub fn includes(self, component: &str) -> bool {
-        self.components.contains(&component)
-    }
-
-    pub fn label(self) -> String {
-        format!(
-            "{} ({}) - RAM {} GB, GPU/Unified {} GB",
-            self.display_title(),
-            self.components.join(", "),
-            self.min_ram_gb,
-            self.min_vram_gb
-        )
-    }
-
-    pub fn display_title(self) -> &'static str {
-        match self.name {
-            "minimal" => "minimal (最小)",
-            "basic" => "basic (基础)",
-            "brave" => "brave (激进)",
-            _ => self.name,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -640,26 +567,6 @@ pub fn display_tilde(path: &Path) -> PathBuf {
         return PathBuf::from("~").join(rest);
     }
     path.to_path_buf()
-}
-
-fn siglip_preset_config(preset: Preset, backend: Backend) -> SiglipPresetConfig {
-    if preset.name == "brave" {
-        SiglipPresetConfig {
-            model: "siglip2-so400m-patch14-384",
-            precision: backend.semantic_precision,
-        }
-    } else {
-        SiglipPresetConfig {
-            model: "siglip2-base-patch16-224",
-            precision: backend.semantic_precision,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SiglipPresetConfig {
-    model: &'static str,
-    precision: &'static str,
 }
 
 fn yaml_single_quoted(value: &str) -> String {

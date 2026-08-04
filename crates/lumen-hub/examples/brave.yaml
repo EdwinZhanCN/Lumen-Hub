@@ -1,9 +1,9 @@
 # Lumen Hub brave profile.
 #
-# Services: SigLIP so400m (semantic), InsightFace (face), PP-OCR (text),
-# BioCLIP (species). The full Lumilio Photos feature set on the strongest
-# models: the so400m vision encoder for higher-quality semantic embeddings and
-# the complete TreeOfLife200M catalog for widest species coverage.
+# Capabilities: Image Semantic Analysis (图像语义分析), Person Recognition
+# (人物识别), OCR Text Recognition (OCR文字识别), and BioCLIP Species Recognition
+# (BioCLIP物种识别). This preset uses the strongest model combination: the
+# so400m vision encoder and the complete TreeOfLife200M catalog.
 #
 # Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
 # All models run on the Burn runtime at fp16q8.

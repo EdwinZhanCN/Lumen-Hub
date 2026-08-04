@@ -133,9 +133,9 @@ TreeOfLife200M)的常驻内存与 basic 接近的原因。
 `System RAM` hint 在此基础上叠加同机 Photos server + OS 余量(minimal 4G / basic 6G /
 brave 8G),远低于降内存前的旧值(8G / – / 32G)。
 
-档位业务取舍:minimal = 语义搜索 + 人脸(传统智能相册核心);basic = 全能力但经济模型
-(加 OCR 文字搜索 + BioCLIP 生物识别,Core 子集);brave = 全能力顶配(so400m 更高质量
-语义 + 完整 Tree of Life 覆盖长尾物种)。
+档位业务取舍：minimal = 图像语义分析 + 人物识别（传统智能相册核心）；basic = 图像语义分析、
+人物识别、OCR文字识别、BioCLIP物种识别的经济模型组合（BioCLIP 使用 Core 子集）；brave =
+相同四种能力的顶配模型组合（so400m + 完整 Tree of Life，覆盖长尾物种）。
 
 ## 残留问题
 

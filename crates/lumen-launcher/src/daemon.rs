@@ -1,12 +1,18 @@
 use std::{
     fs, io,
-    net::{SocketAddr, TcpStream},
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant},
 };
 
 use thiserror::Error;
+use tonic::transport::Endpoint;
+
+use crate::control_proto::lumen::control::v1::{
+    DownloadProgress as ProtoDownloadProgress, Phase as ProtoPhase, StatusSnapshot,
+    control_client::ControlClient,
+};
 
 #[derive(Debug, Clone)]
 pub struct DaemonPaths {
@@ -144,35 +150,159 @@ fn configure_detached(command: &mut Command) {
 #[cfg(not(any(unix, windows)))]
 fn configure_detached(_command: &mut Command) {}
 
-pub struct HealthCheckConfig {
+pub struct ReadyWaitConfig {
     pub addr: SocketAddr,
     pub timeout: Duration,
     pub interval: Duration,
 }
 
-impl Default for HealthCheckConfig {
+impl Default for ReadyWaitConfig {
     fn default() -> Self {
         Self {
             addr: "127.0.0.1:50051".parse().unwrap(),
-            timeout: Duration::from_secs(30),
+            // First launch may download several gigabytes of models. This is
+            // an upper bound, not a blind sleep: FAILED returns immediately.
+            timeout: Duration::from_secs(30 * 60),
             interval: Duration::from_millis(500),
         }
     }
 }
 
-/// Polls TCP connect until the gRPC port is reachable or timeout expires.
-pub fn wait_for_healthy(config: &HealthCheckConfig) -> Result<(), DaemonError> {
-    let deadline = Instant::now() + config.timeout;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HubPhase {
+    Starting,
+    Downloading,
+    Loading,
+    Warmup,
+    Ready,
+    Failed,
+    Stopping,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HubDownloadProgress {
+    pub model: String,
+    pub file: String,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    pub files_done: u32,
+    pub files_total: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HubStatus {
+    pub phase: HubPhase,
+    pub download: Option<HubDownloadProgress>,
+    pub error: String,
+    pub seq: u64,
+}
+
+/// Waits for the Hub control plane to report READY. Unlike a TCP probe, this
+/// observes model download/loading/warmup and surfaces terminal startup errors.
+pub fn wait_for_ready(
+    config: &ReadyWaitConfig,
+    on_status: impl FnMut(&HubStatus),
+) -> Result<(), DaemonError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| DaemonError::ControlRuntime(error.to_string()))?;
+    runtime.block_on(wait_for_ready_async(config, on_status))
+}
+
+async fn wait_for_ready_async(
+    config: &ReadyWaitConfig,
+    mut on_status: impl FnMut(&HubStatus),
+) -> Result<(), DaemonError> {
+    let endpoint = Endpoint::from_shared(format!("http://{}", config.addr))
+        .map_err(|error| DaemonError::ControlEndpoint(error.to_string()))?
+        .connect_timeout(Duration::from_secs(2));
+    let mut client = ControlClient::new(endpoint.connect_lazy());
+    let deadline = tokio::time::Instant::now() + config.timeout;
+    let mut last_seq = None;
+
     loop {
-        match TcpStream::connect_timeout(&config.addr, Duration::from_secs(1)) {
-            Ok(_) => return Ok(()),
-            Err(_) => {
-                if Instant::now() >= deadline {
-                    return Err(DaemonError::HealthCheckTimeout(config.addr, config.timeout));
+        let Some(connect_window) = deadline.checked_duration_since(tokio::time::Instant::now())
+        else {
+            return Err(DaemonError::ReadyWaitTimeout(config.addr, config.timeout));
+        };
+        let connect_window = connect_window.min(Duration::from_secs(2));
+
+        if let Ok(Ok(response)) =
+            tokio::time::timeout(connect_window, client.watch_status(())).await
+        {
+            let mut updates = response.into_inner();
+            loop {
+                let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now())
+                else {
+                    return Err(DaemonError::ReadyWaitTimeout(config.addr, config.timeout));
+                };
+                let snapshot = match tokio::time::timeout(remaining, updates.message()).await {
+                    Ok(Ok(Some(snapshot))) => snapshot,
+                    Ok(Ok(None)) | Ok(Err(_)) => break,
+                    Err(_) => {
+                        return Err(DaemonError::ReadyWaitTimeout(config.addr, config.timeout));
+                    }
+                };
+                let status = hub_status(snapshot);
+                if last_seq != Some(status.seq) {
+                    on_status(&status);
+                    last_seq = Some(status.seq);
                 }
-                std::thread::sleep(config.interval);
+                match status.phase {
+                    HubPhase::Ready => return Ok(()),
+                    HubPhase::Failed => {
+                        let message = if status.error.is_empty() {
+                            "Lumen Hub reported a startup failure without details".to_owned()
+                        } else {
+                            status.error
+                        };
+                        return Err(DaemonError::HubStartupFailed(message));
+                    }
+                    HubPhase::Stopping => {
+                        return Err(DaemonError::HubStartupFailed(
+                            "Lumen Hub stopped before becoming ready".to_owned(),
+                        ));
+                    }
+                    _ => {}
+                }
             }
         }
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err(DaemonError::ReadyWaitTimeout(config.addr, config.timeout));
+        }
+        tokio::time::sleep(config.interval).await;
+    }
+}
+
+fn hub_status(snapshot: StatusSnapshot) -> HubStatus {
+    HubStatus {
+        phase: match ProtoPhase::try_from(snapshot.phase) {
+            Ok(ProtoPhase::Starting) => HubPhase::Starting,
+            Ok(ProtoPhase::Downloading) => HubPhase::Downloading,
+            Ok(ProtoPhase::Loading) => HubPhase::Loading,
+            Ok(ProtoPhase::Warmup) => HubPhase::Warmup,
+            Ok(ProtoPhase::Ready) => HubPhase::Ready,
+            Ok(ProtoPhase::Failed) => HubPhase::Failed,
+            Ok(ProtoPhase::Stopping) => HubPhase::Stopping,
+            Ok(ProtoPhase::Unspecified) | Err(_) => HubPhase::Unknown,
+        },
+        download: snapshot.download.map(hub_download_progress),
+        error: snapshot.error,
+        seq: snapshot.seq,
+    }
+}
+
+fn hub_download_progress(progress: ProtoDownloadProgress) -> HubDownloadProgress {
+    HubDownloadProgress {
+        model: progress.model,
+        file: progress.file,
+        bytes_done: progress.bytes_done,
+        bytes_total: progress.bytes_total,
+        files_done: progress.files_done,
+        files_total: progress.files_total,
     }
 }
 
@@ -286,8 +416,17 @@ pub enum DaemonError {
     #[error("failed to spawn `{}`: {}", _0.display(), _1)]
     SpawnFailed(PathBuf, io::Error),
 
-    #[error("health check timed out waiting for {0} after {1:?}")]
-    HealthCheckTimeout(SocketAddr, Duration),
+    #[error("timed out waiting for Lumen Hub readiness on {0} after {1:?}")]
+    ReadyWaitTimeout(SocketAddr, Duration),
+
+    #[error("failed to create the Lumen Hub control client runtime: {0}")]
+    ControlRuntime(String),
+
+    #[error("invalid Lumen Hub control endpoint: {0}")]
+    ControlEndpoint(String),
+
+    #[error("Lumen Hub startup failed: {0}")]
+    HubStartupFailed(String),
 
     #[error("failed to signal process {0}: {1}")]
     SignalFailed(u32, io::Error),

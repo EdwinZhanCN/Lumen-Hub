@@ -5,11 +5,48 @@ on:
         tags:
             - "v*"
     workflow_dispatch:
+        inputs:
+            release_tag:
+                description: Planned release tag for the dry run (for example, v0.1.0)
+                required: true
+                type: string
 
 permissions:
     contents: read
 
+env:
+    RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+
 jobs:
+    validate-release:
+        name: validate-release-input
+        runs-on: ubuntu-24.04
+
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+
+            - name: Validate planned release tag
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+                    echo "release tag must look like v0.1.0 or v0.1.0-rc.1: $RELEASE_TAG" >&2
+                    exit 1
+                  fi
+                  PACKAGE_VERSION="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' crates/lumen-cli/Cargo.toml | head -n1)"
+                  if [[ -z "$PACKAGE_VERSION" || "$RELEASE_TAG" != "v$PACKAGE_VERSION" ]]; then
+                    echo "release tag $RELEASE_TAG does not match lumen-cli version ${PACKAGE_VERSION:-unknown}" >&2
+                    exit 1
+                  fi
+                  echo "Release build tag: $RELEASE_TAG"
+                  if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+                    echo "Mode: dry run (no GitHub Release and no container push)"
+                  else
+                    echo "Mode: publish"
+                  fi
+
     # Burn statically links its compute backend, so each hub archive is just the
     # binaries + warmup assets + license (no ONNX Runtime / MNN libraries).
     # `*-gpu` = wgpu (Vulkan/GL/DX12 at runtime). `cuda`/`rocm` install their
@@ -20,6 +57,8 @@ jobs:
         name: hub-${{ matrix.profile }}
         runs-on: ${{ matrix.os }}
         container: ${{ matrix.container }}
+        needs:
+            - validate-release
         strategy:
             fail-fast: false
             matrix:
@@ -178,6 +217,8 @@ jobs:
     cli-local:
         name: cli-${{ matrix.target }}
         runs-on: ${{ matrix.os }}
+        needs:
+            - validate-release
         strategy:
             fail-fast: false
             matrix:
@@ -218,7 +259,7 @@ jobs:
             - name: Build lumen-cli with cargo-dist
               shell: bash
               run: |
-                  dist build --artifacts=local --target=${{ matrix.target }} --tag=${{ github.ref_name }} --allow-dirty --output-format=json > dist-manifest.json
+                  dist build --artifacts=local --target=${{ matrix.target }} --tag="$RELEASE_TAG" --allow-dirty --output-format=json > dist-manifest.json
                   cp dist-manifest.json "target/distrib/${{ matrix.target }}-dist-manifest.json"
 
             - uses: actions/upload-artifact@v4
@@ -256,7 +297,7 @@ jobs:
                   echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
             - name: Build lumen-cli installers with cargo-dist
-              run: dist build --artifacts=global --tag=${{ github.ref_name }} --allow-dirty
+              run: dist build --artifacts=global --tag="$RELEASE_TAG" --allow-dirty
 
             - uses: actions/upload-artifact@v4
               with:
@@ -292,8 +333,8 @@ jobs:
 
             - name: Generate hub manifest and top-level checksums
               env:
-                  LUMEN_RELEASE_VERSION: ${{ github.ref_name }}
-                  LUMEN_RELEASE_BASE_URL: https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/${{ github.ref_name }}
+                  LUMEN_RELEASE_VERSION: ${{ env.RELEASE_TAG }}
+                  LUMEN_RELEASE_BASE_URL: https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/${{ env.RELEASE_TAG }}
               run: cargo xtask release-metadata --assets-dir release-assets
 
             - uses: actions/upload-artifact@v4
@@ -305,7 +346,7 @@ jobs:
                   if-no-files-found: error
 
     release:
-        name: Create GitHub Release
+        name: ${{ github.event_name == 'workflow_dispatch' && 'Validate release assets' || 'Create GitHub Release' }}
         runs-on: ubuntu-24.04
         permissions:
             contents: write
@@ -314,7 +355,7 @@ jobs:
             - cli-local
             - cli-global
             - metadata
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
 
         steps:
             - name: Download release assets
@@ -342,12 +383,17 @@ jobs:
             - name: Build release body
               env:
                   GH_TOKEN: ${{ github.token }}
-                  TAG: ${{ github.ref_name }}
+                  TAG: ${{ env.RELEASE_TAG }}
+                  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' }}
               run: |
                   set -euo pipefail
-                  gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-                    -f tag_name="$TAG" \
-                    --jq .body > generated-notes.md
+                  if [[ "$DRY_RUN" == "true" ]]; then
+                    echo "Manual dry run for ${TAG}; generated release notes are deferred until tag publication." > generated-notes.md
+                  else
+                    gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+                      -f tag_name="$TAG" \
+                      --jq .body > generated-notes.md
+                  fi
                   cat > release-body.md <<EOF
                   # ${TAG}
 
@@ -387,10 +433,15 @@ jobs:
                   EOF
                   cat generated-notes.md >> release-body.md
 
+            - name: Confirm dry run has no release side effects
+              if: github.event_name == 'workflow_dispatch'
+              run: echo "Release assets and release body validated; GitHub Release creation is disabled for this run."
+
             - name: Create release
+              if: startsWith(github.ref, 'refs/tags/')
               uses: softprops/action-gh-release@v2
               with:
-                  prerelease: ${{ contains(github.ref_name, '-') }}
+                  prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
                   fail_on_unmatched_files: true
                   body_path: release-body.md
                   files: |
@@ -423,7 +474,7 @@ jobs:
     # dist artifacts (no recompilation). Three flavors (see packaging/docker/):
     #   cpu    = linux-{x64,arm64}-cpu, multi-arch, also tagged `latest`
     #   vulkan = linux-x64-gpu + Mesa ICDs (Intel iGPU via ANV, AMD via RADV)
-    #   cuda   = linux-x64-cuda on the NVIDIA runtime base (ships NVRTC)
+    #   cuda   = linux-x64-cuda on the NVIDIA base image plus NVRTC only
     docker:
         name: docker-images
         runs-on: ubuntu-24.04
@@ -432,7 +483,7 @@ jobs:
             packages: write
         needs:
             - dist
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
 
         steps:
             - uses: actions/checkout@v4
@@ -461,44 +512,78 @@ jobs:
                   stage linux-x64-cuda  cuda
 
             - uses: docker/setup-qemu-action@v3
-            - uses: docker/setup-buildx-action@v3
+            - uses: docker/setup-buildx-action@v4
 
             - name: Log in to GHCR
-              uses: docker/login-action@v3
+              if: startsWith(github.ref, 'refs/tags/')
+              uses: docker/login-action@v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Build and push images
+            - name: Prepare image metadata
+              id: docker-meta
               env:
-                  TAG: ${{ github.ref_name }}
+                  TAG: ${{ env.RELEASE_TAG }}
               run: |
                   set -euo pipefail
-                  IMG="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lumen-hub"
-                  VERSION="${TAG#v}"
+                  echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/lumen-hub" >> "$GITHUB_OUTPUT"
+                  echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
-                  # cpu (multi-arch; DIST resolves per-platform via TARGETARCH)
-                  docker buildx build --push \
-                    --platform linux/amd64,linux/arm64 \
-                    -f packaging/docker/Dockerfile \
-                    --build-arg FLAVOR=cpu \
-                    -t "$IMG:$VERSION-cpu" -t "$IMG:cpu" -t "$IMG:latest" .
+            # Using the official build action is important here: it injects the
+            # GitHub cache URL/token required by the `type=gha` backend.
+            - name: Build CPU image
+              uses: docker/build-push-action@v7
+              with:
+                  context: .
+                  file: packaging/docker/Dockerfile
+                  platforms: linux/amd64,linux/arm64
+                  push: ${{ github.event_name != 'workflow_dispatch' }}
+                  build-args: |
+                      FLAVOR=cpu
+                      VERSION=${{ steps.docker-meta.outputs.version }}
+                      REVISION=${{ github.sha }}
+                  tags: |
+                      ${{ steps.docker-meta.outputs.image }}:${{ steps.docker-meta.outputs.version }}-cpu
+                      ${{ steps.docker-meta.outputs.image }}:cpu
+                      ${{ steps.docker-meta.outputs.image }}:latest
+                  cache-from: type=gha,scope=lumen-hub-cpu
+                  cache-to: type=gha,mode=max,scope=lumen-hub-cpu
 
-                  # vulkan (x64; Mesa covers Intel iGPU + AMD)
-                  docker buildx build --push \
-                    --platform linux/amd64 \
-                    -f packaging/docker/Dockerfile \
-                    --build-arg FLAVOR=vulkan \
-                    --build-arg DIST=dist/docker/vulkan \
-                    -t "$IMG:$VERSION-vulkan" -t "$IMG:vulkan" .
+            - name: Build Vulkan image
+              uses: docker/build-push-action@v7
+              with:
+                  context: .
+                  file: packaging/docker/Dockerfile
+                  platforms: linux/amd64
+                  push: ${{ github.event_name != 'workflow_dispatch' }}
+                  build-args: |
+                      FLAVOR=vulkan
+                      DIST=dist/docker/vulkan
+                      VERSION=${{ steps.docker-meta.outputs.version }}
+                      REVISION=${{ github.sha }}
+                  tags: |
+                      ${{ steps.docker-meta.outputs.image }}:${{ steps.docker-meta.outputs.version }}-vulkan
+                      ${{ steps.docker-meta.outputs.image }}:vulkan
+                  cache-from: type=gha,scope=lumen-hub-vulkan
+                  cache-to: type=gha,mode=max,scope=lumen-hub-vulkan
 
-                  # cuda (x64; runtime base ships the NVRTC CubeCL loads — any
-                  # 12.x runtime satisfies the libnvrtc.so.12 soname)
-                  docker buildx build --push \
-                    --platform linux/amd64 \
-                    -f packaging/docker/Dockerfile \
-                    --build-arg FLAVOR=cuda \
-                    --build-arg BASE=nvidia/cuda:12.6.3-runtime-ubuntu24.04 \
-                    --build-arg DIST=dist/docker/cuda \
-                    -t "$IMG:$VERSION-cuda" -t "$IMG:cuda" .
+            - name: Build CUDA image
+              uses: docker/build-push-action@v7
+              with:
+                  context: .
+                  file: packaging/docker/Dockerfile
+                  platforms: linux/amd64
+                  push: ${{ github.event_name != 'workflow_dispatch' }}
+                  build-args: |
+                      FLAVOR=cuda
+                      BASE=nvidia/cuda:12.6.3-base-ubuntu24.04
+                      DIST=dist/docker/cuda
+                      VERSION=${{ steps.docker-meta.outputs.version }}
+                      REVISION=${{ github.sha }}
+                  tags: |
+                      ${{ steps.docker-meta.outputs.image }}:${{ steps.docker-meta.outputs.version }}-cuda
+                      ${{ steps.docker-meta.outputs.image }}:cuda
+                  cache-from: type=gha,scope=lumen-hub-cuda
+                  cache-to: type=gha,mode=max,scope=lumen-hub-cuda

@@ -347,7 +347,7 @@ fn contract_hub() -> ServiceHub {
         SERVICE_FACE,
         "face-test-model",
         vec![ContractTask::raw(
-            TaskSpec::new(TASK_FACE_RECOGNITION, "face recognition raw image")
+            TaskSpec::new(TASK_FACE_RECOGNITION, "person recognition raw image")
                 .with_input_mimes(["image/jpeg", "image/png"])
                 .with_output_mime("application/json;schema=face_v1"),
         )],

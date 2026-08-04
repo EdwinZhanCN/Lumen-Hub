@@ -251,7 +251,7 @@ async fn check_insightface() {
         .tasks()
         .handle(&task, TaskRequest::new(image, "image/png"))
         .await
-        .expect("face recognition succeeds");
+        .expect("person recognition succeeds");
     let faces: FaceV1 = serde_json::from_slice(&result.payload).expect("face_v1 JSON");
     assert!(faces.count > 0, "expected at least one detected face");
     let face = &faces.faces[0];

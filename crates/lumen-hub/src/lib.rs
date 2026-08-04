@@ -3,6 +3,7 @@ extern crate alloc;
 
 pub mod backend;
 pub mod daemon;
+pub mod docker_config;
 pub mod inference_worker;
 pub mod model_arch;
 pub mod model_download;

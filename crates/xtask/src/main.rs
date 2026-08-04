@@ -371,11 +371,21 @@ fn zip_dir_into(
             .to_string_lossy()
             .replace('\\', "/");
         if path.is_dir() {
-            zip.add_directory(format!("{rel}/"), options)
+            zip.add_directory(format!("{rel}/"), options.unix_permissions(0o755))
                 .map_err(|e| format!("zip dir {rel}: {e}"))?;
             zip_dir_into(zip, &path, base, options)?;
         } else {
-            zip.start_file(rel.clone(), options)
+            let mode = if path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                == Some("bin")
+            {
+                0o755
+            } else {
+                0o644
+            };
+            zip.start_file(rel.clone(), options.unix_permissions(mode))
                 .map_err(|e| format!("zip start {rel}: {e}"))?;
             let mut buf = Vec::new();
             File::open(&path)
@@ -505,5 +515,34 @@ mod tests {
             parse_named_arg(&eq, "--profile").unwrap(),
             Some("darwin-arm64-metal".to_owned())
         );
+    }
+
+    #[test]
+    fn zip_marks_binaries_executable() {
+        let root = env::temp_dir().join(format!("lumen-xtask-zip-{}", std::process::id()));
+        let staging = root.join("lumen-hub-test");
+        fs::create_dir_all(staging.join("bin")).unwrap();
+        fs::write(staging.join("bin/lumen-hub"), b"binary").unwrap();
+        fs::write(staging.join("README.md"), b"readme").unwrap();
+
+        let archive = root.join("lumen-hub-test.zip");
+        zip_directory(&staging, &archive).unwrap();
+
+        let file = File::open(&archive).unwrap();
+        let mut zip = zip::ZipArchive::new(file).unwrap();
+        let binary_mode = zip
+            .by_name("lumen-hub-test/bin/lumen-hub")
+            .unwrap()
+            .unix_mode()
+            .unwrap();
+        let readme_mode = zip
+            .by_name("lumen-hub-test/README.md")
+            .unwrap()
+            .unix_mode()
+            .unwrap();
+
+        assert_eq!(binary_mode & 0o777, 0o755);
+        assert_eq!(readme_mode & 0o777, 0o644);
+        fs::remove_dir_all(root).unwrap();
     }
 }

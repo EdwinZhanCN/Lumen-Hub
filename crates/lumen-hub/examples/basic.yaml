@@ -1,8 +1,9 @@
 # Lumen Hub basic profile.
 #
-# Services: SigLIP (semantic), InsightFace (face), PP-OCR (text), BioCLIP
-# (species). The full Lumilio Photos feature set on economical models: adds
-# OCR text search and biodiversity classification on top of the minimal core.
+# Capabilities: Image Semantic Analysis (图像语义分析), Person Recognition
+# (人物识别), OCR Text Recognition (OCR文字识别), and BioCLIP Species Recognition
+# (BioCLIP物种识别). This is the full Lumilio Photos capability set using
+# economical models.
 #
 # Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
 # All models run on the Burn runtime at fp16q8.

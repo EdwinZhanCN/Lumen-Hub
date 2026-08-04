@@ -25,6 +25,7 @@ use lumen_hub::{
         DaemonError, HubGrpcService, MdnsAdvertisement, ReadyHandle, advertised_capabilities,
         bind_addr, control_plane, hub_batcher_config,
     },
+    docker_config::{DockerConfigError, DockerConfigInput},
     inference_worker,
     model_download::{DownloadObserver, ModelDownloadError, ensure_models_for_config_observed},
     service::ServiceHub,
@@ -35,6 +36,9 @@ use lumen_hub::{
 use lumen_schema::Mdns;
 use lumen_schema::{ConfigValidationError, LumenConfig, Mode, ServerConfig};
 use thiserror::Error;
+use tonic_health::pb::{
+    HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
+};
 use tracing::{
     Event, Level, Metadata, Subscriber,
     field::{Field, Visit},
@@ -54,18 +58,24 @@ use tracing::{
 const RUNTIME_STACK_SIZE: usize = 256 * 1024 * 1024;
 
 fn main() {
+    let args = env::args_os().collect::<Vec<_>>();
+    if is_healthcheck_command(&args) {
+        run_healthcheck_command(args);
+        return;
+    }
+
     configure_runtime();
 
     // Drive the runtime from a thread with a large stack so model construction
     // around startup and async orchestration does not overflow.
     let worker = std::thread::Builder::new()
         .stack_size(RUNTIME_STACK_SIZE)
-        .spawn(run_main)
+        .spawn(move || run_main(args))
         .expect("failed to spawn runtime thread");
     worker.join().expect("runtime thread panicked");
 }
 
-fn run_main() {
+fn run_main(args: Vec<OsString>) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(RUNTIME_STACK_SIZE)
@@ -73,7 +83,7 @@ fn run_main() {
         .expect("failed to build tokio runtime");
 
     runtime.block_on(async {
-        match run(env::args_os()).await {
+        match run(args).await {
             Ok(()) => {}
             Err(StartupError::Help) => {
                 print_usage();
@@ -86,6 +96,54 @@ fn run_main() {
     });
 }
 
+fn is_healthcheck_command(args: &[OsString]) -> bool {
+    args.get(1).and_then(|arg| arg.to_str()) == Some("healthcheck")
+}
+
+fn run_healthcheck_command(args: Vec<OsString>) {
+    let result = parse_healthcheck_args(args).and_then(|args| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| StartupError::HealthRuntime(error.to_string()))?
+            .block_on(check_health(&args.endpoint))
+    });
+
+    if let Err(error) = result {
+        eprintln!("error: {error}");
+        process::exit(1);
+    }
+}
+
+async fn check_health(endpoint: &str) -> StartupResult<()> {
+    let channel = tonic::transport::Endpoint::new(endpoint.to_owned())
+        .map_err(|source| StartupError::HealthConnect {
+            endpoint: endpoint.to_owned(),
+            source,
+        })?
+        .connect()
+        .await
+        .map_err(|source| StartupError::HealthConnect {
+            endpoint: endpoint.to_owned(),
+            source,
+        })?;
+    let mut client = HealthClient::new(channel);
+    let status = client
+        .check(HealthCheckRequest {
+            service: String::new(),
+        })
+        .await?
+        .into_inner()
+        .status;
+    let status = ServingStatus::try_from(status).unwrap_or(ServingStatus::Unknown);
+
+    if status == ServingStatus::Serving {
+        Ok(())
+    } else {
+        Err(StartupError::HealthNotServing { status })
+    }
+}
+
 async fn run<I>(args: I) -> StartupResult<()>
 where
     I: IntoIterator<Item = OsString>,
@@ -95,7 +153,16 @@ where
     init_logging(cli.log_level, Arc::clone(&logs))?;
     info!("lumen-hub starting");
     info!(config = %cli.config_path.display(), "loading config");
-    let config = load_config(&cli.config_path)?;
+    let mut config = load_config(&cli.config_path)?;
+    let docker_input = DockerConfigInput::from_process_env()?;
+    if !docker_input.is_empty() {
+        docker_input.apply(&mut config)?;
+        info!(
+            region = ?config.metadata.region,
+            services = %config.deployment_service_names().join(", "),
+            "applied Docker environment config"
+        );
+    }
 
     if config.deployment.mode != Mode::Hub {
         return Err(StartupError::InvalidDeploymentMode {
@@ -346,6 +413,48 @@ where
         port_override,
         log_level,
     })
+}
+
+fn parse_healthcheck_args<I, S>(args: I) -> StartupResult<HealthcheckArgs>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut args = args.into_iter().map(Into::into);
+    let _program = args.next();
+    let command = args.next().and_then(|arg| arg.into_string().ok());
+    if command.as_deref() != Some("healthcheck") {
+        return Err(StartupError::InvalidArgument(
+            "expected `healthcheck` command".to_owned(),
+        ));
+    }
+
+    let mut endpoint = "http://127.0.0.1:50051".to_owned();
+    while let Some(arg) = args.next() {
+        let arg = arg.into_string().map_err(|_| {
+            StartupError::InvalidArgument("arguments must be valid UTF-8".to_owned())
+        })?;
+
+        match arg.as_str() {
+            "--endpoint" => endpoint = next_arg_value(&mut args, "--endpoint")?,
+            _ if arg.starts_with("--endpoint=") => {
+                endpoint = arg.trim_start_matches("--endpoint=").to_owned();
+            }
+            _ => {
+                return Err(StartupError::InvalidArgument(format!(
+                    "unknown healthcheck argument `{arg}`"
+                )));
+            }
+        }
+    }
+
+    if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+        return Err(StartupError::InvalidArgument(
+            "healthcheck endpoint must start with http:// or https://".to_owned(),
+        ));
+    }
+
+    Ok(HealthcheckArgs { endpoint })
 }
 
 fn next_arg_value<I>(args: &mut I, flag: &str) -> StartupResult<String>
@@ -648,11 +757,13 @@ fn print_usage() {
         "\
 Usage:
   lumen-hub --config <path> [--port <port>] [--log-level <level>]
+  lumen-hub healthcheck [--endpoint <url>]
 
 Options:
   --config <path>       Path to lumen-config JSON file.
   --port <port>         Override config.server.port.
   --log-level <level>   DEBUG, INFO, WARNING, ERROR, or CRITICAL. Default: INFO.
+  --endpoint <url>      gRPC endpoint to probe. Default: http://127.0.0.1:50051.
   -h, --help            Show this help text.
 "
     );
@@ -663,6 +774,11 @@ struct CliArgs {
     config_path: PathBuf,
     port_override: Option<u16>,
     log_level: LogLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HealthcheckArgs {
+    endpoint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -888,6 +1004,9 @@ enum StartupError {
     #[error("invalid config: {0}")]
     Config(#[from] ConfigValidationError),
 
+    #[error("invalid Docker environment config: {0}")]
+    DockerConfig(#[from] DockerConfigError),
+
     #[error("model download failed: {0}")]
     ModelDownload(#[from] ModelDownloadError),
 
@@ -899,6 +1018,21 @@ enum StartupError {
 
     #[error("failed to initialize logging: {0}")]
     Logging(#[from] SetGlobalDefaultError),
+
+    #[error("failed to create healthcheck runtime: {0}")]
+    HealthRuntime(String),
+
+    #[error("failed to connect to Lumen Hub health endpoint `{endpoint}`: {source}")]
+    HealthConnect {
+        endpoint: String,
+        source: tonic::transport::Error,
+    },
+
+    #[error("healthcheck RPC failed: {0}")]
+    HealthRpc(#[from] tonic::Status),
+
+    #[error("Lumen Hub is not serving ({status:?})")]
+    HealthNotServing { status: ServingStatus },
 
     #[error("this binary currently supports hub deployment mode only, got {mode:?}")]
     InvalidDeploymentMode { mode: Mode },
@@ -956,6 +1090,25 @@ mod tests {
         let err = parse_args(["lumen-hub"]).unwrap_err();
 
         assert!(matches!(err, StartupError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn parse_healthcheck_args_uses_default_endpoint() {
+        let args = parse_healthcheck_args(["lumen-hub", "healthcheck"]).unwrap();
+
+        assert_eq!(args.endpoint, "http://127.0.0.1:50051");
+    }
+
+    #[test]
+    fn parse_healthcheck_args_accepts_endpoint_override() {
+        let args = parse_healthcheck_args([
+            "lumen-hub",
+            "healthcheck",
+            "--endpoint=http://192.0.2.1:50052",
+        ])
+        .unwrap();
+
+        assert_eq!(args.endpoint, "http://192.0.2.1:50052");
     }
 
     #[test]

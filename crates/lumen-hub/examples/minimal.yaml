@@ -1,8 +1,7 @@
 # Lumen Hub minimal profile.
 #
-# Services: SigLIP (semantic image/text), InsightFace (face).
-# Covers the core of a traditional smart photo library: semantic search and
-# face clustering.
+# Capabilities: Image Semantic Analysis (图像语义分析) and Person Recognition
+# (人物识别). Together they cover the traditional smart photo library core.
 #
 # Backend is selected at build time via cargo features (cpu, metal, cuda, ...).
 # All models run on the Burn runtime at fp16q8.

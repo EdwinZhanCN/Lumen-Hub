@@ -140,11 +140,23 @@ fn start_background(args: &[String]) -> Result<(), CliError> {
         .parse()
         .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], port)));
 
-    log::step(format!("waiting for lumen-hub to become healthy on {addr}"))?;
-    match daemon::wait_for_healthy(&daemon::HealthCheckConfig {
-        addr,
-        ..Default::default()
-    }) {
+    log::step(format!(
+        "waiting for Lumen Hub readiness / 等待 Lumen Hub 就绪 ({addr})"
+    ))?;
+    let mut last_message = None;
+    match daemon::wait_for_ready(
+        &daemon::ReadyWaitConfig {
+            addr,
+            ..Default::default()
+        },
+        |status| {
+            let message = hub_status_message(status);
+            if last_message.as_deref() != Some(message.as_str()) {
+                let _ = log::info(&message);
+                last_message = Some(message);
+            }
+        },
+    ) {
         Ok(()) => {
             log::success(format!("lumen-hub started (pid {pid})"))?;
             log::info(format!("logs: {}", paths.log_file.display()))?;
@@ -159,6 +171,36 @@ fn start_background(args: &[String]) -> Result<(), CliError> {
                 paths.log_file.display()
             )))
         }
+    }
+}
+
+fn hub_status_message(status: &daemon::HubStatus) -> String {
+    match status.phase {
+        daemon::HubPhase::Starting => "正在启动 / Starting".to_owned(),
+        daemon::HubPhase::Downloading => {
+            let Some(progress) = &status.download else {
+                return "正在下载模型 / Downloading models".to_owned();
+            };
+            let bytes = if progress.bytes_total == 0 {
+                format_bytes(progress.bytes_done)
+            } else {
+                format!(
+                    "{} / {}",
+                    format_bytes(progress.bytes_done),
+                    format_bytes(progress.bytes_total)
+                )
+            };
+            format!(
+                "正在下载模型 / Downloading models: {} · {} · {} ({}/{})",
+                progress.model, progress.file, bytes, progress.files_done, progress.files_total
+            )
+        }
+        daemon::HubPhase::Loading => "正在加载模型 / Loading models".to_owned(),
+        daemon::HubPhase::Warmup => "正在预热模型 / Warming up models".to_owned(),
+        daemon::HubPhase::Ready => "已就绪 / Ready".to_owned(),
+        daemon::HubPhase::Failed => format!("启动失败 / Startup failed: {}", status.error),
+        daemon::HubPhase::Stopping => "正在停止 / Stopping".to_owned(),
+        daemon::HubPhase::Unknown => "正在等待状态 / Waiting for status".to_owned(),
     }
 }
 

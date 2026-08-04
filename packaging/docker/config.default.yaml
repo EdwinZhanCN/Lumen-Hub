@@ -1,9 +1,8 @@
 # Default Lumen Hub configuration baked into the container image.
 #
-# Services: SigLIP (semantic image/text), InsightFace (face), PP-OCR (text in
-# images) — the set a Lumilio Photos library uses out of the box. BioCLIP is
-# not enabled by default because its Tree of Life catalog is a large extra
-# download; enable it by mounting your own config over /etc/lumen/config.yaml.
+# Complete service catalog used by the Docker environment resolver. The
+# published Compose files select the `basic` preset by default; `minimal`,
+# `brave`, and strict custom combinations are selected with LUMEN_PRESET.
 #
 # In mainland China set `region: cn` (models download via the HF mirror).
 #
@@ -21,6 +20,7 @@ deployment:
         - siglip
         - face
         - ocr
+        - bioclip
 
 server:
     host: "0.0.0.0"
@@ -63,3 +63,14 @@ services:
                 model: pp-ocrv6-small
                 runtime: burn
                 precision: fp16q8
+
+    # BioCLIP-2 with the economical TreeOfLife200MCore catalog.
+    bioclip:
+        enabled: true
+        package: clip
+        models:
+            default:
+                model: bioclip-2
+                runtime: burn
+                precision: fp16q8
+                dataset: TreeOfLife200MCore
