@@ -23,7 +23,7 @@ rerank over a TreeOfLife catalog).
 | Machine | Path |
 |---|---|
 | Same PC as Lumilio Photos | Enable AI in the desktop app — it installs and supervises the hub |
-| Linux server / NAS | Docker: `docker run -d -p 50051:50051 -v lumen-models:/models ghcr.io/edwinzhancn/lumen-hub:cpu` (tags `cpu`/`vulkan`/`cuda`; see [`packaging/docker/`](packaging/docker/README.md)) |
+| Linux server / NAS | Docker: `docker run -d --network host -v lumen-models:/models ghcr.io/edwinzhancn/lumen-hub:cpu` (host networking keeps LAN mDNS discovery working; tags `cpu`/`vulkan`/`cuda`; see [`packaging/docker/`](packaging/docker/README.md)) |
 | Spare box on your LAN | `lumen-cli init && lumen-cli start` (detects hardware, downloads the matching build) |
 | Anything else | `lumen-hub --config config.yaml` |
 
