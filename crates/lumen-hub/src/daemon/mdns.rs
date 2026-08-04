@@ -24,12 +24,15 @@ fn default_instance_name() -> String {
 /// What the hub announces about itself in mDNS TXT records.
 ///
 /// The TXT keys are a contract with lumen-sdk (`pkg/discovery`): the SDK reads
-/// `v` (version), `runtime`, and `tasks` (CSV) as routing hints before the
-/// gRPC capability stream is available.
+/// `v` (version), `runtime`, `tasks` (CSV), and `proto` (data-plane protocol
+/// version) as routing hints before the gRPC capability stream is available.
+/// The `proto` key lets the SDK exclude nodes speaking an unsupported
+/// data-plane major before dialing them.
 #[derive(Debug, Clone, Default)]
 pub struct AdvertisedCapabilities {
     pub tasks: Vec<String>,
     pub runtime: Option<String>,
+    pub protocol_version: Option<String>,
 }
 
 /// Keeps an mDNS registration alive and unregisters it on drop.
@@ -181,6 +184,15 @@ fn mdns_properties(capabilities: &AdvertisedCapabilities) -> HashMap<String, Str
     if !capabilities.tasks.is_empty() {
         properties.insert("tasks".to_owned(), capabilities.tasks.join(","));
     }
+    if let Some(protocol_version) = capabilities
+        .protocol_version
+        .as_deref()
+        .filter(|protocol_version| !protocol_version.is_empty())
+    {
+        // `proto` is the data-plane protocol version (e.g. "1.0"); lumen-sdk
+        // uses its major to filter nodes before connecting.
+        properties.insert("proto".to_owned(), protocol_version.to_owned());
+    }
     properties
 }
 
@@ -211,6 +223,7 @@ mod tests {
         let capabilities = AdvertisedCapabilities {
             tasks: vec!["semantic_image_embed".to_owned(), "ocr".to_owned()],
             runtime: Some("burn".to_owned()),
+            protocol_version: Some("1.0".to_owned()),
         };
         let properties = mdns_properties(&capabilities);
 
@@ -219,6 +232,7 @@ mod tests {
             Some("semantic_image_embed,ocr")
         );
         assert_eq!(properties.get("runtime").map(String::as_str), Some("burn"));
+        assert_eq!(properties.get("proto").map(String::as_str), Some("1.0"));
         // `v` mirrors the legacy `version` key; lumen-sdk reads `v`.
         assert_eq!(properties.get("v"), properties.get("version"));
         assert!(properties.contains_key("uuid"));
@@ -231,6 +245,7 @@ mod tests {
 
         assert!(!properties.contains_key("tasks"));
         assert!(!properties.contains_key("runtime"));
+        assert!(!properties.contains_key("proto"));
         assert!(properties.contains_key("v"));
     }
 }

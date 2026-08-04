@@ -82,6 +82,32 @@ jobs:
                   --test l0_lifecycle --test l0_infer --test l0_batcher
                   --test l0_control --test l0_contract
 
+    # Protocol contract: vendored ml_service.proto provenance (byte-for-byte
+    # against the pinned Lumen-SDK source), buf lint, and buf breaking
+    # (WIRE_JSON) against the fixed current-major baseline tag v0.1.1.
+    contract:
+        name: proto contract check
+        runs-on: ubuntu-22.04
+        steps:
+            - uses: actions/checkout@v4
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: "1.94.1"
+            - uses: Swatinem/rust-cache@v2
+            - name: Install buf
+              run: |
+                  curl -sSL https://github.com/bufbuild/buf/releases/download/v1.72.0/buf-Linux-x86_64 -o /usr/local/bin/buf
+                  chmod +x /usr/local/bin/buf
+                  buf --version
+            - name: Contract check (provenance + buf lint/breaking)
+              run: cargo run -q -p xtask -- contract-check
+            # build.rs regenerates the daemon code into src/daemon; this step
+            # fails when the committed generated code drifted from the protos.
+            - name: Generated daemon code in sync
+              run: |
+                  cargo build -p lumen-hub
+                  git diff --exit-code -- crates/lumen-hub/src/daemon
+
     # CUDA / ROCm require vendor toolkits to compile (cubecl-cuda / cubecl-rocm)
     # and are not exercised on hosted runners; they are validated on
     # self-hosted GPU machines out-of-band.

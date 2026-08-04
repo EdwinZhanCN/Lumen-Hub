@@ -197,15 +197,20 @@ pub fn hub_batcher_config(config: &ServerConfig) -> BatcherConfig {
     batcher_config(config)
 }
 
-/// Collects the mDNS TXT hints (task names, runtime) from the registered
-/// services so discovery clients can route before fetching capabilities.
+/// Collects the mDNS TXT hints (task names, runtime, data-plane protocol
+/// version) from the registered services so discovery clients can route before
+/// fetching capabilities.
 pub fn advertised_capabilities(hub: &ServiceHub) -> AdvertisedCapabilities {
     let mut seen = std::collections::BTreeSet::new();
     let mut tasks = Vec::new();
     let mut runtime = None;
+    let mut protocol_version = None;
     for capability in hub.capabilities() {
         if runtime.is_none() && !capability.runtime.is_empty() {
             runtime = Some(capability.runtime.clone());
+        }
+        if protocol_version.is_none() && !capability.protocol_version.is_empty() {
+            protocol_version = Some(capability.protocol_version.clone());
         }
         for task in &capability.tasks {
             if seen.insert(task.name.clone()) {
@@ -213,7 +218,11 @@ pub fn advertised_capabilities(hub: &ServiceHub) -> AdvertisedCapabilities {
             }
         }
     }
-    AdvertisedCapabilities { tasks, runtime }
+    AdvertisedCapabilities {
+        tasks,
+        runtime,
+        protocol_version,
+    }
 }
 
 fn batcher_config(config: &ServerConfig) -> BatcherConfig {

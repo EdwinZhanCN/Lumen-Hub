@@ -13,6 +13,7 @@ dist = false
 # its own (outside workspace feature unification).
 flate2 = "1.1.9"
 lumen-schema = { path = "../lumen-schema" }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9.34"
 sha2 = "0.10"
