@@ -7,9 +7,8 @@
 use std::env;
 
 use lumen_schema::{
-    BIOCLIP_CORE_DATASET, BIOCLIP_DEFAULT_MODEL, BIOCLIP_FULL_DATASET, ConfigValidationError,
-    FACE_DEFAULT_MODEL, LumenConfig, Mode, OCR_DEFAULT_MODEL, Preset, Region, SERVICE_ORDER,
-    SIGLIP_BASE_MODEL, SIGLIP_BRAVE_MODEL, ServiceName,
+    BIOCLIP_DATASETS, BIOCLIP_DEFAULT_MODEL, ConfigValidationError, FACE_DEFAULT_MODEL,
+    LumenConfig, Mode, OCR_DEFAULT_MODEL, Preset, Region, SERVICE_ORDER, ServiceName, models_for,
 };
 use thiserror::Error;
 
@@ -110,7 +109,6 @@ impl DockerConfigInput {
             "siglip",
             SIGLIP_MODEL_VAR,
             self.siglip_model.as_deref(),
-            &[SIGLIP_BASE_MODEL, SIGLIP_BRAVE_MODEL],
         )?;
         apply_optional_model(
             config,
@@ -118,7 +116,6 @@ impl DockerConfigInput {
             "face",
             FACE_MODEL_VAR,
             self.face_model.as_deref(),
-            &[FACE_DEFAULT_MODEL],
         )?;
         apply_optional_model(
             config,
@@ -126,7 +123,6 @@ impl DockerConfigInput {
             "ocr",
             OCR_MODEL_VAR,
             self.ocr_model.as_deref(),
-            &[OCR_DEFAULT_MODEL],
         )?;
         apply_optional_model(
             config,
@@ -134,7 +130,6 @@ impl DockerConfigInput {
             "bioclip",
             BIOCLIP_MODEL_VAR,
             self.bioclip_model.as_deref(),
-            &[BIOCLIP_DEFAULT_MODEL],
         )?;
         apply_optional_dataset(config, &services, self.bioclip_dataset.as_deref())?;
         Ok(())
@@ -260,12 +255,15 @@ fn apply_optional_model(
     service: &'static str,
     variable: &'static str,
     value: Option<&str>,
-    allowed: &[&str],
 ) -> Result<(), DockerConfigError> {
     let Some(value) = value else {
         return Ok(());
     };
     require_selected(services, service, variable)?;
+    let allowed =
+        models_for(service).ok_or_else(|| DockerConfigError::MissingServiceDefinition {
+            service: service.to_owned(),
+        })?;
     if !allowed.contains(&value) {
         return Err(invalid_value(variable, value, &allowed.join(" or ")));
     }
@@ -281,7 +279,7 @@ fn apply_optional_dataset(
         return Ok(());
     };
     require_selected(services, "bioclip", BIOCLIP_DATASET_VAR)?;
-    if ![BIOCLIP_CORE_DATASET, BIOCLIP_FULL_DATASET].contains(&value) {
+    if !BIOCLIP_DATASETS.contains(&value) {
         return Err(invalid_value(
             BIOCLIP_DATASET_VAR,
             value,
@@ -391,6 +389,9 @@ pub enum DockerConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lumen_schema::{
+        BIOCLIP_CORE_DATASET, BIOCLIP_FULL_DATASET, SIGLIP_BASE_MODEL, SIGLIP_BRAVE_MODEL,
+    };
 
     fn base_config() -> LumenConfig {
         serde_yaml::from_str(include_str!(
@@ -522,5 +523,140 @@ mod tests {
         let error = input("custom").apply(&mut config).unwrap_err();
 
         assert!(matches!(error, DockerConfigError::MissingCustomServices));
+    }
+
+    /// Environment options mirroring packaging/docker/config.default.yaml.
+    fn parity_options() -> lumen_schema::RenderOptions<'static> {
+        lumen_schema::RenderOptions {
+            region: "other",
+            cache_dir: "/models",
+            metadata_version: "0.1.0",
+            runtime: "burn",
+            precision: "fp16q8",
+        }
+    }
+
+    /// The Docker base image catalog keeps default model metadata on disabled
+    /// services (for example BioCLIP's core dataset), while the canonical
+    /// render leaves them neutral. The entry-point contract is: metadata,
+    /// deployment, server, and every selected service are identical.
+    fn assert_config_parity(docker: &LumenConfig, canonical: &LumenConfig) {
+        assert_eq!(docker.metadata, canonical.metadata);
+        assert_eq!(docker.deployment, canonical.deployment);
+        assert_eq!(docker.server, canonical.server);
+        for (service, docker_config) in &docker.services {
+            let canonical_config = &canonical.services[service];
+            assert_eq!(
+                docker_config.enabled, canonical_config.enabled,
+                "service {service} enabled flag"
+            );
+            if docker_config.enabled {
+                assert_eq!(
+                    docker_config, canonical_config,
+                    "selected service {service} must be identical"
+                );
+            }
+        }
+    }
+
+    /// The Docker env resolver and the canonical schema renderer must agree on
+    /// every official preset.
+    #[test]
+    fn docker_env_matches_canonical_preset_render() {
+        for preset in Preset::all() {
+            let mut via_docker = base_config();
+            DockerConfigInput::for_preset(preset.name)
+                .apply(&mut via_docker)
+                .unwrap();
+            let via_schema =
+                lumen_schema::preset_config(*preset, &parity_options()).expect("canonical render");
+            assert_config_parity(&via_docker, &via_schema);
+        }
+    }
+
+    /// Same parity guarantee for a representative custom combination.
+    #[test]
+    fn docker_env_matches_canonical_custom_render() {
+        let mut via_docker = base_config();
+        let input = DockerConfigInput {
+            region: Some("cn".to_owned()),
+            preset: Some("custom".to_owned()),
+            services: Some("bioclip, siglip".to_owned()),
+            siglip_model: Some(SIGLIP_BRAVE_MODEL.to_owned()),
+            bioclip_model: Some(BIOCLIP_DEFAULT_MODEL.to_owned()),
+            bioclip_dataset: Some(BIOCLIP_FULL_DATASET.to_owned()),
+            ..Default::default()
+        };
+        input.apply(&mut via_docker).unwrap();
+
+        let mut options = parity_options();
+        options.region = "cn";
+        let via_schema = lumen_schema::custom_config(
+            &["siglip", "bioclip"],
+            Some(SIGLIP_BRAVE_MODEL),
+            Some(BIOCLIP_FULL_DATASET),
+            &options,
+        )
+        .expect("canonical render");
+        assert_config_parity(&via_docker, &via_schema);
+    }
+
+    /// The committed fixtures under fixtures/config/ are the stable goldens
+    /// shared by every entry point; they must equal the canonical render.
+    #[test]
+    fn committed_config_fixtures_match_canonical_render() {
+        // Fixtures are rendered with the canonical machine-independent path.
+        let fixture_options = lumen_schema::RenderOptions {
+            cache_dir: "~/.lumen/models",
+            ..parity_options()
+        };
+        let fixtures: &[(&str, &str)] = &[
+            (
+                "minimal",
+                include_str!("../../../fixtures/config/minimal.yaml"),
+            ),
+            ("basic", include_str!("../../../fixtures/config/basic.yaml")),
+            ("brave", include_str!("../../../fixtures/config/brave.yaml")),
+            (
+                "custom-siglip-bioclip",
+                include_str!("../../../fixtures/config/custom-siglip-bioclip.yaml"),
+            ),
+            (
+                "custom-face-ocr",
+                include_str!("../../../fixtures/config/custom-face-ocr.yaml"),
+            ),
+            (
+                "custom-siglip",
+                include_str!("../../../fixtures/config/custom-siglip.yaml"),
+            ),
+        ];
+
+        for (name, raw) in fixtures {
+            let fixture: LumenConfig =
+                serde_yaml::from_str(raw).unwrap_or_else(|e| panic!("{name} fixture parses: {e}"));
+            let expected = if let Some(preset) = Preset::by_name(name) {
+                lumen_schema::preset_config(preset, &fixture_options).expect("canonical render")
+            } else {
+                match *name {
+                    "custom-siglip-bioclip" => lumen_schema::custom_config(
+                        &["siglip", "bioclip"],
+                        Some(SIGLIP_BRAVE_MODEL),
+                        Some(BIOCLIP_FULL_DATASET),
+                        &fixture_options,
+                    )
+                    .expect("canonical render"),
+                    "custom-face-ocr" => {
+                        lumen_schema::custom_config(&["face", "ocr"], None, None, &fixture_options)
+                            .expect("canonical render")
+                    }
+                    "custom-siglip" => {
+                        lumen_schema::custom_config(&["siglip"], None, None, &fixture_options)
+                            .expect("canonical render")
+                    }
+                    other => panic!("unhandled fixture {other}"),
+                }
+            };
+            assert_eq!(fixture, expected, "fixture {name}");
+        }
     }
 }

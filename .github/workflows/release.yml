@@ -342,7 +342,7 @@ jobs:
                   name: metadata
                   path: |
                       release-assets/manifest.json
-                      release-assets/checksums.txt
+                      release-assets/SHA256SUMS
                   if-no-files-found: error
 
     release:
@@ -377,7 +377,7 @@ jobs:
                   test -f release-assets/lumen-cli-installer.ps1
                   test -f release-assets/sha256.sum
                   test -f release-assets/manifest.json
-                  test -f release-assets/checksums.txt
+                  test -f release-assets/SHA256SUMS
                   ls -lah release-assets
 
             - name: Build release body
@@ -468,7 +468,7 @@ jobs:
                       release-assets/lumen-cli-installer.ps1
                       release-assets/sha256.sum
                       release-assets/manifest.json
-                      release-assets/checksums.txt
+                      release-assets/SHA256SUMS
 
     # Container images for Linux servers / NAS, assembled from the prebuilt hub
     # dist artifacts (no recompilation). Three flavors (see packaging/docker/):

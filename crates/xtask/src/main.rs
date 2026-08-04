@@ -5,8 +5,9 @@
 //! runtime libraries (ONNX Runtime, MNN, ...) to bundle anymore.
 //!
 //! Commands:
-//!   cargo xtask dist --profile <profile>                Build + package one profile.
-//!   cargo xtask release-metadata [--assets-dir <dir>]   Write manifest.json + checksums.txt.
+//!   cargo xtask dist --profile <profile>               Build + package one profile.
+//!   cargo xtask release-metadata [--assets-dir <dir>]  Write schema-2 manifest.json + SHA256SUMS.
+//!   cargo xtask config-fixtures [--check]              Regenerate preset/custom config fixtures.
 
 use std::{
     env,
@@ -18,6 +19,8 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use zip::{ZipWriter, write::SimpleFileOptions};
+
+use lumen_schema::{ArtifactInfo, PlatformInfo};
 
 /// A distribution profile: an OS/arch target plus the Burn compute backend.
 struct DistProfile {
@@ -113,6 +116,7 @@ fn run() -> Result<(), String> {
     match args.next().as_deref() {
         Some("dist") => dist(args.collect()),
         Some("release-metadata") => release_metadata(args.collect()),
+        Some("config-fixtures") => config_fixtures(args.collect()),
         Some("golden") => golden(args.collect()),
         Some("--help" | "-h") | None => {
             print_help();
@@ -124,7 +128,7 @@ fn run() -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "Usage:\n  cargo xtask dist --profile <profile>\n  cargo xtask release-metadata [--assets-dir <dir>]\n  cargo xtask golden [--models-dir <dir>]   Regenerate l1 golden embeddings\n\nProfiles:\n  {}",
+        "Usage:\n  cargo xtask dist --profile <profile>\n  cargo xtask release-metadata [--assets-dir <dir>]\n  cargo xtask config-fixtures [--check]   Regenerate preset/custom config fixtures\n  cargo xtask golden [--models-dir <dir>]   Regenerate l1 golden embeddings\n\nProfiles:\n  {}",
         PROFILES
             .iter()
             .map(|p| p.name)
@@ -285,10 +289,9 @@ fn release_metadata(args: Vec<String>) -> Result<(), String> {
     let base_url = env::var("LUMEN_RELEASE_BASE_URL").unwrap_or_else(|_| {
         format!("https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/{version}")
     });
-    let base_url = base_url.trim_end_matches('/').to_owned();
 
-    // 1. Hub manifest: one entry per lumen-hub-<profile>.zip.
-    let mut hub = Vec::new();
+    // 1. Hub artifacts: one entry per lumen-hub-<profile>.zip.
+    let mut artifacts = Vec::new();
     for entry in
         fs::read_dir(&assets_dir).map_err(|e| format!("read {}: {e}", assets_dir.display()))?
     {
@@ -303,25 +306,66 @@ fn release_metadata(args: Vec<String>) -> Result<(), String> {
             .and_then(|rest| rest.strip_suffix(".zip"))
         {
             let sha = sha256_file(&path)?;
-            hub.push((profile.to_owned(), name.clone(), sha));
+            artifacts.push(ArtifactInfo {
+                profile: profile.to_owned(),
+                file_name: name.clone(),
+                sha256: sha,
+            });
         }
     }
-    hub.sort();
-    let hub_json = hub
-        .iter()
-        .map(|(profile, file_name, sha)| {
-            format!(
-                r#"{{"profile":"{profile}","file_name":"{file_name}","url":"{base_url}/{file_name}","sha256":"{sha}"}}"#
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    let manifest = format!(r#"{{"version":"{version}","hub":[{hub_json}]}}"#);
-    fs::write(assets_dir.join("manifest.json"), manifest + "\n")
-        .map_err(|e| format!("write manifest.json: {e}"))?;
-    println!("wrote {}", assets_dir.join("manifest.json").display());
 
-    // 2. Top-level checksums over every asset (manifest included, self excluded).
+    // 2. Protocol provenance: hash the proto sources at release time and
+    //    verify the data-plane major still matches the schema constant.
+    let ml_service_proto = root.join("crates/lumen-hub/proto/ml_service.proto");
+    let control_proto = root.join("crates/lumen-hub/proto/control.proto");
+    let ml_service_sha = sha256_file(&ml_service_proto)?;
+    let control_sha = sha256_file(&control_proto)?;
+    let data_plane_major = data_plane_major_from_proto(&ml_service_proto)?;
+    if data_plane_major != lumen_schema::DATA_PLANE_MAJOR {
+        return Err(format!(
+            "ml_service.proto package major {data_plane_major} does not match lumen-schema DATA_PLANE_MAJOR {}",
+            lumen_schema::DATA_PLANE_MAJOR
+        ));
+    }
+
+    // 3. Dist platforms from the profile table (name, target, backend).
+    let platforms = PROFILES
+        .iter()
+        .map(|profile| PlatformInfo {
+            name: profile.name.to_owned(),
+            target: profile.target.to_owned(),
+            backend: profile_backend(profile).to_owned(),
+        })
+        .collect::<Vec<_>>();
+
+    let manifest = lumen_schema::HubManifest::build(
+        &version,
+        &base_url,
+        &platforms,
+        &artifacts,
+        lumen_schema::ManifestProtocol {
+            data_plane_major,
+            ml_service: lumen_schema::ManifestProtocolFile {
+                path: "crates/lumen-hub/proto/ml_service.proto".to_owned(),
+                sha256: ml_service_sha,
+            },
+            control: lumen_schema::ManifestProtocolFile {
+                path: "crates/lumen-hub/proto/control.proto".to_owned(),
+                sha256: control_sha,
+            },
+        },
+    );
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest).map_err(|e| format!("serialize manifest: {e}"))?;
+    fs::write(assets_dir.join("manifest.json"), manifest_json + "\n")
+        .map_err(|e| format!("write manifest.json: {e}"))?;
+    println!(
+        "wrote {} (schemaVersion {})",
+        assets_dir.join("manifest.json").display(),
+        lumen_schema::MANIFEST_SCHEMA_VERSION
+    );
+
+    // 4. Top-level checksums over every asset (manifest included, self excluded).
     let mut lines = Vec::new();
     for entry in
         fs::read_dir(&assets_dir).map_err(|e| format!("read {}: {e}", assets_dir.display()))?
@@ -332,15 +376,136 @@ fn release_metadata(args: Vec<String>) -> Result<(), String> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == "checksums.txt" {
+        if name == "SHA256SUMS" {
             continue;
         }
         lines.push(format!("{}  {name}", sha256_file(&path)?));
     }
     lines.sort();
-    fs::write(assets_dir.join("checksums.txt"), lines.join("\n") + "\n")
-        .map_err(|e| format!("write checksums.txt: {e}"))?;
-    println!("wrote {}", assets_dir.join("checksums.txt").display());
+    fs::write(assets_dir.join("SHA256SUMS"), lines.join("\n") + "\n")
+        .map_err(|e| format!("write SHA256SUMS: {e}"))?;
+    println!("wrote {}", assets_dir.join("SHA256SUMS").display());
+    Ok(())
+}
+
+/// The compute backend of a dist profile: the first feature that is not a
+/// model feature (see PROFILES).
+fn profile_backend(profile: &DistProfile) -> &'static str {
+    profile
+        .features
+        .iter()
+        .find(|feature| !MODEL_FEATURES.contains(feature))
+        .copied()
+        .unwrap_or("cpu")
+}
+
+/// Parse the `package <name>.vN;` major from a proto file and fail if the
+/// file does not carry a versioned package.
+fn data_plane_major_from_proto(path: &Path) -> Result<u32, String> {
+    let content = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(package) = line.strip_prefix("package ") {
+            let package = package.trim_end_matches(';').trim();
+            let major = package
+                .rsplit('.')
+                .next()
+                .and_then(|part| part.strip_prefix('v'))
+                .and_then(|digit| digit.parse::<u32>().ok())
+                .ok_or_else(|| {
+                    format!(
+                        "{}: package `{package}` has no parseable vN major",
+                        path.display()
+                    )
+                })?;
+            return Ok(major);
+        }
+    }
+    Err(format!("{}: no `package` line found", path.display()))
+}
+
+/// Regenerate the stable preset/custom config fixtures that every entry point
+/// (CLI, launcher, Docker env resolver) is verified against.
+fn config_fixtures(args: Vec<String>) -> Result<(), String> {
+    let check = args.iter().any(|argument| argument == "--check");
+    let root = workspace_root()?;
+    let fixtures_dir = root.join("fixtures").join("config");
+    fs::create_dir_all(&fixtures_dir)
+        .map_err(|e| format!("mkdir {}: {e}", fixtures_dir.display()))?;
+
+    // Deterministic environment options: fixtures are machine-independent.
+    let options = lumen_schema::RenderOptions {
+        region: "other",
+        cache_dir: "~/.lumen/models",
+        metadata_version: "0.1.0",
+        runtime: "burn",
+        precision: "fp16q8",
+    };
+
+    let mut fixtures: Vec<(String, lumen_schema::LumenConfig)> = Vec::new();
+    for preset in lumen_schema::Preset::all() {
+        fixtures.push((
+            preset.name.to_owned(),
+            lumen_schema::preset_config(*preset, &options)?,
+        ));
+    }
+    // Representative custom combinations covering the Docker/CLI custom path:
+    // multi-capability with model/dataset overrides, non-default pairing, and
+    // the smallest single-capability selection.
+    fixtures.push((
+        "custom-siglip-bioclip".to_owned(),
+        lumen_schema::custom_config(
+            &["siglip", "bioclip"],
+            Some(lumen_schema::SIGLIP_BRAVE_MODEL),
+            Some(lumen_schema::BIOCLIP_FULL_DATASET),
+            &options,
+        )?,
+    ));
+    fixtures.push((
+        "custom-face-ocr".to_owned(),
+        lumen_schema::custom_config(&["face", "ocr"], None, None, &options)?,
+    ));
+    fixtures.push((
+        "custom-siglip".to_owned(),
+        lumen_schema::custom_config(&["siglip"], None, None, &options)?,
+    ));
+
+    let mut drifted = Vec::new();
+    for (name, config) in &fixtures {
+        let mut content = format!(
+            "# Generated by `cargo xtask config-fixtures`. Do not edit.\n# Selection: {name}\n"
+        );
+        content.push_str(
+            &serde_yaml::to_string(config).map_err(|e| format!("serialize {name}: {e}"))?,
+        );
+        let path = fixtures_dir.join(format!("{name}.yaml"));
+        if check {
+            let existing =
+                fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+            if existing != content {
+                drifted.push(name.clone());
+            }
+        } else {
+            fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
+        }
+    }
+
+    if check {
+        if drifted.is_empty() {
+            println!("config fixtures are up to date ({} files)", fixtures.len());
+        } else {
+            return Err(format!(
+                "config fixtures are out of date: {}; run `cargo xtask config-fixtures`",
+                drifted.join(", ")
+            ));
+        }
+    } else {
+        println!(
+            "wrote {} config fixtures to {}",
+            fixtures.len(),
+            fixtures_dir.display()
+        );
+    }
     Ok(())
 }
 

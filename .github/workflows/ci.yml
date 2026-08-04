@@ -27,6 +27,12 @@ jobs:
             - name: Test workspace
               run: cargo test --workspace
 
+            # The committed preset/custom config fixtures are the goldens every
+            # entry point (CLI, launcher, Docker env resolver) is checked
+            # against; regenerate with `cargo xtask config-fixtures`.
+            - name: Check config fixtures
+              run: cargo run -q -p xtask -- config-fixtures --check
+
             # L0 e2e: real binary + mock model repo + QA fixture model (no
             # weight downloads). The qa feature is test-only; dist profiles
             # never enable it.

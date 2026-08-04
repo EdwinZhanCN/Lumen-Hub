@@ -7473,6 +7473,9 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "lumen-schema",
+ "serde_json",
+ "serde_yaml",
  "sha2",
  "zip 7.2.0",
 ]

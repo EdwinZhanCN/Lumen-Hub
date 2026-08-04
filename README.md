@@ -95,8 +95,21 @@ Model features: `siglip`, `ppocr`, `insightface`, `clip` (BioCLIP).
 Tag `v<version>` (matching the `lumen-cli` crate version) →
 `.github/workflows/release.yml` builds every profile
 (`{darwin-arm64,windows-x64,linux-x64,linux-arm64}` × backend, plus
-`linux-arm64-jetson`), the CLI installers, and `manifest.json` + checksums.
-Locally: `cargo xtask dist --profile <profile>`.
+`linux-arm64-jetson`), the CLI installers, and the release catalog:
+
+- `manifest.json` — schema-versioned (`schemaVersion: 2`) catalog generated
+  from `lumen-schema`: the four capability Exact Terms, preset/custom options,
+  model/dataset options, resource guidance, dist platforms, artifact
+  URL/SHA-256, and proto provenance (`dataPlaneMajor` + proto SHA-256s).
+  Site and Desktop consume this catalog; do not maintain parallel constants.
+- `SHA256SUMS` — top-level digest file covering every asset including
+  `manifest.json`.
+
+Locally: `cargo xtask dist --profile <profile>`;
+`cargo xtask release-metadata [--assets-dir <dir>]` regenerates the catalog.
+Preset/custom config fixtures under `fixtures/config/` are the stable goldens
+shared by CLI, launcher, and Docker; regenerate with
+`cargo xtask config-fixtures` (CI checks them with `--check`).
 
 Linux profiles build on `ubuntu-22.04` (glibc 2.35), not 24.04 (glibc 2.39):
 glibc is forward-compatible only, so building on the oldest practical host
@@ -111,7 +124,8 @@ floor for this toolchain.
 crates/
   lumen-hub/         # the server: models/, model_arch/ (generated Burn graphs),
                      #   service/ + daemon/ (gRPC, batching), status.rs (control plane)
-  lumen-schema/      # config + result schemas (embedding_v1, ocr_v1, face_v1, labels_v1)
+  lumen-schema/      # config + result schemas + release catalog + canonical render
+                     #   (manifest.rs, config/render.rs, preset.rs)
   lumen-launcher/    # install/config/run library behind lumen-cli
   lumen-cli/         # end-user installer/launcher CLI
   lumen-quant-core/  # int8 weight-quantization primitives (runtime fp16q8 + offline)

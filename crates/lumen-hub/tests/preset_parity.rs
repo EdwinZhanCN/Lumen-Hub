@@ -43,6 +43,27 @@ fn cli_and_docker_render_the_same_canonical_presets() {
                 "{} preset dataset drift for {service}",
                 preset.name
             );
+
+            // The committed fixture is the canonical render for this preset;
+            // every entry point must agree with it on selected services.
+            let fixture = serde_yaml::from_str::<LumenConfig>(match preset.name {
+                "minimal" => include_str!("../../../fixtures/config/minimal.yaml"),
+                "basic" => include_str!("../../../fixtures/config/basic.yaml"),
+                "brave" => include_str!("../../../fixtures/config/brave.yaml"),
+                other => panic!("unexpected preset {other}"),
+            })
+            .expect("fixture parses");
+            let fixture_model = &fixture.services[*service].models["default"];
+            assert_eq!(
+                cli_model.model, fixture_model.model,
+                "{} preset fixture model drift for {service}",
+                preset.name
+            );
+            assert_eq!(
+                cli_model.dataset, fixture_model.dataset,
+                "{} preset fixture dataset drift for {service}",
+                preset.name
+            );
         }
     }
 }
