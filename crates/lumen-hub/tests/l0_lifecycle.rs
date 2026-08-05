@@ -93,7 +93,7 @@ async fn mDNS_is_advertised_after_ready_when_enabled() {
     // The daemon registers the mDNS advertisement only once the hub reaches
     // READY (see `initialize` in src/main.rs). Reaching READY with mDNS
     // enabled proves the registration step completes; the TXT payload itself
-    // (proto/tasks/runtime keys) is covered by unit tests in daemon/mdns.rs.
+    // (display-only v/runtime keys) is covered by unit tests in daemon/mdns.rs.
     let (mut hub, repo) = HubProcess::spawn_with_qa_repo_held(&HubOptions {
         mdns_enabled: true,
         ..HubOptions::default()

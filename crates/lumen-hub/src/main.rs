@@ -22,7 +22,7 @@ use lumen_hub::models::siglip::SiglipService;
 use lumen_hub::{
     backend::{BACKEND_NAME, configure_runtime, default_device},
     daemon::{
-        DaemonError, HubGrpcService, MdnsAdvertisement, ReadyHandle, advertised_capabilities,
+        DaemonError, HubGrpcService, MdnsAdvertisement, ReadyHandle, advertised_metadata,
         bind_addr, control_plane, hub_batcher_config,
     },
     docker_config::{DockerConfigError, DockerConfigInput},
@@ -289,7 +289,7 @@ async fn initialize(
     );
 
     let advertisement =
-        MdnsAdvertisement::register(&server_config.mdns, port, &advertised_capabilities(&hub))?;
+        MdnsAdvertisement::register(&server_config.mdns, port, &advertised_metadata(&hub))?;
     *mdns_guard.lock().expect("mdns guard poisoned") = advertisement;
 
     ready
