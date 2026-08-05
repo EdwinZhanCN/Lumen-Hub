@@ -26,6 +26,9 @@ pub struct HubOptions {
     pub batching_enabled: bool,
     pub max_batch_size: usize,
     pub queue_latency_ms: u64,
+    /// Advertise the hub over mDNS once it reaches READY. Disabled by
+    /// default so tests do not depend on the environment's multicast stack.
+    pub mdns_enabled: bool,
 }
 
 impl Default for HubOptions {
@@ -35,6 +38,7 @@ impl Default for HubOptions {
             batching_enabled: true,
             max_batch_size: 8,
             queue_latency_ms: 2,
+            mdns_enabled: false,
         }
     }
 }
@@ -79,7 +83,7 @@ impl HubProcess {
             "server": {
                 "host": "127.0.0.1",
                 "port": port,
-                "mdns": { "enabled": false },
+                "mdns": { "enabled": options.mdns_enabled },
                 "batching": {
                     "enabled": options.batching_enabled,
                     "max_batch_size": options.max_batch_size,

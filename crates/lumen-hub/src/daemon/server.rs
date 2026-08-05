@@ -13,7 +13,7 @@ use tonic_health::{ServingStatus, server::HealthReporter};
 
 use crate::{
     daemon::{
-        AdvertisedCapabilities, BatcherConfig, DaemonError, DaemonResult, HubGrpcService,
+        AdvertisedMetadata, BatcherConfig, DaemonError, DaemonResult, HubGrpcService,
         MdnsAdvertisement,
         control::ControlGrpcService,
         lazy::{HubSlot, LazyInference},
@@ -73,8 +73,7 @@ async fn serve_grpc_at_addr(
     config: &ServerConfig,
     addr: SocketAddr,
 ) -> DaemonResult<()> {
-    let _mdns =
-        MdnsAdvertisement::register(&config.mdns, addr.port(), &advertised_capabilities(&hub))?;
+    let _mdns = MdnsAdvertisement::register(&config.mdns, addr.port(), &advertised_metadata(&hub))?;
     tracing::info!(%addr, services = hub.len(), "starting Lumen gRPC server");
 
     Server::builder()
@@ -97,8 +96,7 @@ async fn serve_grpc_at_addr_with_shutdown<S>(
 where
     S: Future<Output = ()> + Send + 'static,
 {
-    let _mdns =
-        MdnsAdvertisement::register(&config.mdns, addr.port(), &advertised_capabilities(&hub))?;
+    let _mdns = MdnsAdvertisement::register(&config.mdns, addr.port(), &advertised_metadata(&hub))?;
     tracing::info!(%addr, services = hub.len(), "starting Lumen gRPC server");
 
     Server::builder()
@@ -197,23 +195,15 @@ pub fn hub_batcher_config(config: &ServerConfig) -> BatcherConfig {
     batcher_config(config)
 }
 
-/// Collects the mDNS TXT hints (task names, runtime) from the registered
-/// services so discovery clients can route before fetching capabilities.
-pub fn advertised_capabilities(hub: &ServiceHub) -> AdvertisedCapabilities {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut tasks = Vec::new();
+/// Collects display-only mDNS metadata from the registered services.
+pub fn advertised_metadata(hub: &ServiceHub) -> AdvertisedMetadata {
     let mut runtime = None;
     for capability in hub.capabilities() {
         if runtime.is_none() && !capability.runtime.is_empty() {
             runtime = Some(capability.runtime.clone());
         }
-        for task in &capability.tasks {
-            if seen.insert(task.name.clone()) {
-                tasks.push(task.name.clone());
-            }
-        }
     }
-    AdvertisedCapabilities { tasks, runtime }
+    AdvertisedMetadata { runtime }
 }
 
 fn batcher_config(config: &ServerConfig) -> BatcherConfig {

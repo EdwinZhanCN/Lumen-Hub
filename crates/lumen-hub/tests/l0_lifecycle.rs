@@ -78,6 +78,7 @@ async fn cold_start_walks_all_phases_and_serves() {
     )
     .await
     .expect("infer after ready");
+
     let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
     assert!(
         (norm - 1.0).abs() < 1e-3,
@@ -85,6 +86,24 @@ async fn cold_start_walks_all_phases_and_serves() {
     );
 
     assert!(hub.is_running());
+}
+
+#[tokio::test]
+async fn mDNS_is_advertised_after_ready_when_enabled() {
+    // The daemon registers the mDNS advertisement only once the hub reaches
+    // READY (see `initialize` in src/main.rs). Reaching READY with mDNS
+    // enabled proves the registration step completes; the TXT payload itself
+    // (display-only v/runtime keys) is covered by unit tests in daemon/mdns.rs.
+    let (mut hub, repo) = HubProcess::spawn_with_qa_repo_held(&HubOptions {
+        mdns_enabled: true,
+        ..HubOptions::default()
+    });
+    let mut client = hub.control().await;
+    let watch = client.watch_status(()).await.expect("subscribe");
+    drop(watch);
+    repo.release_downloads();
+    let snapshots = hub.wait_ready().await;
+    assert_eq!(snapshots.last().unwrap().phase(), Phase::Ready);
 }
 
 #[tokio::test]

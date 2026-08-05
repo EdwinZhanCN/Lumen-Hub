@@ -17,8 +17,8 @@ pub use control::ControlGrpcService;
 pub use error::{DaemonError, DaemonResult};
 pub use grpc::HubGrpcService;
 pub use lazy::{HubSlot, LazyInference};
-pub use mdns::{AdvertisedCapabilities, DEFAULT_MDNS_SERVICE_TYPE, MdnsAdvertisement};
+pub use mdns::{AdvertisedMetadata, DEFAULT_MDNS_SERVICE_TYPE, MdnsAdvertisement};
 pub use server::{
-    ControlPlaneServer, ReadyHandle, advertised_capabilities, bind_addr, bind_addr_with_port,
+    ControlPlaneServer, ReadyHandle, advertised_metadata, bind_addr, bind_addr_with_port,
     control_plane, hub_batcher_config, serve_grpc, serve_grpc_with_shutdown,
 };

@@ -31,7 +31,7 @@ pub struct IoTask {
     /// Empty means this task has no client-side tensor fast path.
     #[prost(string, tag = "5")]
     pub tensor_preprocess_id: ::prost::alloc::string::String,
-    /// True means tensor requests for this task can be dynamically batched by the Hub.
+    /// True means tensor requests for this task can be dynamically batched by the routing layer.
     #[prost(bool, tag = "6")]
     pub tensor_batching_supported: bool,
 }
@@ -44,7 +44,7 @@ pub struct Capability {
     /// Supported model IDs/versions
     #[prost(string, repeated, tag = "2")]
     pub model_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-    /// "onnxrt-cuda","tensorrt","coreml","cpu"
+    /// "onnxrt-cuda","tensorrt","coreml","rknn","qnn","cpu"
     #[prost(string, tag = "3")]
     pub runtime: ::prost::alloc::string::String,
     /// Suggested max concurrency
@@ -62,7 +62,7 @@ pub struct Capability {
     /// Structured task capabilities (recommended)
     #[prost(message, repeated, tag = "7")]
     pub tasks: ::prost::alloc::vec::Vec<IoTask>,
-    /// Version of current porotocal, should be semantic versioning. e.g., 1.0.0
+    /// Version of current protocol, should be semantic versioning. e.g., 1.0.0
     #[prost(string, tag = "8")]
     pub protocol_version: ::prost::alloc::string::String,
 }

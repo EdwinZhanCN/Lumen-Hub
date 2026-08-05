@@ -23,7 +23,7 @@ rerank over a TreeOfLife catalog).
 | Machine | Path |
 |---|---|
 | Same PC as Lumilio Photos | Enable AI in the desktop app — it installs and supervises the hub |
-| Linux server / NAS | Docker: `docker run -d -p 50051:50051 -v lumen-models:/models ghcr.io/edwinzhancn/lumen-hub:cpu` (tags `cpu`/`vulkan`/`cuda`; see [`packaging/docker/`](packaging/docker/README.md)) |
+| Linux server / NAS | Docker: `docker run -d --network host -v lumen-models:/models ghcr.io/edwinzhancn/lumen-hub:cpu` (host networking keeps LAN mDNS discovery working; tags `cpu`/`vulkan`/`cuda`; see [`packaging/docker/`](packaging/docker/README.md)) |
 | Spare box on your LAN | `lumen-cli init && lumen-cli start` (detects hardware, downloads the matching build) |
 | Anything else | `lumen-hub --config config.yaml` |
 
@@ -93,17 +93,32 @@ Model features: `siglip`, `ppocr`, `insightface`, `clip` (BioCLIP).
 ## Release
 
 Tag `v<version>` (matching the `lumen-cli` crate version) →
-`.github/workflows/release.yml` builds every profile
-(`{darwin-arm64,windows-x64,linux-x64,linux-arm64}` × backend, plus
-`linux-arm64-jetson`), the CLI installers, and `manifest.json` + checksums.
-Locally: `cargo xtask dist --profile <profile>`.
+`.github/workflows/release.yml` builds the continuously exercised release
+profiles, the CLI installers, and the release catalog. The published hub
+profiles are macOS arm64 Metal/CPU, Windows x64 wgpu/CPU, Linux x64
+wgpu/CUDA/CPU, and Linux arm64 CPU. ROCm, generic Linux arm64 GPU, and Jetson
+remain explicit source-build recipes and are not installer choices or release
+artifacts.
 
-Linux profiles build on `ubuntu-22.04` (glibc 2.35), not 24.04 (glibc 2.39):
-glibc is forward-compatible only, so building on the oldest practical host
-maximizes which end-user distros the shipped binary runs on. 20.04 isn't an
-option — GitHub retired the `ubuntu-20.04` hosted runner in April 2025, and
-AMD's ROCm 7.1.1 apt repo has no `focal` channel either, so 22.04 is the actual
-floor for this toolchain.
+- `manifest.json` — schema-versioned (`schemaVersion: 2`) catalog generated
+  from `lumen-schema`: presets, model metadata, resource guidance, the profiles
+  that actually have release artifacts, artifact URL/SHA-256, and protocol
+  provenance (`dataPlaneMajor` + proto SHA-256s). Consumers should pin only the
+  machine facts they execute; explanatory product copy remains local.
+- `SHA256SUMS` — top-level digest file covering every asset including
+  `manifest.json`.
+
+Locally: `cargo xtask dist --profile <profile>`;
+`cargo xtask release-metadata [--assets-dir <dir>]` regenerates the catalog.
+Preset/custom config fixtures under `fixtures/config/` are the stable goldens
+shared by CLI, launcher, and Docker; regenerate with
+`cargo xtask config-fixtures` (CI checks them with `--check`).
+
+Linux x64 profiles build on `ubuntu-22.04` (glibc 2.35), not 24.04
+(glibc 2.39): glibc is forward-compatible only, so building on the oldest
+maintained hosted runner used by this workflow maximizes which end-user
+distros the shipped binary runs on. The arm64 CPU profile uses GitHub's native
+arm64 runner and the same source-defined packaging contract.
 
 ## Workspace layout
 
@@ -111,7 +126,8 @@ floor for this toolchain.
 crates/
   lumen-hub/         # the server: models/, model_arch/ (generated Burn graphs),
                      #   service/ + daemon/ (gRPC, batching), status.rs (control plane)
-  lumen-schema/      # config + result schemas (embedding_v1, ocr_v1, face_v1, labels_v1)
+  lumen-schema/      # config + result schemas + release catalog + canonical render
+                     #   (manifest.rs, config/render.rs, preset.rs)
   lumen-launcher/    # install/config/run library behind lumen-cli
   lumen-cli/         # end-user installer/launcher CLI
   lumen-quant-core/  # int8 weight-quantization primitives (runtime fp16q8 + offline)

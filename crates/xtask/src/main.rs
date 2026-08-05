@@ -5,8 +5,12 @@
 //! runtime libraries (ONNX Runtime, MNN, ...) to bundle anymore.
 //!
 //! Commands:
-//!   cargo xtask dist --profile <profile>                Build + package one profile.
-//!   cargo xtask release-metadata [--assets-dir <dir>]   Write manifest.json + checksums.txt.
+//!   cargo xtask dist --profile <profile>               Build + package one profile.
+//!   cargo xtask release-metadata [--assets-dir <dir>]  Write schema-2 manifest.json + SHA256SUMS.
+//!   cargo xtask config-fixtures [--check]              Regenerate preset/custom config fixtures.
+//!   cargo xtask contract-check                         Verify local proto provenance + buf lint.
+//!   cargo xtask contract-verify                        Add remote SDK/baseline proof.
+//!   cargo xtask contract-sync --sdk <tag>              Re-vendor the SDK-owned proto.
 
 use std::{
     env,
@@ -18,6 +22,34 @@ use std::{
 
 use sha2::{Digest, Sha256};
 use zip::{ZipWriter, write::SimpleFileOptions};
+
+use lumen_schema::{ArtifactInfo, PlatformInfo};
+
+/// The fixed current-major baseline tag for `buf breaking` (WIRE_JSON
+/// policy). The data-plane and control-plane contracts are frozen within this
+/// major; any wire-level break against this tag fails CI. Bump only on a
+/// protocol-major release.
+const CONTRACT_BASELINE_TAG: &str = "v0.1.1";
+
+const ML_SERVICE_PROTO_REL: &str = "crates/lumen-hub/proto/ml_service.proto";
+const PROVENANCE_REL: &str = "crates/lumen-hub/proto/provenance.json";
+const SDK_REPOSITORY: &str = "https://github.com/EdwinZhanCN/Lumen-SDK.git";
+const SDK_RAW_PREFIX: &str = "https://raw.githubusercontent.com/EdwinZhanCN/Lumen-SDK";
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Provenance {
+    schema_version: u32,
+    ml_service: ProvenanceSource,
+}
+
+#[derive(serde::Deserialize)]
+struct ProvenanceSource {
+    authority: String,
+    tag: String,
+    commit: String,
+    sha256: String,
+}
 
 /// A distribution profile: an OS/arch target plus the Burn compute backend.
 struct DistProfile {
@@ -33,9 +65,9 @@ const MODEL_FEATURES: &[&str] = &["siglip", "ppocr", "insightface", "clip"];
 
 // The `*-gpu` profiles use the `wgpu` backend, which targets Vulkan/GL/DX12 at
 // runtime (so a single binary covers "vulkan + wgpu"). `cuda`/`rocm`/`jetson`
-// are vendor-specific builds that require their toolkit in the build
-// environment (installed by the release workflow); `jetson` is the arm64 CUDA
-// build against the L4T/Tegra stack.
+// are vendor-specific source-build recipes that require their toolkit in the
+// build environment; the release workflow deliberately publishes only the
+// subset it can continuously exercise. `jetson` targets the L4T/Tegra stack.
 const PROFILES: &[DistProfile] = &[
     // macOS
     DistProfile {
@@ -113,6 +145,10 @@ fn run() -> Result<(), String> {
     match args.next().as_deref() {
         Some("dist") => dist(args.collect()),
         Some("release-metadata") => release_metadata(args.collect()),
+        Some("config-fixtures") => config_fixtures(args.collect()),
+        Some("contract-check") => contract_check(args.collect()),
+        Some("contract-verify") => contract_verify(args.collect()),
+        Some("contract-sync") => contract_sync(args.collect()),
         Some("golden") => golden(args.collect()),
         Some("--help" | "-h") | None => {
             print_help();
@@ -124,7 +160,7 @@ fn run() -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "Usage:\n  cargo xtask dist --profile <profile>\n  cargo xtask release-metadata [--assets-dir <dir>]\n  cargo xtask golden [--models-dir <dir>]   Regenerate l1 golden embeddings\n\nProfiles:\n  {}",
+        "Usage:\n  cargo xtask dist --profile <profile>\n  cargo xtask release-metadata [--assets-dir <dir>]\n  cargo xtask config-fixtures [--check]   Regenerate preset/custom config fixtures\n  cargo xtask contract-check              Verify committed provenance + buf lint (offline)\n  cargo xtask contract-verify             Verify SDK source + fixed-major baseline (network)\n  cargo xtask contract-sync --sdk <tag>    Re-vendor ml_service.proto from an SDK tag\n  cargo xtask golden [--models-dir <dir>]   Regenerate l1 golden embeddings\n\nProfiles:\n  {}",
         PROFILES
             .iter()
             .map(|p| p.name)
@@ -285,10 +321,9 @@ fn release_metadata(args: Vec<String>) -> Result<(), String> {
     let base_url = env::var("LUMEN_RELEASE_BASE_URL").unwrap_or_else(|_| {
         format!("https://github.com/EdwinZhanCN/Lumen-Hub/releases/download/{version}")
     });
-    let base_url = base_url.trim_end_matches('/').to_owned();
 
-    // 1. Hub manifest: one entry per lumen-hub-<profile>.zip.
-    let mut hub = Vec::new();
+    // 1. Hub artifacts: one entry per lumen-hub-<profile>.zip.
+    let mut artifacts = Vec::new();
     for entry in
         fs::read_dir(&assets_dir).map_err(|e| format!("read {}: {e}", assets_dir.display()))?
     {
@@ -303,25 +338,85 @@ fn release_metadata(args: Vec<String>) -> Result<(), String> {
             .and_then(|rest| rest.strip_suffix(".zip"))
         {
             let sha = sha256_file(&path)?;
-            hub.push((profile.to_owned(), name.clone(), sha));
+            artifacts.push(ArtifactInfo {
+                profile: profile.to_owned(),
+                file_name: name.clone(),
+                sha256: sha,
+            });
         }
     }
-    hub.sort();
-    let hub_json = hub
-        .iter()
-        .map(|(profile, file_name, sha)| {
-            format!(
-                r#"{{"profile":"{profile}","file_name":"{file_name}","url":"{base_url}/{file_name}","sha256":"{sha}"}}"#
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    let manifest = format!(r#"{{"version":"{version}","hub":[{hub_json}]}}"#);
-    fs::write(assets_dir.join("manifest.json"), manifest + "\n")
-        .map_err(|e| format!("write manifest.json: {e}"))?;
-    println!("wrote {}", assets_dir.join("manifest.json").display());
 
-    // 2. Top-level checksums over every asset (manifest included, self excluded).
+    if artifacts.is_empty() {
+        return Err(format!(
+            "no lumen-hub-<profile>.zip archives found in {}",
+            assets_dir.display()
+        ));
+    }
+    artifacts.sort_by(|left, right| left.profile.cmp(&right.profile));
+
+    // 2. Protocol provenance: hash the proto sources at release time and
+    //    verify the data-plane major still matches the schema constant.
+    let ml_service_proto = root.join("crates/lumen-hub/proto/ml_service.proto");
+    let control_proto = root.join("crates/lumen-hub/proto/control.proto");
+    let ml_service_sha = sha256_file(&ml_service_proto)?;
+    let control_sha = sha256_file(&control_proto)?;
+    let data_plane_major = data_plane_major_from_proto(&ml_service_proto)?;
+    if data_plane_major != lumen_schema::DATA_PLANE_MAJOR {
+        return Err(format!(
+            "ml_service.proto package major {data_plane_major} does not match lumen-schema DATA_PLANE_MAJOR {}",
+            lumen_schema::DATA_PLANE_MAJOR
+        ));
+    }
+
+    // 3. Dist platforms are derived from the archives that actually exist.
+    // PROFILES may retain source-build recipes that are intentionally not part
+    // of the supported release surface.
+    let mut platforms = Vec::with_capacity(artifacts.len());
+    for artifact in &artifacts {
+        let profile = PROFILES
+            .iter()
+            .find(|candidate| candidate.name == artifact.profile)
+            .ok_or_else(|| {
+                format!(
+                    "release archive {} names unknown profile {}",
+                    artifact.file_name, artifact.profile
+                )
+            })?;
+        platforms.push(PlatformInfo {
+            name: profile.name.to_owned(),
+            target: profile.target.to_owned(),
+            backend: profile_backend(profile).to_owned(),
+        });
+    }
+
+    let manifest = lumen_schema::HubManifest::build(
+        &version,
+        &base_url,
+        &platforms,
+        &artifacts,
+        lumen_schema::ManifestProtocol {
+            data_plane_major,
+            ml_service: lumen_schema::ManifestProtocolFile {
+                path: "crates/lumen-hub/proto/ml_service.proto".to_owned(),
+                sha256: ml_service_sha,
+            },
+            control: lumen_schema::ManifestProtocolFile {
+                path: "crates/lumen-hub/proto/control.proto".to_owned(),
+                sha256: control_sha,
+            },
+        },
+    );
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest).map_err(|e| format!("serialize manifest: {e}"))?;
+    fs::write(assets_dir.join("manifest.json"), manifest_json + "\n")
+        .map_err(|e| format!("write manifest.json: {e}"))?;
+    println!(
+        "wrote {} (schemaVersion {})",
+        assets_dir.join("manifest.json").display(),
+        lumen_schema::MANIFEST_SCHEMA_VERSION
+    );
+
+    // 4. Top-level checksums over every asset (manifest included, self excluded).
     let mut lines = Vec::new();
     for entry in
         fs::read_dir(&assets_dir).map_err(|e| format!("read {}: {e}", assets_dir.display()))?
@@ -332,15 +427,134 @@ fn release_metadata(args: Vec<String>) -> Result<(), String> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name == "checksums.txt" {
+        if name == "SHA256SUMS" {
             continue;
         }
         lines.push(format!("{}  {name}", sha256_file(&path)?));
     }
     lines.sort();
-    fs::write(assets_dir.join("checksums.txt"), lines.join("\n") + "\n")
-        .map_err(|e| format!("write checksums.txt: {e}"))?;
-    println!("wrote {}", assets_dir.join("checksums.txt").display());
+    fs::write(assets_dir.join("SHA256SUMS"), lines.join("\n") + "\n")
+        .map_err(|e| format!("write SHA256SUMS: {e}"))?;
+    println!("wrote {}", assets_dir.join("SHA256SUMS").display());
+    Ok(())
+}
+
+/// The compute backend of a dist profile: the first feature that is not a
+/// model feature (see PROFILES).
+fn profile_backend(profile: &DistProfile) -> &'static str {
+    profile
+        .features
+        .iter()
+        .find(|feature| !MODEL_FEATURES.contains(feature))
+        .copied()
+        .unwrap_or("cpu")
+}
+
+/// Parse the `package <name>.vN;` major from a proto file and fail if the
+/// file does not carry a versioned package.
+fn data_plane_major_from_proto(path: &Path) -> Result<u32, String> {
+    let content = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    data_plane_major_from_content(&content).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Parse the `package <name>.vN;` major from proto source bytes.
+fn data_plane_major_from_content(content: &str) -> Result<u32, String> {
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(package) = line.strip_prefix("package ") {
+            let package = package.trim_end_matches(';').trim();
+            let major = package
+                .rsplit('.')
+                .next()
+                .and_then(|part| part.strip_prefix('v'))
+                .and_then(|digit| digit.parse::<u32>().ok())
+                .ok_or_else(|| format!("package `{package}` has no parseable vN major"))?;
+            return Ok(major);
+        }
+    }
+    Err("no `package` line found".to_owned())
+}
+
+/// Regenerate the stable preset/custom config fixtures that every entry point
+/// (launcher, Docker, managed applications) is verified against.
+fn config_fixtures(args: Vec<String>) -> Result<(), String> {
+    let check = args.iter().any(|argument| argument == "--check");
+    let root = workspace_root()?;
+    let fixtures_dir = root.join("fixtures").join("config");
+    fs::create_dir_all(&fixtures_dir)
+        .map_err(|e| format!("mkdir {}: {e}", fixtures_dir.display()))?;
+
+    // Deterministic environment options: fixtures are machine-independent.
+    let options = lumen_schema::RenderOptions {
+        region: "other",
+        cache_dir: "/var/lib/lumen/models",
+        target: lumen_schema::ConfigTarget::Network,
+    };
+
+    let mut fixtures: Vec<(String, lumen_schema::LumenConfig)> = Vec::new();
+    for preset in lumen_schema::Preset::all() {
+        fixtures.push((
+            preset.name.to_owned(),
+            lumen_schema::preset_config(*preset, &options)?,
+        ));
+    }
+    // Representative custom combinations covering the Docker/CLI custom path:
+    // multi-capability with model/dataset overrides, non-default pairing, and
+    // the smallest single-capability selection.
+    fixtures.push((
+        "custom-siglip-bioclip".to_owned(),
+        lumen_schema::custom_config(
+            &["siglip", "bioclip"],
+            Some(lumen_schema::SIGLIP_BRAVE_MODEL),
+            Some(lumen_schema::BIOCLIP_FULL_DATASET),
+            &options,
+        )?,
+    ));
+    fixtures.push((
+        "custom-face-ocr".to_owned(),
+        lumen_schema::custom_config(&["face", "ocr"], None, None, &options)?,
+    ));
+    fixtures.push((
+        "custom-siglip".to_owned(),
+        lumen_schema::custom_config(&["siglip"], None, None, &options)?,
+    ));
+
+    let mut drifted = Vec::new();
+    for (name, config) in &fixtures {
+        let mut content = format!(
+            "# Generated by `cargo xtask config-fixtures`. Do not edit.\n# Selection: {name}\n"
+        );
+        content.push_str(
+            &serde_yaml::to_string(config).map_err(|e| format!("serialize {name}: {e}"))?,
+        );
+        let path = fixtures_dir.join(format!("{name}.yaml"));
+        if check {
+            let existing =
+                fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+            if existing != content {
+                drifted.push(name.clone());
+            }
+        } else {
+            fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))?;
+        }
+    }
+
+    if check {
+        if drifted.is_empty() {
+            println!("config fixtures are up to date ({} files)", fixtures.len());
+        } else {
+            return Err(format!(
+                "config fixtures are out of date: {}; run `cargo xtask config-fixtures`",
+                drifted.join(", ")
+            ));
+        }
+    } else {
+        println!(
+            "wrote {} config fixtures to {}",
+            fixtures.len(),
+            fixtures_dir.display()
+        );
+    }
     Ok(())
 }
 
@@ -439,6 +653,287 @@ fn parse_named_arg(args: &[String], flag: &str) -> Result<Option<String>, String
     Ok(None)
 }
 
+/// Verifies the committed proto contract without consulting a remote
+/// repository. This is the deterministic check used by normal CI.
+fn contract_check(args: Vec<String>) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "contract-check does not accept arguments: {}",
+            args.join(" ")
+        ));
+    }
+    let root = workspace_root()?;
+    let provenance = validate_local_contract(&root)?;
+    run_buf(&root.join("crates/lumen-hub/proto"), &["lint"])?;
+    println!(
+        "contract-check ok — local provenance {}@{} and buf lint",
+        provenance.ml_service.authority, provenance.ml_service.tag
+    );
+    Ok(())
+}
+
+/// Adds the two network-bound proofs that do not belong in every unrelated CI
+/// run: the vendored SDK source/tag identity and WIRE_JSON compatibility with
+/// the fixed Hub baseline tag.
+fn contract_verify(args: Vec<String>) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "contract-verify does not accept arguments: {}",
+            args.join(" ")
+        ));
+    }
+    let root = workspace_root()?;
+    let proto_dir = root.join("crates/lumen-hub/proto");
+    let provenance = validate_local_contract(&root)?;
+    run_buf(&proto_dir, &["lint"])?;
+    verify_sdk_provenance(&provenance)?;
+
+    let against = format!(
+        "https://github.com/EdwinZhanCN/Lumen-Hub.git#ref={CONTRACT_BASELINE_TAG},subdir=crates/lumen-hub/proto"
+    );
+    run_buf(&proto_dir, &["breaking", "--against", &against])?;
+    println!(
+        "contract-verify ok — SDK source and WIRE_JSON baseline {CONTRACT_BASELINE_TAG} verified"
+    );
+    Ok(())
+}
+
+/// Re-vendors the SDK-owned data-plane proto from exactly one immutable tag.
+fn contract_sync(args: Vec<String>) -> Result<(), String> {
+    let tag = match args.as_slice() {
+        [flag, tag] if flag == "--sdk" => tag.clone(),
+        [arg] if arg.starts_with("--sdk=") => arg
+            .strip_prefix("--sdk=")
+            .expect("prefix checked")
+            .to_owned(),
+        _ => return Err("usage: cargo xtask contract-sync --sdk <tag>".to_owned()),
+    };
+    if tag.trim().is_empty() {
+        return Err("SDK tag must not be empty".to_owned());
+    }
+    let root = workspace_root()?;
+    sync_ml_service_from_sdk(
+        &root.join(ML_SERVICE_PROTO_REL),
+        &root.join(PROVENANCE_REL),
+        &tag,
+    )
+}
+
+fn validate_local_contract(root: &Path) -> Result<Provenance, String> {
+    let ml_service_path = root.join(ML_SERVICE_PROTO_REL);
+    let provenance_path = root.join(PROVENANCE_REL);
+    let provenance_raw = fs::read(&provenance_path)
+        .map_err(|e| format!("read {}: {e}", provenance_path.display()))?;
+    let provenance: Provenance = serde_json::from_slice(&provenance_raw)
+        .map_err(|e| format!("parse {}: {e}", provenance_path.display()))?;
+
+    if provenance.schema_version != 1 {
+        return Err(format!(
+            "provenance schemaVersion {} is unsupported",
+            provenance.schema_version
+        ));
+    }
+    if provenance.ml_service.authority != "EdwinZhanCN/lumen-sdk" {
+        return Err(format!(
+            "unexpected ml_service authority {}",
+            provenance.ml_service.authority
+        ));
+    }
+    if !is_lower_hex(&provenance.ml_service.commit, 40) {
+        return Err(
+            "provenance ml_service commit must be a 40-character lowercase hex SHA".to_owned(),
+        );
+    }
+    if !is_lower_hex(&provenance.ml_service.sha256, 64) {
+        return Err("provenance ml_service sha256 must be 64-character lowercase hex".to_owned());
+    }
+
+    let vendored_sha = sha256_file(&ml_service_path)?;
+    if vendored_sha != provenance.ml_service.sha256 {
+        return Err(format!(
+            "{ML_SERVICE_PROTO_REL} sha256 {vendored_sha} does not match provenance {}@{} ({}); run `cargo xtask contract-sync --sdk <tag>`",
+            provenance.ml_service.authority,
+            provenance.ml_service.tag,
+            provenance.ml_service.sha256
+        ));
+    }
+    let data_plane_major = data_plane_major_from_proto(&ml_service_path)?;
+    if data_plane_major != lumen_schema::DATA_PLANE_MAJOR {
+        return Err(format!(
+            "data-plane major {data_plane_major} does not match lumen-schema DATA_PLANE_MAJOR {}",
+            lumen_schema::DATA_PLANE_MAJOR
+        ));
+    }
+    println!(
+        "provenance ok — vendored ml_service.proto matches {}@{} (commit {}, sha {})",
+        provenance.ml_service.authority,
+        provenance.ml_service.tag,
+        short_hash(&provenance.ml_service.commit),
+        short_hash(&vendored_sha)
+    );
+    Ok(provenance)
+}
+
+fn verify_sdk_provenance(provenance: &Provenance) -> Result<(), String> {
+    let commit = resolve_remote_tag(SDK_REPOSITORY, &provenance.ml_service.tag)?;
+    if commit != provenance.ml_service.commit {
+        return Err(format!(
+            "SDK tag {} resolves to {}, provenance records {}",
+            provenance.ml_service.tag, commit, provenance.ml_service.commit
+        ));
+    }
+
+    let url = format!(
+        "{SDK_RAW_PREFIX}/{}/proto/ml_service.proto",
+        provenance.ml_service.tag
+    );
+    let bytes = fetch_url(&url)?;
+    let remote_sha = sha256_bytes(&bytes);
+    if remote_sha != provenance.ml_service.sha256 {
+        return Err(format!(
+            "SDK source {} hashes to {}, provenance records {}",
+            url, remote_sha, provenance.ml_service.sha256
+        ));
+    }
+    println!(
+        "SDK provenance verified — {} @ {} ({})",
+        provenance.ml_service.authority,
+        provenance.ml_service.tag,
+        short_hash(&commit)
+    );
+    Ok(())
+}
+
+/// Re-vendors `ml_service.proto` from a Lumen-SDK release tag.
+fn sync_ml_service_from_sdk(
+    ml_service_path: &Path,
+    provenance_path: &Path,
+    tag: &str,
+) -> Result<(), String> {
+    let commit = resolve_remote_tag(SDK_REPOSITORY, tag)?;
+
+    let url = format!("{SDK_RAW_PREFIX}/{tag}/proto/ml_service.proto");
+    let bytes = fetch_url(&url)?;
+    let fetched_sha = sha256_bytes(&bytes);
+    let content = String::from_utf8(bytes.clone())
+        .map_err(|_| format!("fetched {url} is not valid UTF-8"))?;
+    let major = data_plane_major_from_content(&content)?;
+    if major != lumen_schema::DATA_PLANE_MAJOR {
+        return Err(format!(
+            "refusing to vendor {tag}: data-plane major {major} does not match lumen-schema DATA_PLANE_MAJOR {}",
+            lumen_schema::DATA_PLANE_MAJOR
+        ));
+    }
+
+    fs::write(ml_service_path, &bytes)
+        .map_err(|e| format!("write {}: {e}", ml_service_path.display()))?;
+    let provenance = serde_json::json!({
+        "schemaVersion": 1,
+        "mlService": {
+            "authority": "EdwinZhanCN/lumen-sdk",
+            "tag": tag,
+            "commit": commit,
+            "sha256": fetched_sha,
+        },
+    });
+    fs::write(
+        provenance_path,
+        serde_json::to_string_pretty(&provenance).expect("serialize provenance") + "\n",
+    )
+    .map_err(|e| format!("write {}: {e}", provenance_path.display()))?;
+
+    println!(
+        "vendored {url} -> {} ({})",
+        ml_service_path.display(),
+        short_hash(&fetched_sha)
+    );
+    println!(
+        "provenance updated — EdwinZhanCN/lumen-sdk @ {tag} ({})",
+        short_hash(&commit)
+    );
+    println!("next: run `cargo build` and `cargo xtask contract-check`, then review the diff");
+    Ok(())
+}
+
+fn resolve_remote_tag(repository: &str, tag: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args([
+            "ls-remote",
+            repository,
+            &format!("refs/tags/{tag}"),
+            &format!("refs/tags/{tag}^{{}}"),
+        ])
+        .output()
+        .map_err(|e| format!("git ls-remote failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git ls-remote failed for {tag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    let peeled = format!("refs/tags/{tag}^{{}}");
+    let plain = format!("refs/tags/{tag}");
+    let mut plain_commit = None;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let Some(sha) = fields.next() else { continue };
+        let Some(ref_name) = fields.next() else {
+            continue;
+        };
+        if ref_name == peeled {
+            return Ok(sha.to_owned());
+        }
+        if ref_name == plain {
+            plain_commit = Some(sha.to_owned());
+        }
+    }
+    plain_commit.ok_or_else(|| format!("tag {tag} not found in {repository}"))
+}
+
+fn is_lower_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn short_hash(value: &str) -> &str {
+    &value[..value.len().min(12)]
+}
+
+fn run_buf(dir: &Path, args: &[&str]) -> Result<(), String> {
+    let status = Command::new("buf")
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .map_err(|e| format!("failed to run `buf` (install from https://buf.build): {e}"))?;
+    if !status.success() {
+        return Err(format!("`buf {}` failed", args.join(" ")));
+    }
+    Ok(())
+}
+
+fn fetch_url(url: &str) -> Result<Vec<u8>, String> {
+    let output = Command::new("curl")
+        .args(["-fsSL", url])
+        .output()
+        .map_err(|e| format!("failed to run curl: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "fetch {url}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(output.stdout)
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
 /// Regenerates the l1 golden embeddings from real weights by running the
 /// l1_models suite with LUMEN_GOLDEN_WRITE=1. Review the resulting diff under
 /// crates/lumen-hub/tests/golden/ before committing.
@@ -515,6 +1010,43 @@ mod tests {
             parse_named_arg(&eq, "--profile").unwrap(),
             Some("darwin-arm64-metal".to_owned())
         );
+    }
+
+    #[test]
+    fn parses_data_plane_major_from_package() {
+        assert_eq!(
+            data_plane_major_from_content("package home_native.v1;\n").unwrap(),
+            1
+        );
+        assert_eq!(
+            data_plane_major_from_content("package lumen.control.v2;\n").unwrap(),
+            2
+        );
+        assert!(data_plane_major_from_content("package home_native;\n").is_err());
+        assert!(data_plane_major_from_content("syntax = \"proto3\";\n").is_err());
+    }
+
+    #[test]
+    fn parses_provenance_without_unknown_fields() {
+        let raw = r#"{
+            "schemaVersion": 1,
+            "mlService": {
+                "authority": "EdwinZhanCN/lumen-sdk",
+                "tag": "v1.3.2",
+                "commit": "9514d11c954abdaba8750acbc5054602cefb3eed",
+                "sha256": "d5a2f6fe8322a453b2f97bc50123d3fbcea2ae2655321272d63b673b28290f3f"
+            }
+        }"#;
+        let provenance: Provenance = serde_json::from_str(raw).expect("parse provenance");
+        assert_eq!(provenance.schema_version, 1);
+        assert_eq!(provenance.ml_service.tag, "v1.3.2");
+        assert_eq!(provenance.ml_service.sha256.len(), 64);
+    }
+
+    #[test]
+    fn rejects_unknown_provenance_shape() {
+        let raw = r#"{"schemaVersion": 2, "mlService": {}}"#;
+        assert!(serde_json::from_str::<Provenance>(raw).is_err());
     }
 
     #[test]

@@ -43,6 +43,28 @@ pub const BIOCLIP_DEFAULT_MODEL: &str = "bioclip-2";
 pub const BIOCLIP_CORE_DATASET: &str = "TreeOfLife200MCore";
 pub const BIOCLIP_FULL_DATASET: &str = "TreeOfLife200M";
 
+/// Canonical model options per capability service, in display order.
+/// The Docker env parser, CLI, and release manifest all read these tables
+/// instead of maintaining parallel allow-lists.
+pub const SIGLIP_MODELS: [&str; 2] = [SIGLIP_BASE_MODEL, SIGLIP_BRAVE_MODEL];
+pub const FACE_MODELS: [&str; 1] = [FACE_DEFAULT_MODEL];
+pub const OCR_MODELS: [&str; 1] = [OCR_DEFAULT_MODEL];
+pub const BIOCLIP_MODELS: [&str; 1] = [BIOCLIP_DEFAULT_MODEL];
+
+/// Canonical BioCLIP dataset options, in display order.
+pub const BIOCLIP_DATASETS: [&str; 2] = [BIOCLIP_CORE_DATASET, BIOCLIP_FULL_DATASET];
+
+/// Model options for a capability service. Unknown services have no options.
+pub fn models_for(service: &str) -> Option<&'static [&'static str]> {
+    match service {
+        "siglip" => Some(&SIGLIP_MODELS),
+        "face" => Some(&FACE_MODELS),
+        "ocr" => Some(&OCR_MODELS),
+        "bioclip" => Some(&BIOCLIP_MODELS),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Preset {
     pub name: &'static str,
@@ -131,6 +153,17 @@ pub fn capability_term(service: &str) -> Option<&'static CapabilityTerm> {
     CAPABILITIES.iter().find(|term| term.service == service)
 }
 
+/// Rust service package/crate name backing each capability service.
+pub fn service_package(service: &str) -> Option<&'static str> {
+    match service {
+        "siglip" => Some("siglip"),
+        "face" => Some("insightface"),
+        "ocr" => Some("ppocr"),
+        "bioclip" => Some("clip"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +178,24 @@ mod tests {
                     preset.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn every_service_has_a_package() {
+        for service in SERVICE_ORDER {
+            assert!(
+                service_package(service).is_some(),
+                "service {service} has no package mapping"
+            );
+        }
+    }
+
+    #[test]
+    fn every_service_has_model_options() {
+        for service in SERVICE_ORDER {
+            let models = models_for(service).expect("service has model options");
+            assert!(!models.is_empty(), "service {service} has no models");
         }
     }
 

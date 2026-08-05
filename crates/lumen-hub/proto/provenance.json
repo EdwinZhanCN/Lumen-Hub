@@ -1,0 +1,9 @@
+{
+  "mlService": {
+    "authority": "EdwinZhanCN/lumen-sdk",
+    "commit": "9514d11c954abdaba8750acbc5054602cefb3eed",
+    "sha256": "d5a2f6fe8322a453b2f97bc50123d3fbcea2ae2655321272d63b673b28290f3f",
+    "tag": "v1.3.2"
+  },
+  "schemaVersion": 1
+}
