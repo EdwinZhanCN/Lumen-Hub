@@ -633,18 +633,21 @@ fn parse_named_arg(args: &[String], flag: &str) -> Result<Option<String>, String
 }
 
 /// Verifies the proto module contract:
-///   - `ml_service.proto` is vendored byte-for-byte from the pinned Lumen-SDK
-///     source recorded in `provenance.json`, and its package major matches
+///   - `ml_service.proto` is consistent with the Lumen-SDK source record in
+///     `provenance.json`, and its package major matches
 ///     `lumen_schema::DATA_PLANE_MAJOR`;
 ///   - `buf lint` passes;
 ///   - `buf breaking` (WIRE_JSON) against the fixed current-major baseline
 ///     tag passes.
 ///
-/// `--sync-sdk <tag>` is the single re-vendoring entry point: it fetches
-/// `ml_service.proto` from the Lumen-SDK release at `<tag>`, refuses to
-/// vendor a different data-plane major, writes the vendored copy, and updates
-/// `provenance.json`. Regenerate the daemon code (`cargo build`) and review
-/// the diff before committing.
+/// Note: the provenance check is self-consistent by design (vendored bytes vs
+/// the in-repo `provenance.json` record); it does not re-fetch the SDK. The
+/// byte-for-byte source guarantee comes from the single re-vendoring entry
+/// point: `--sync-sdk <tag>` fetches `ml_service.proto` from the Lumen-SDK
+/// release at `<tag>`, refuses to vendor a different data-plane major, writes
+/// the vendored copy, and updates `provenance.json`. Vendored files must only
+/// change through that command; regenerate the daemon code (`cargo build`) and
+/// review the diff before committing.
 fn contract_check(args: Vec<String>) -> Result<(), String> {
     let root = workspace_root()?;
     let proto_dir = root.join("crates/lumen-hub/proto");
@@ -689,11 +692,14 @@ fn contract_check(args: Vec<String>) -> Result<(), String> {
         ));
     }
     println!(
-        "provenance ok — ml_service.proto matches {} {} ({}, commit {})",
+        "provenance ok — vendored ml_service.proto matches provenance.json ({}, {}, commit {}, sha {})",
         provenance.ml_service.authority,
         provenance.ml_service.tag,
-        &vendored_sha[..12],
-        &provenance.ml_service.commit[..12]
+        &provenance.ml_service.commit[..12],
+        &vendored_sha[..12]
+    );
+    println!(
+        "note: consistency with the in-repo record only; byte-for-byte SDK source is guaranteed by `--sync-sdk <tag>`, the single re-vendoring entry point"
     );
 
     // 2. buf lint.
