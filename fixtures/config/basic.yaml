@@ -3,7 +3,7 @@
 metadata:
   version: 0.1.0
   region: other
-  cache_dir: ~/.lumen/models
+  cache_dir: /var/lib/lumen/models
 deployment:
   mode: hub
   service: null

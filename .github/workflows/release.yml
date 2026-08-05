@@ -47,16 +47,13 @@ jobs:
                     echo "Mode: publish"
                   fi
 
-    # Burn statically links its compute backend, so each hub archive is just the
-    # binaries + warmup assets + license (no ONNX Runtime / MNN libraries).
-    # `*-gpu` = wgpu (Vulkan/GL/DX12 at runtime). `cuda`/`rocm` install their
-    # vendor toolkit in-job (no GPU needed to build). `jetson` is the arm64 CUDA
-    # build done inside an L4T container for ABI-correct Tegra artifacts. GPU
-    # profiles are build-and-package only; GPU E2E happens on self-hosted runners.
+    # The release surface is deliberately smaller than xtask's source-build
+    # profile table. Desktop profiles plus the Linux CPU/Vulkan/CUDA paths are
+    # published; ROCm, generic arm64 GPU, and Jetson remain source recipes until
+    # they have a continuously exercised owner.
     dist:
         name: hub-${{ matrix.profile }}
         runs-on: ${{ matrix.os }}
-        container: ${{ matrix.container }}
         needs:
             - validate-release
         strategy:
@@ -69,47 +66,22 @@ jobs:
                     # Windows
                     - { profile: windows-x64-cpu, os: windows-2025 }
                     - { profile: windows-x64-gpu, os: windows-2025 }
-                    # Linux x64 — built on the oldest glibc we can (22.04/2.35, not
-                    # 24.04/2.39): glibc is forward-compatible only, so an older build
-                    # host maximizes which end-user distros the shipped binary runs on.
-                    # 20.04 is not an option: GitHub retired the ubuntu-20.04 hosted
-                    # runner in April 2025, and AMD's ROCm 7.1.1 apt repo doesn't
-                    # publish a focal channel either — 22.04 is the actual floor.
+                    # Linux x64 is built on Ubuntu 22.04 to keep the glibc floor
+                    # below the current hosted-runner default.
                     - { profile: linux-x64-cpu, os: ubuntu-22.04 }
                     - { profile: linux-x64-gpu, os: ubuntu-22.04 }
                     - { profile: linux-x64-cuda, os: ubuntu-22.04, toolkit: cuda }
-                    - { profile: linux-x64-rocm, os: ubuntu-22.04, toolkit: rocm }
                     # Linux arm64
                     - { profile: linux-arm64-cpu, os: ubuntu-22.04-arm }
-                    - { profile: linux-arm64-gpu, os: ubuntu-22.04-arm }
-                    - {
-                          profile: linux-arm64-jetson,
-                          os: ubuntu-24.04-arm,
-                          container: "nvcr.io/nvidia/l4t-cuda:12.2.12-devel",
-                      }
 
         steps:
-            - name: Install container base deps
-              if: matrix.container != ''
-              run: apt-get update && apt-get install -y --no-install-recommends curl ca-certificates build-essential pkg-config git
-
             - uses: actions/checkout@v4
               with:
                   persist-credentials: false
 
-            # dtolnay's action needs a normal runner; inside the L4T container we
-            # bootstrap rustup directly.
-            - name: Install Rust (host runner)
-              if: matrix.container == ''
-              uses: dtolnay/rust-toolchain@master
+            - uses: dtolnay/rust-toolchain@master
               with:
                   toolchain: "1.94.1"
-
-            - name: Install Rust (container)
-              if: matrix.container != ''
-              run: |
-                  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.94.1 --profile minimal
-                  echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
             - name: Install CUDA toolkit
               if: matrix.toolkit == 'cuda'
@@ -117,83 +89,11 @@ jobs:
               with:
                   method: network
 
-            # cubecl-hip-sys 7.1.5280200 (pinned by cubecl-hip 0.10) ships HIP
-            # 52802 bindings, which require ROCm 7.1.1 — its build.rs reads
-            # `hipconfig --version` and enables the matching feature, so the
-            # installed ROCm must match exactly (7.1.0 bindings are unreleased).
-            - name: Install ROCm toolkit
-              if: matrix.toolkit == 'rocm'
-              run: |
-                  set -euo pipefail
-                  sudo apt-get update
-                  sudo apt-get install -y wget gnupg
-                  sudo mkdir -p /etc/apt/keyrings
-                  wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
-                  echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.1.1 jammy main' | sudo tee /etc/apt/sources.list.d/rocm.list
-                  # Ubuntu's universe repo ships conflicting rocminfo/rocm-cmake/hipcc
-                  # versions; prefer the AMD repo so the SDK's pinned deps resolve.
-                  printf 'Package: *\nPin: origin "repo.radeon.com"\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600
-                  sudo apt-get update
-                  # rocm-hip-sdk pulls the runtime/headers; hipcc ships the
-                  # `hipconfig` utility that cubecl-hip-sys runs at build time.
-                  sudo apt-get install -y rocm-hip-sdk hipcc
-                  # ROCm 7.x installs to /opt/rocm-<ver>; rocm-hip-sdk alone does
-                  # not always create the /opt/rocm symlink, so resolve the real
-                  # install dir instead of hardcoding it.
-                  ROCM_DIR="$(ls -d /opt/rocm /opt/rocm-* 2>/dev/null | sort -V | tail -n1)"
-                  test -n "$ROCM_DIR" || { echo "no ROCm install under /opt"; exit 1; }
-                  echo "Resolved ROCm at: $ROCM_DIR"
-                  # cubecl-hip-sys runs `hipconfig` from PATH (not from ROCM_PATH),
-                  # and its location varies across ROCm layouts. Find it and put
-                  # its directory on PATH so the build can derive the link paths.
-                  HIPCONFIG="$(find "$ROCM_DIR" /opt/rocm* -name hipconfig -type f 2>/dev/null | head -n1)"
-                  if [ -z "$HIPCONFIG" ]; then
-                      echo "hipconfig not found; ROCm bin layout:" >&2
-                      ls -la "$ROCM_DIR/bin" 2>/dev/null | grep -i hip >&2 || true
-                      exit 1
-                  fi
-                  echo "Found hipconfig at: $HIPCONFIG"
-                  echo "$(dirname "$HIPCONFIG")" >> "$GITHUB_PATH"
-                  echo "$ROCM_DIR/bin" >> "$GITHUB_PATH"
-                  echo "HIP_PATH=$ROCM_DIR" >> "$GITHUB_ENV"
-                  echo "ROCM_PATH=$ROCM_DIR" >> "$GITHUB_ENV"
-                  # This ROCm layout ships hipconfig but omits the share/hip/version
-                  # file it reads, so `hipconfig --version` warns on stderr and
-                  # cubecl-hip-sys panics (it treats any stderr as fatal). Rebuild
-                  # the file from hip_version.h — the same header the bindings were
-                  # generated against, so the reported patch matches exactly.
-                  VER_FILE="$ROCM_DIR/share/hip/version"
-                  if [ ! -f "$VER_FILE" ]; then
-                      # Prefer the real header if present; otherwise this is a
-                      # runtime-only install (cubecl-hip-sys ships pre-generated
-                      # bindings and only links libamdhip64, so headers may be
-                      # absent). cubecl reads the *patch* from `hipconfig` and
-                      # enables hip_<patch>; we pin the AMD repo to 7.1.1 and the
-                      # crate to 7.1.5280200 whose sole HIP feature is hip_52802,
-                      # so that patch is fixed.
-                      HDR="$(find "$ROCM_DIR" -name hip_version.h 2>/dev/null | head -n1)"
-                      if [ -n "$HDR" ]; then
-                          MAJ="$(awk '/define HIP_VERSION_MAJOR/{print $3}' "$HDR")"
-                          MIN="$(awk '/define HIP_VERSION_MINOR/{print $3}' "$HDR")"
-                          PAT="$(awk '/define HIP_VERSION_PATCH/{print $3}' "$HDR")"
-                          GIT="$(awk '/define HIP_VERSION_GITHASH/{gsub(/"/,"",$3);print $3}' "$HDR")"
-                      else
-                          MAJ=7; MIN=1; PAT=52802; GIT=""
-                      fi
-                      [ -n "$GIT" ] || GIT=rocm711
-                      echo "Synthesizing $VER_FILE: $MAJ.$MIN.$PAT-$GIT"
-                      sudo mkdir -p "$(dirname "$VER_FILE")"
-                      printf 'HIP_VERSION_MAJOR=%s\nHIP_VERSION_MINOR=%s\nHIP_VERSION_PATCH=%s\nHIP_VERSION_GITHASH=%s\n' \
-                          "$MAJ" "$MIN" "$PAT" "$GIT" | sudo tee "$VER_FILE" >/dev/null
-                  fi
-                  # Must print the version with empty stderr or cubecl-hip-sys panics.
-                  "$HIPCONFIG" --version
-
             # Each runner builds its own native target; no cross toolchain needed.
             - name: Build hub dist profile
               run: cargo xtask dist --profile ${{ matrix.profile }}
 
-            # bash, not pwsh: PowerShell isn't present in the L4T container.
+            # Use one layout check across all hosted runners.
             - name: Check hub dist layout
               shell: bash
               run: |
@@ -369,8 +269,8 @@ jobs:
                   set -euo pipefail
                   for p in darwin-arm64-metal darwin-arm64-cpu \
                            windows-x64-cpu windows-x64-gpu \
-                           linux-x64-cpu linux-x64-gpu linux-x64-cuda linux-x64-rocm \
-                           linux-arm64-cpu linux-arm64-gpu linux-arm64-jetson; do
+                           linux-x64-cpu linux-x64-gpu linux-x64-cuda \
+                           linux-arm64-cpu; do
                     test -f "release-assets/lumen-hub-${p}.zip"
                   done
                   test -f release-assets/lumen-cli-installer.sh
@@ -424,10 +324,10 @@ jobs:
                   | \`linux-x64-cpu\` | CPU | \`lumen-hub-linux-x64-cpu.zip\` |
                   | \`linux-x64-gpu\` | wgpu (Vulkan/GL) | \`lumen-hub-linux-x64-gpu.zip\` |
                   | \`linux-x64-cuda\` | CUDA | \`lumen-hub-linux-x64-cuda.zip\` |
-                  | \`linux-x64-rocm\` | ROCm | \`lumen-hub-linux-x64-rocm.zip\` |
                   | \`linux-arm64-cpu\` | CPU | \`lumen-hub-linux-arm64-cpu.zip\` |
-                  | \`linux-arm64-gpu\` | wgpu (Vulkan/GL) | \`lumen-hub-linux-arm64-gpu.zip\` |
-                  | \`linux-arm64-jetson\` | CUDA (L4T) | \`lumen-hub-linux-arm64-jetson.zip\` |
+
+                  ROCm, generic Linux arm64 GPU, and Jetson profiles remain
+                  source-build recipes and are not release artifacts.
 
                   ## Generated Notes
                   EOF
@@ -452,10 +352,7 @@ jobs:
                       release-assets/lumen-hub-linux-x64-cpu.zip
                       release-assets/lumen-hub-linux-x64-gpu.zip
                       release-assets/lumen-hub-linux-x64-cuda.zip
-                      release-assets/lumen-hub-linux-x64-rocm.zip
                       release-assets/lumen-hub-linux-arm64-cpu.zip
-                      release-assets/lumen-hub-linux-arm64-gpu.zip
-                      release-assets/lumen-hub-linux-arm64-jetson.zip
                       release-assets/lumen-cli-aarch64-apple-darwin.tar.xz
                       release-assets/lumen-cli-aarch64-apple-darwin.tar.xz.sha256
                       release-assets/lumen-cli-aarch64-unknown-linux-gnu.tar.xz

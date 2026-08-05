@@ -58,10 +58,9 @@ COPY --link --chmod=755 ${DIST}/bin/ /opt/lumen/bin/
 COPY --link ${DIST}/warmup/ /opt/lumen/warmup/
 COPY --link ${DIST}/LICENSE ${DIST}/README.md /opt/lumen/
 
-# Complete Docker service catalog. Published Compose files use the strict
-# LUMEN_REGION / LUMEN_PRESET environment contract to resolve the active set.
-# With no Docker variables, this remains a valid standalone file config.
-COPY --link packaging/docker/config.default.yaml /etc/lumen/config.yaml
+# Docker configuration is rendered directly from explicit LUMEN_* intent.
+# A mounted hand-written config remains available by passing
+# `--config /path/to/config.yaml`; the two sources cannot be combined.
 
 # Model weights are fetched on first start into the cache dir; keep them on a
 # volume so they survive image updates.
@@ -76,4 +75,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30m --start-interval=10s 
     CMD ["/opt/lumen/bin/lumen-hub", "healthcheck"]
 
 ENTRYPOINT ["/opt/lumen/bin/lumen-hub"]
-CMD ["--config", "/etc/lumen/config.yaml"]

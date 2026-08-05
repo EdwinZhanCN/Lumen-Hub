@@ -1,9 +1,8 @@
 # Lumen Hub in Docker
 
-Container images for running the hub on a Linux server or NAS. The image runs
-`lumen-hub --config /etc/lumen/config.yaml`, then applies the strict Docker
-environment contract described below. Models are cached on the `/models`
-volume.
+Container images for running the hub on a Linux server or NAS. The image turns
+the strict Docker environment intent below into a complete validated config at
+startup. Models are cached on the `/models` volume.
 
 ## Pick a tag
 
@@ -60,22 +59,24 @@ Published Compose files set these variables:
 | `LUMEN_PRESET` | `minimal`, `basic`, `brave`, `custom` | Complete supported capability plan |
 | `LUMEN_SERVICES` | comma-separated `siglip`, `face`, `ocr`, `bioclip` | Required with `custom` |
 | `LUMEN_SIGLIP_MODEL` | `siglip2-base-patch16-224`, `siglip2-so400m-patch14-384` | Optional custom semantic model |
-| `LUMEN_FACE_MODEL` | `antelopev2` | Optional custom face model |
-| `LUMEN_OCR_MODEL` | `pp-ocrv6-small` | Optional custom OCR Text Recognition model |
-| `LUMEN_BIOCLIP_MODEL` | `bioclip-2` | Optional custom species model |
 | `LUMEN_BIOCLIP_DATASET` | `TreeOfLife200MCore`, `TreeOfLife200M` | Optional custom species catalog |
 
-Model variables are legal only with `LUMEN_PRESET=custom`, and only for a
-service listed in `LUMEN_SERVICES`. Invalid combinations fail before model
-download. `basic` is the published default and enables Image Semantic Analysis,
+The two optional custom values are legal only with `LUMEN_PRESET=custom`.
+Invalid combinations fail before model download. Published Compose files select
+`basic` by default; it enables Image Semantic Analysis,
 Person Recognition, OCR Text Recognition, and BioCLIP Species Recognition with
 the Core catalog.
 
-Advanced operators can still mount a complete yaml over
-`/etc/lumen/config.yaml` (see `config.default.yaml` or
-`crates/lumen-hub/examples/`). Remove the Docker configuration variables when
-the mounted file should remain authoritative; otherwise the allow-listed
-variables intentionally update it.
+Advanced operators can mount a complete YAML and override the container command:
+
+```bash
+docker run --rm --network host -v "$PWD/config.yaml:/etc/lumen/config.yaml:ro" \
+  --entrypoint /opt/lumen/bin/lumen-hub \
+  ghcr.io/edwinzhancn/lumen-hub:cpu --config /etc/lumen/config.yaml
+```
+
+Do not pass `LUMEN_*` variables when using a file config. File config and Docker
+environment intent are deliberately exclusive.
 
 The image exposes a Docker health check backed by the standard gRPC health
 service. It remains in `starting` during the first model download and becomes

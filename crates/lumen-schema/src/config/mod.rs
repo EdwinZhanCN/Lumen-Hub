@@ -5,4 +5,7 @@ pub use lumen_config::{
     BatchingConfig, ConfigValidationError, Deployment, LumenConfig, Mdns, Metadata, Mode,
     ModelConfig, Region, Runtime, ServerConfig, ServiceConfig, ServiceName,
 };
-pub use render::{RenderOptions, custom_config, preset_config};
+pub use render::{
+    CONFIG_VERSION, ConfigTarget, MODEL_PRECISION, RenderOptions, custom_config, preset_config,
+    preset_yaml, to_yaml,
+};

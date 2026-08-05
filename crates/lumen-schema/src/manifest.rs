@@ -1,14 +1,13 @@
 //! Schema-versioned Hub release manifest.
 //!
-//! `HubManifest` is the single release catalog published with every Hub
-//! release: capability Exact Terms, preset/custom options, model and dataset
-//! options, resource guidance, dist platforms, artifact digests, and protocol
-//! provenance. CLI/Launcher/Docker consume the underlying constants directly;
-//! Site and Desktop consume this manifest (via the Photos `lumen.lock.json`
-//! catalog sync) instead of maintaining parallel constants.
+//! `HubManifest` is the immutable release record published with every Hub
+//! release. Runtime configuration semantics stay in this crate; the manifest is
+//! only a serialized projection for installers and release tooling. Consumers
+//! should read the smallest fields they need rather than reproduce the complete
+//! Hub model.
 //!
-//! The builder pulls everything from the canonical preset/capability tables in
-//! this crate; xtask supplies the dist profiles and artifact digests.
+//! The builder pulls preset/capability data from the canonical tables in this
+//! crate; xtask supplies only profiles that have an actual release artifact.
 
 use std::collections::BTreeMap;
 

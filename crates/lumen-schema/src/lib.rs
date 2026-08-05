@@ -6,9 +6,9 @@ pub mod preset;
 pub mod result;
 
 pub use config::{
-    BatchingConfig, ConfigValidationError, Deployment, LumenConfig, Mdns, Metadata, Mode,
-    ModelConfig, Region, RenderOptions, Runtime, ServerConfig, ServiceConfig, ServiceName,
-    custom_config, preset_config,
+    BatchingConfig, CONFIG_VERSION, ConfigTarget, ConfigValidationError, Deployment, LumenConfig,
+    MODEL_PRECISION, Mdns, Metadata, Mode, ModelConfig, Region, RenderOptions, Runtime,
+    ServerConfig, ServiceConfig, ServiceName, custom_config, preset_config, preset_yaml, to_yaml,
 };
 pub use manifest::{
     ArtifactInfo, DATA_PLANE_MAJOR, HubManifest, MANIFEST_SCHEMA_VERSION, ManifestArtifact,

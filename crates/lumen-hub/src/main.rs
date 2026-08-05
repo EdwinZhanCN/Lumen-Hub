@@ -1,3 +1,5 @@
+mod config_command;
+
 use std::{
     env,
     ffi::OsString,
@@ -59,6 +61,16 @@ const RUNTIME_STACK_SIZE: usize = 256 * 1024 * 1024;
 
 fn main() {
     let args = env::args_os().collect::<Vec<_>>();
+    if config_command::is_render_command(&args) {
+        match config_command::run_render_command(args) {
+            Ok(yaml) => print!("{yaml}"),
+            Err(error) => {
+                eprintln!("error: {error}");
+                process::exit(2);
+            }
+        }
+        return;
+    }
     if is_healthcheck_command(&args) {
         run_healthcheck_command(args);
         return;
@@ -152,17 +164,24 @@ where
     let logs = Arc::new(LogBuffer::new());
     init_logging(cli.log_level, Arc::clone(&logs))?;
     info!("lumen-hub starting");
-    info!(config = %cli.config_path.display(), "loading config");
-    let mut config = load_config(&cli.config_path)?;
     let docker_input = DockerConfigInput::from_process_env()?;
-    if !docker_input.is_empty() {
-        docker_input.apply(&mut config)?;
-        info!(
-            region = ?config.metadata.region,
-            services = %config.deployment_service_names().join(", "),
-            "applied Docker environment config"
-        );
-    }
+    let config = match (&cli.config_path, docker_input.is_empty()) {
+        (Some(path), true) => {
+            info!(config = %path.display(), "loading file config");
+            load_config(path)?
+        }
+        (None, false) => {
+            let config = docker_input.render("/models")?;
+            info!(
+                region = ?config.metadata.region,
+                services = %config.deployment_service_names().join(", "),
+                "rendered Docker environment config"
+            );
+            config
+        }
+        (Some(_), false) => return Err(StartupError::ConflictingConfigSources),
+        (None, true) => return Err(StartupError::MissingConfigSource),
+    };
 
     if config.deployment.mode != Mode::Hub {
         return Err(StartupError::InvalidDeploymentMode {
@@ -403,10 +422,6 @@ where
             }
         }
     }
-
-    let config_path = config_path.ok_or_else(|| {
-        StartupError::InvalidArgument("missing required argument `--config <path>`".to_owned())
-    })?;
 
     Ok(CliArgs {
         config_path,
@@ -757,10 +772,14 @@ fn print_usage() {
         "\
 Usage:
   lumen-hub --config <path> [--port <port>] [--log-level <level>]
+  lumen-hub                         # with LUMEN_PRESET Docker intent
+  lumen-hub config render --target <desktop|network> --preset <name> --region <region> --cache-dir <path>
   lumen-hub healthcheck [--endpoint <url>]
 
+Configuration sources are exclusive: use either --config or LUMEN_* environment variables.
+
 Options:
-  --config <path>       Path to lumen-config JSON file.
+  --config <path>       Path to a complete YAML or JSON config.
   --port <port>         Override config.server.port.
   --log-level <level>   DEBUG, INFO, WARNING, ERROR, or CRITICAL. Default: INFO.
   --endpoint <url>      gRPC endpoint to probe. Default: http://127.0.0.1:50051.
@@ -771,7 +790,7 @@ Options:
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CliArgs {
-    config_path: PathBuf,
+    config_path: Option<PathBuf>,
     port_override: Option<u16>,
     log_level: LogLevel,
 }
@@ -1007,6 +1026,14 @@ enum StartupError {
     #[error("invalid Docker environment config: {0}")]
     DockerConfig(#[from] DockerConfigError),
 
+    #[error(
+        "configuration sources conflict: do not combine `--config` with `LUMEN_*` environment variables"
+    )]
+    ConflictingConfigSources,
+
+    #[error("no configuration source: pass `--config <path>` or set `LUMEN_PRESET`")]
+    MissingConfigSource,
+
     #[error("model download failed: {0}")]
     ModelDownload(#[from] ModelDownloadError),
 
@@ -1080,16 +1107,18 @@ mod tests {
         ])
         .unwrap();
 
-        assert_eq!(args.config_path, PathBuf::from("config/lumen-config.json"));
+        assert_eq!(
+            args.config_path,
+            Some(PathBuf::from("config/lumen-config.json"))
+        );
         assert_eq!(args.port_override, Some(50_052));
         assert_eq!(args.log_level, LogLevel::Debug);
     }
 
     #[test]
-    fn parse_args_requires_config() {
-        let err = parse_args(["lumen-hub"]).unwrap_err();
-
-        assert!(matches!(err, StartupError::InvalidArgument(_)));
+    fn parse_args_allows_docker_environment_as_the_config_source() {
+        let args = parse_args(["lumen-hub"]).unwrap();
+        assert_eq!(args.config_path, None);
     }
 
     #[test]
@@ -1149,13 +1178,6 @@ mod tests {
             load_config(&path)
                 .unwrap_or_else(|error| panic!("expected `{}` to parse: {error}", path.display()));
         }
-
-        // The default config baked into the container image must stay parseable.
-        let docker_default = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../packaging/docker/config.default.yaml");
-        load_config(&docker_default).unwrap_or_else(|error| {
-            panic!("expected `{}` to parse: {error}", docker_default.display())
-        });
     }
 
     #[test]

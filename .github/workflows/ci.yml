@@ -82,9 +82,9 @@ jobs:
                   --test l0_lifecycle --test l0_infer --test l0_batcher
                   --test l0_control --test l0_contract
 
-    # Protocol contract: vendored ml_service.proto provenance (byte-for-byte
-    # against the pinned Lumen-SDK source), buf lint, and buf breaking
-    # (WIRE_JSON) against the fixed current-major baseline tag v0.1.1.
+    # Deterministic protocol check: committed provenance, package major, buf
+    # lint, and generated daemon drift. Remote SDK/tag and fixed-baseline proof
+    # lives in proto-contract.yml and runs only at the dependency boundary.
     contract:
         name: proto contract check
         runs-on: ubuntu-22.04
@@ -99,7 +99,7 @@ jobs:
                   curl -sSL https://github.com/bufbuild/buf/releases/download/v1.72.0/buf-Linux-x86_64 -o /usr/local/bin/buf
                   chmod +x /usr/local/bin/buf
                   buf --version
-            - name: Contract check (provenance + buf lint/breaking)
+            - name: Local contract check
               run: cargo run -q -p xtask -- contract-check
             # build.rs regenerates the daemon code into src/daemon; this step
             # fails when the committed generated code drifted from the protos.
