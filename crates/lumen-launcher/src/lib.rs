@@ -147,13 +147,13 @@ pub fn resolve_start_plan(options: StartOptions) -> Result<StartPlan, LauncherEr
         })
         .ok_or_else(|| {
             LauncherError::InvalidArgument(format!(
-                "bootstrap `{}` was not found; run `lumen-cli init` first or pass both `--config <path>` and `--profile <profile>`",
+                "bootstrap `{}` was not found; run `lumen-cli configure` first or pass both `--config <path>` and `--profile <profile>`",
                 bootstrap_path.display()
             ))
         })?;
     if !config_path.is_file() {
         return Err(LauncherError::InvalidArgument(format!(
-            "config `{}` does not exist; run `lumen-cli init` first or pass `--config <path>`",
+            "config `{}` does not exist; run `lumen-cli configure` first or pass `--config <path>`",
             config_path.display()
         )));
     }

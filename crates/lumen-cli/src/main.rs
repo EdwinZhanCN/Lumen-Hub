@@ -3,24 +3,126 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::OnceLock,
     time::Duration,
 };
 
 use cliclack::{confirm, input, intro, log, note, outro, select};
 use lumen_launcher::{
-    LaunchObserver, LauncherError, StartOptions, daemon, format_bytes, prepare_hub,
+    Bootstrap, LaunchObserver, LauncherError, StartOptions, daemon, format_bytes, prepare_hub,
     read_server_port, resolve_start_plan, setup, spawn_hub,
 };
 use thiserror::Error;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Language {
+    En,
+    ZhCn,
+}
+
+static LANGUAGE: OnceLock<Language> = OnceLock::new();
+
+fn language() -> Language {
+    *LANGUAGE.get_or_init(Language::detect)
+}
+
+fn text(en: &'static str, zh: &'static str) -> &'static str {
+    match language() {
+        Language::En => en,
+        Language::ZhCn => zh,
+    }
+}
+
+impl Language {
+    fn detect() -> Self {
+        ["LC_ALL", "LC_MESSAGES", "LANG"]
+            .into_iter()
+            .find_map(|name| {
+                env::var(name)
+                    .ok()
+                    .and_then(|value| Self::parse_locale(&value))
+            })
+            .unwrap_or(Self::En)
+    }
+
+    fn parse_locale(value: &str) -> Option<Self> {
+        let normalized = value
+            .trim()
+            .split(['.', '@'])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .replace('_', "-");
+        if normalized == "en" || normalized.starts_with("en-") {
+            return Some(Self::En);
+        }
+        if matches!(normalized.as_str(), "zh" | "zh-cn" | "zh-hans")
+            || normalized.starts_with("zh-cn-")
+            || normalized.starts_with("zh-hans-")
+        {
+            return Some(Self::ZhCn);
+        }
+        None
+    }
+
+    fn parse_explicit(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "en" => Some(Self::En),
+            "zh-cn" => Some(Self::ZhCn),
+            _ => None,
+        }
+    }
+}
+
+fn extract_language(mut args: Vec<String>) -> Result<(Language, Vec<String>), String> {
+    let mut selected = None;
+    let mut index = 1;
+    while index < args.len() {
+        if args[index] == "--lang" {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| "missing value for `--lang`".to_owned())?
+                .clone();
+            selected = Language::parse_explicit(&value);
+            if selected.is_none() {
+                return Err(format!(
+                    "unsupported language `{value}`; use `en` or `zh-CN`"
+                ));
+            }
+            args.drain(index..=index + 1);
+            continue;
+        }
+        if let Some(value) = args[index].strip_prefix("--lang=") {
+            selected = Language::parse_explicit(value);
+            if selected.is_none() {
+                return Err(format!(
+                    "unsupported language `{value}`; use `en` or `zh-CN`"
+                ));
+            }
+            args.remove(index);
+            continue;
+        }
+        index += 1;
+    }
+    Ok((selected.unwrap_or_else(Language::detect), args))
+}
+
 fn main() -> ExitCode {
-    match run(env::args().collect()) {
+    let (lang, args) = match extract_language(env::args().collect()) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = LANGUAGE.set(lang);
+    match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(CliError::Help) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("error: {error}");
+            eprintln!("{}: {error}", text("error", "错误"));
             ExitCode::FAILURE
         }
     }
@@ -28,7 +130,7 @@ fn main() -> ExitCode {
 
 fn run(args: Vec<String>) -> Result<(), CliError> {
     match args.get(1).map(String::as_str) {
-        Some("init") => init(),
+        Some("configure" | "init") => configure(),
         Some("run") => run_foreground(&args[2..]),
         Some("start") => start_background(&args[2..]),
         Some("stop") => stop(&args[2..]),
@@ -38,9 +140,10 @@ fn run(args: Vec<String>) -> Result<(), CliError> {
             print_help();
             Ok(())
         }
-        Some(other) => Err(CliError::InvalidArgument(format!(
-            "unknown command `{other}`"
-        ))),
+        Some(other) => Err(CliError::InvalidArgument(match language() {
+            Language::En => format!("unknown command `{other}`"),
+            Language::ZhCn => format!("未知命令 `{other}`"),
+        })),
     }
 }
 
@@ -59,11 +162,14 @@ fn run_foreground(args: &[String]) -> Result<(), CliError> {
     let plan = resolve_start_plan(options)?;
 
     note(
-        "Run plan",
+        text("Run plan", "运行计划"),
         format!(
-            "config: {}\nprofile: {}\nmanifest: {}",
+            "{}: {}\n{}: {}\n{}: {}",
+            text("config", "配置"),
             plan.config_path.display(),
+            text("profile", "发布 profile"),
             plan.profile,
+            text("manifest", "发布清单"),
             plan.manifest_url
         ),
     )?;
@@ -81,7 +187,10 @@ fn run_foreground(args: &[String]) -> Result<(), CliError> {
     let pid = running.id();
     daemon::write_pid_file(&paths.pid_file, pid)?;
 
-    outro("Lumen Hub output follows. Press Ctrl-C to stop.")?;
+    outro(text(
+        "Lumen Hub output follows. Press Ctrl-C to stop.",
+        "以下为 Lumen Hub 输出。按 Ctrl-C 停止。",
+    ))?;
     let status = running
         .wait()
         .map_err(|source| LauncherError::SpawnHub { path: hub, source })?;
@@ -109,17 +218,21 @@ fn start_background(args: &[String]) -> Result<(), CliError> {
     let paths = daemon::daemon_paths(&plan.lumen_dir);
 
     if let Some(pid) = daemon::check_running(&paths.pid_file)? {
-        return Err(CliError::InvalidArgument(format!(
-            "lumen-hub is already running (pid {pid})"
-        )));
+        return Err(CliError::InvalidArgument(match language() {
+            Language::En => format!("lumen-hub is already running (pid {pid})"),
+            Language::ZhCn => format!("lumen-hub 已在运行（pid {pid}）"),
+        }));
     }
 
     note(
-        "Start plan",
+        text("Start plan", "启动计划"),
         format!(
-            "config: {}\nprofile: {}\nmanifest: {}",
+            "{}: {}\n{}: {}\n{}: {}",
+            text("config", "配置"),
             plan.config_path.display(),
+            text("profile", "发布 profile"),
             plan.profile,
+            text("manifest", "发布清单"),
             plan.manifest_url
         ),
     )?;
@@ -127,7 +240,10 @@ fn start_background(args: &[String]) -> Result<(), CliError> {
     let mut observer = CliLaunchObserver;
     let hub = prepare_hub(&plan, &mut observer)?;
 
-    log::step("starting lumen-hub in background")?;
+    log::step(text(
+        "starting lumen-hub in background",
+        "正在后台启动 lumen-hub",
+    ))?;
     let pid = daemon::spawn_background(&daemon::BackgroundSpawnConfig {
         hub_path: hub,
         config_path: plan.config_path.clone(),
@@ -141,7 +257,8 @@ fn start_background(args: &[String]) -> Result<(), CliError> {
         .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], port)));
 
     log::step(format!(
-        "waiting for Lumen Hub readiness / 等待 Lumen Hub 就绪 ({addr})"
+        "{} ({addr})",
+        text("waiting for Lumen Hub readiness", "等待 Lumen Hub 就绪")
     ))?;
     let mut last_message = None;
     match daemon::wait_for_ready(
@@ -158,9 +275,19 @@ fn start_background(args: &[String]) -> Result<(), CliError> {
         },
     ) {
         Ok(()) => {
-            log::success(format!("lumen-hub started (pid {pid})"))?;
-            log::info(format!("logs: {}", paths.log_file.display()))?;
-            outro("Lumen Hub is running in the background.")?;
+            log::success(match language() {
+                Language::En => format!("lumen-hub started (pid {pid})"),
+                Language::ZhCn => format!("lumen-hub 已启动（pid {pid}）"),
+            })?;
+            log::info(format!(
+                "{}: {}",
+                text("logs", "日志"),
+                paths.log_file.display()
+            ))?;
+            outro(text(
+                "Lumen Hub is running in the background.",
+                "Lumen Hub 已在后台运行。",
+            ))?;
             Ok(())
         }
         Err(e) => {
@@ -176,10 +303,10 @@ fn start_background(args: &[String]) -> Result<(), CliError> {
 
 fn hub_status_message(status: &daemon::HubStatus) -> String {
     match status.phase {
-        daemon::HubPhase::Starting => "正在启动 / Starting".to_owned(),
+        daemon::HubPhase::Starting => text("Starting", "正在启动").to_owned(),
         daemon::HubPhase::Downloading => {
             let Some(progress) = &status.download else {
-                return "正在下载模型 / Downloading models".to_owned();
+                return text("Downloading models", "正在下载模型").to_owned();
             };
             let bytes = if progress.bytes_total == 0 {
                 format_bytes(progress.bytes_done)
@@ -191,16 +318,23 @@ fn hub_status_message(status: &daemon::HubStatus) -> String {
                 )
             };
             format!(
-                "正在下载模型 / Downloading models: {} · {} · {} ({}/{})",
-                progress.model, progress.file, bytes, progress.files_done, progress.files_total
+                "{}: {} · {} · {} ({}/{})",
+                text("Downloading models", "正在下载模型"),
+                progress.model,
+                progress.file,
+                bytes,
+                progress.files_done,
+                progress.files_total
             )
         }
-        daemon::HubPhase::Loading => "正在加载模型 / Loading models".to_owned(),
-        daemon::HubPhase::Warmup => "正在预热模型 / Warming up models".to_owned(),
-        daemon::HubPhase::Ready => "已就绪 / Ready".to_owned(),
-        daemon::HubPhase::Failed => format!("启动失败 / Startup failed: {}", status.error),
-        daemon::HubPhase::Stopping => "正在停止 / Stopping".to_owned(),
-        daemon::HubPhase::Unknown => "正在等待状态 / Waiting for status".to_owned(),
+        daemon::HubPhase::Loading => text("Loading models", "正在加载模型").to_owned(),
+        daemon::HubPhase::Warmup => text("Warming up models", "正在预热模型").to_owned(),
+        daemon::HubPhase::Ready => text("Ready", "已就绪").to_owned(),
+        daemon::HubPhase::Failed => {
+            format!("{}: {}", text("Startup failed", "启动失败"), status.error)
+        }
+        daemon::HubPhase::Stopping => text("Stopping", "正在停止").to_owned(),
+        daemon::HubPhase::Unknown => text("Waiting for status", "正在等待状态").to_owned(),
     }
 }
 
@@ -210,14 +344,17 @@ fn stop(args: &[String]) -> Result<(), CliError> {
     let paths = daemon::daemon_paths(&lumen_dir);
 
     let Some(pid) = daemon::check_running(&paths.pid_file)? else {
-        println!("lumen-hub is not running");
+        println!("{}", text("lumen-hub is not running", "lumen-hub 未运行"));
         return Ok(());
     };
 
-    println!("stopping lumen-hub (pid {pid})...");
+    println!(
+        "{} (pid {pid})...",
+        text("stopping lumen-hub", "正在停止 lumen-hub")
+    );
     daemon::stop_process(pid, Duration::from_secs(args.timeout))?;
     daemon::remove_pid_file(&paths.pid_file)?;
-    println!("lumen-hub stopped");
+    println!("{}", text("lumen-hub stopped", "lumen-hub 已停止"));
     Ok(())
 }
 
@@ -227,15 +364,30 @@ fn reload(args: &[String]) -> Result<(), CliError> {
     let paths = daemon::daemon_paths(&lumen_dir);
 
     if let Some(pid) = daemon::check_running(&paths.pid_file)? {
-        println!("stopping lumen-hub (pid {pid})...");
+        println!(
+            "{} (pid {pid})...",
+            text("stopping lumen-hub", "正在停止 lumen-hub")
+        );
         daemon::stop_process(pid, Duration::from_secs(10))?;
         daemon::remove_pid_file(&paths.pid_file)?;
-        println!("lumen-hub stopped");
+        println!("{}", text("lumen-hub stopped", "lumen-hub 已停止"));
     } else {
-        println!("lumen-hub is not running, starting fresh");
+        println!(
+            "{}",
+            text(
+                "lumen-hub is not running, starting fresh",
+                "lumen-hub 未运行，将直接启动"
+            )
+        );
     }
 
-    println!("starting lumen-hub with updated config...");
+    println!(
+        "{}",
+        text(
+            "starting lumen-hub with updated config...",
+            "正在使用更新后的配置启动 lumen-hub..."
+        )
+    );
     let start_args = args.to_vec();
     start_background(&start_args)
 }
@@ -257,17 +409,21 @@ fn validate(args: &[String]) -> Result<(), CliError> {
     };
 
     if !config_path.is_file() {
-        return Err(CliError::InvalidArgument(format!(
-            "config `{}` does not exist",
-            config_path.display()
-        )));
+        return Err(CliError::InvalidArgument(match language() {
+            Language::En => format!("config `{}` does not exist", config_path.display()),
+            Language::ZhCn => format!("配置文件 `{}` 不存在", config_path.display()),
+        }));
     }
 
     let contents = std::fs::read_to_string(&config_path)?;
 
     match setup::validate_yaml_config(&contents) {
         Ok(()) => {
-            println!("config is valid: {}", config_path.display());
+            println!(
+                "{}: {}",
+                text("config is valid", "配置有效"),
+                config_path.display()
+            );
             Ok(())
         }
         Err(e) => Err(CliError::InvalidArgument(format!(
@@ -277,50 +433,50 @@ fn validate(args: &[String]) -> Result<(), CliError> {
     }
 }
 
-// --- Init ---
+// --- Configure ---
 
-fn init() -> Result<(), CliError> {
+fn configure() -> Result<(), CliError> {
     intro(format!(" lumen-cli {VERSION} "))?;
-    log::info("Create a Lumen preset config for Lumen Hub.")?;
+    log::info(text(
+        "Configure Lumen Intelligence with a canonical Lumen Hub preset.",
+        "使用 Lumen Hub 的规范预设配置 Lumen Intelligence。",
+    ))?;
 
     let paths = setup::default_setup_paths()?;
-    if paths.config_path.exists() || paths.bootstrap_path.exists() {
-        let mut existing = String::new();
-        if paths.config_path.exists() {
-            existing.push_str(&format!("config: {}\n", paths.config_path.display()));
+    let existing = if paths.bootstrap_path.is_file() {
+        lumen_launcher::read_bootstrap(&paths.bootstrap_path).ok()
+    } else {
+        None
+    };
+    let config_path = existing
+        .as_ref()
+        .map(|bootstrap| PathBuf::from(&bootstrap.config_path))
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| paths.config_path.clone());
+    if config_path.exists() || paths.bootstrap_path.exists() {
+        let mut details = String::new();
+        if config_path.exists() {
+            details.push_str(&format!("config: {}\n", config_path.display()));
         }
         if paths.bootstrap_path.exists() {
-            existing.push_str(&format!("bootstrap: {}\n", paths.bootstrap_path.display()));
+            details.push_str(&format!("bootstrap: {}\n", paths.bootstrap_path.display()));
         }
-        note("Existing Lumen setup found", existing.trim_end())?;
-
-        let action = choose(
-            "How should init continue?",
-            &[
-                Choice::new("Overwrite ~/.lumen/config.yaml", true, None),
-                Choice::new("Create another config next to it", true, None),
-                Choice::new("Cancel", true, None),
-            ],
+        note(
+            text("Existing setup will be reconfigured", "将重新配置现有设置"),
+            details.trim_end(),
         )?;
-        match action {
-            0 => {}
-            1 => {
-                return init_to_paths(
-                    &paths.lumen_dir.join("config.generated.yaml"),
-                    &paths.lumen_dir.join("bootstrap.generated.json"),
-                );
-            }
-            _ => {
-                cliclack::outro_cancel("Init cancelled.")?;
-                return Ok(());
-            }
-        }
     }
 
-    init_to_paths(&paths.config_path, &paths.bootstrap_path)
+    configure_to_paths(&config_path, &paths.bootstrap_path, existing.as_ref())
 }
 
-fn init_to_paths(config_path: &Path, bootstrap_path: &Path) -> Result<(), CliError> {
+fn configure_to_paths(
+    config_path: &Path,
+    bootstrap_path: &Path,
+    existing: Option<&Bootstrap>,
+) -> Result<(), CliError> {
+    let previous_config = read_optional_file(config_path)?;
+    let previous_bootstrap = read_optional_file(bootstrap_path)?;
     let system = setup::detect_system();
     let memory = setup::detect_memory();
     let platform = setup::platform_profile(&system)?;
@@ -329,58 +485,99 @@ fn init_to_paths(config_path: &Path, bootstrap_path: &Path) -> Result<(), CliErr
     if let Some(total_gb) = memory.total_gb {
         detected.push_str(&format!("\nRAM: {total_gb:.1} GB"));
     } else {
-        detected.push_str("\nRAM: unknown");
+        detected.push_str(&format!("\nRAM: {}", text("unknown", "未知")));
     }
-    note("Detected system", detected)?;
+    note(text("Detected system", "检测到的系统"), detected)?;
 
-    let region = choose(
-        "Select download region:",
-        &[
-            Choice::new("other - Hugging Face", true, None),
-            Choice::new("cn - hf-mirror.com", true, None),
-        ],
-    )?;
-    let region = if region == 1 {
-        setup::REGION_CN
+    let region_order = if existing.is_some_and(|value| value.region == setup::REGION_CN) {
+        [setup::REGION_CN, setup::REGION_OTHER]
     } else {
-        setup::REGION_OTHER
+        [setup::REGION_OTHER, setup::REGION_CN]
     };
+    let region_choices = region_order
+        .iter()
+        .map(|region| {
+            if *region == setup::REGION_CN {
+                Choice::new("cn - hf-mirror.com", true, None)
+            } else {
+                Choice::new("other - Hugging Face", true, None)
+            }
+        })
+        .collect::<Vec<_>>();
+    let region_index = choose(
+        text("Select download region:", "选择下载区域："),
+        &region_choices,
+    )?;
+    let region = region_order[region_index];
 
-    let presets = setup::Preset::all();
+    let mut presets = setup::Preset::all().to_vec();
+    if let Some(current) = existing.and_then(|value| setup::Preset::by_name(&value.preset))
+        && let Some(index) = presets
+            .iter()
+            .position(|preset| preset.name == current.name)
+    {
+        presets.swap(0, index);
+    }
     let preset_choices = presets
         .iter()
         .map(|preset| {
             let warning = memory
                 .total_gb
                 .filter(|ram| *ram < preset.min_ram_gb as f64)
-                .map(|ram| {
-                    format!(
+                .map(|ram| match language() {
+                    Language::En => format!(
                         "detected RAM {ram:.1} GB below recommended {} GB",
                         preset.min_ram_gb
-                    )
+                    ),
+                    Language::ZhCn => format!(
+                        "检测到 {ram:.1} GB 内存，低于建议的 {} GB",
+                        preset.min_ram_gb
+                    ),
                 });
             Choice::new(preset.label(), true, warning)
         })
         .collect::<Vec<_>>();
-    let preset_index = choose("Select preset:", &preset_choices)?;
+    let preset_index = choose(text("Select preset:", "选择预设："), &preset_choices)?;
     let preset = presets[preset_index];
 
     if let Some(total_gb) = memory.total_gb
         && total_gb < preset.min_ram_gb as f64
     {
-        log::warning(format!(
-            "warning: `{}` recommends at least {} GB RAM; detected {total_gb:.1} GB",
-            preset.name, preset.min_ram_gb
-        ))?;
+        log::warning(match language() {
+            Language::En => format!(
+                "`{}` recommends at least {} GB RAM; detected {total_gb:.1} GB",
+                preset.name, preset.min_ram_gb
+            ),
+            Language::ZhCn => format!(
+                "`{}` 建议至少 {} GB 内存；当前检测到 {total_gb:.1} GB",
+                preset.name, preset.min_ram_gb
+            ),
+        })?;
     }
 
-    let backends = setup::backend_choices(platform);
-    let backend_index = choose_backend("Select backend package:", &backends)?;
-    let backend = backends[backend_index]
-        .backend
-        .ok_or_else(|| CliError::InvalidArgument("selected backend is unavailable".to_owned()))?;
+    let mut backends = setup::backend_choices(platform);
+    if let Some(profile) = existing.map(|value| value.release_profile.as_str())
+        && let Some(index) = backends.iter().position(|choice| {
+            choice
+                .backend
+                .is_some_and(|backend| backend.release_profile == profile)
+        })
+    {
+        backends.swap(0, index);
+    }
+    let backend_index = choose_backend(
+        text("Select backend package:", "选择后端软件包："),
+        &backends,
+    )?;
+    let backend = backends[backend_index].backend.ok_or_else(|| {
+        CliError::InvalidArgument(
+            text("selected backend is unavailable", "所选后端当前不可用").to_owned(),
+        )
+    })?;
 
-    let default_cache = setup::default_setup_paths()?.cache_dir;
+    let default_cache = existing
+        .map(|value| PathBuf::from(&value.cache_dir))
+        .unwrap_or(setup::default_setup_paths()?.cache_dir);
     let cache_dir = prompt_cache_dir(&default_cache, preset.min_disk_gb)?;
 
     let selection = setup::SetupSelection {
@@ -393,22 +590,139 @@ fn init_to_paths(config_path: &Path, bootstrap_path: &Path) -> Result<(), CliErr
         config_path: config_path.to_path_buf(),
         bootstrap_path: bootstrap_path.to_path_buf(),
     };
-    let written = setup::write_setup(&selection)?;
 
-    log::success(format!("Created config: {}", written.config_path.display()))?;
-    log::success(format!(
-        "Created bootstrap: {}",
-        written.bootstrap_path.display()
-    ))?;
     note(
-        "Next steps",
+        text("Configuration to apply", "将应用的配置"),
         format!(
-            "Recommended dist profile: {}\nRun:\n  lumen-cli start",
-            written.bootstrap.release_profile,
+            "preset: {}\nregion: {}\nprofile: {}\ncache: {}",
+            selection.preset.name,
+            selection.region,
+            selection.backend.release_profile,
+            selection.cache_dir.display()
         ),
     )?;
-    outro("Lumen config is ready.")?;
+    if !confirm(text("Apply this configuration?", "应用此配置？"))
+        .initial_value(true)
+        .interact()?
+    {
+        cliclack::outro_cancel(text("Configuration cancelled.", "已取消配置。"))?;
+        return Ok(());
+    }
+
+    let written = setup::write_setup(&selection)?;
+    log::success(format!(
+        "{}: {}",
+        text("Config committed", "配置已提交"),
+        written.config_path.display()
+    ))?;
+    log::success(format!(
+        "{}: {}",
+        text("Bootstrap committed", "启动信息已提交"),
+        written.bootstrap_path.display()
+    ))?;
+
+    let daemon_paths = daemon::daemon_paths(&setup::default_setup_paths()?.lumen_dir);
+    let running = daemon::check_running(&daemon_paths.pid_file)?.is_some();
+    if running {
+        let restart_now = confirm(text(
+            "Lumen Hub is running. Restart it now to apply the configuration?",
+            "Lumen Hub 正在运行。现在重启以应用配置？",
+        ))
+        .initial_value(true)
+        .interact()?;
+        if restart_now {
+            match reload(&[]) {
+                Ok(()) => return Ok(()),
+                Err(start_error) => {
+                    rollback_running_reconfigure(
+                        config_path,
+                        previous_config.as_deref(),
+                        bootstrap_path,
+                        previous_bootstrap.as_deref(),
+                        start_error,
+                    )?;
+                    return Ok(());
+                }
+            }
+        }
+        note(
+            text("Restart required", "需要重启"),
+            text(
+                "The new configuration is saved but is not active. Run `lumen-cli reload` when ready.",
+                "新配置已保存但尚未生效。准备好后运行 `lumen-cli reload`。",
+            ),
+        )?;
+    } else {
+        note(
+            text("Next step", "下一步"),
+            format!(
+                "{}: {}\n  lumen-cli start",
+                text("Recommended release profile", "建议发布 profile"),
+                written.bootstrap.release_profile,
+            ),
+        )?;
+    }
+    outro(text(
+        "Lumen Intelligence configuration is ready.",
+        "Lumen Intelligence 配置已就绪。",
+    ))?;
     Ok(())
+}
+
+fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, CliError> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(CliError::Io(error)),
+    }
+}
+
+fn rollback_running_reconfigure(
+    config_path: &Path,
+    previous_config: Option<&[u8]>,
+    bootstrap_path: &Path,
+    previous_bootstrap: Option<&[u8]>,
+    start_error: CliError,
+) -> Result<(), CliError> {
+    let (Some(previous_config), Some(previous_bootstrap)) = (previous_config, previous_bootstrap)
+    else {
+        return Err(CliError::Daemon(match language() {
+            Language::En => format!(
+                "the new configuration could not start and no complete previous setup was available to restore: {start_error}"
+            ),
+            Language::ZhCn => format!("新配置无法启动，且没有完整的旧配置可供恢复：{start_error}"),
+        }));
+    };
+
+    setup::replace_setup_files(
+        config_path,
+        previous_config,
+        bootstrap_path,
+        previous_bootstrap,
+    )?;
+    log::warning(text(
+        "The new configuration could not start. The previous configuration was restored.",
+        "新配置无法启动，已恢复之前的配置。",
+    ))?;
+
+    match start_background(&[]) {
+        Ok(()) => Err(CliError::Daemon(match language() {
+            Language::En => format!(
+                "the new configuration was rejected; the previous Lumen Hub configuration is running again: {start_error}"
+            ),
+            Language::ZhCn => {
+                format!("新配置已被拒绝；之前的 Lumen Hub 配置已重新运行：{start_error}")
+            }
+        })),
+        Err(rollback_start_error) => Err(CliError::Daemon(match language() {
+            Language::En => format!(
+                "the new configuration could not start; the previous files were restored, but Lumen Hub could not be restarted. New error: {start_error}; rollback start error: {rollback_start_error}"
+            ),
+            Language::ZhCn => format!(
+                "新配置无法启动；旧文件已恢复，但 Lumen Hub 也无法重新启动。新配置错误：{start_error}；回滚启动错误：{rollback_start_error}"
+            ),
+        })),
+    }
 }
 
 // --- Observer ---
@@ -417,16 +731,20 @@ struct CliLaunchObserver;
 
 impl LaunchObserver for CliLaunchObserver {
     fn manifest_fetch_started(&mut self, _url: &str) {
-        let _ = log::step("fetching release manifest");
+        let _ = log::step(text("fetching release manifest", "正在获取发布清单"));
     }
 
     fn manifest_fetched(&mut self, version: &str) {
-        let _ = log::success(format!("release manifest {version}"));
+        let _ = log::success(format!(
+            "{} {version}",
+            text("release manifest", "发布清单")
+        ));
     }
 
     fn hub_already_installed(&mut self, hub_path: &Path) {
         let _ = log::success(format!(
-            "lumen-hub already installed: {}",
+            "{}: {}",
+            text("lumen-hub already installed", "lumen-hub 已安装"),
             hub_path.display()
         ));
     }
@@ -436,34 +754,54 @@ impl LaunchObserver for CliLaunchObserver {
             .map(format_bytes)
             .map(|size| format!(" ({size})"))
             .unwrap_or_default();
-        let _ = log::step(format!("downloading {file_name}{detail}"));
+        let _ = log::step(format!(
+            "{} {file_name}{detail}",
+            text("downloading", "正在下载")
+        ));
     }
 
     fn download_finished(&mut self, file_name: &str, written: u64) {
         let _ = log::success(format!(
-            "downloaded {file_name} ({})",
+            "{} {file_name} ({})",
+            text("downloaded", "已下载"),
             format_bytes(written)
         ));
     }
 
     fn verify_started(&mut self, path: &Path) {
-        let _ = log::step(format!("verifying {}", path.display()));
+        let _ = log::step(format!(
+            "{} {}",
+            text("verifying", "正在校验"),
+            path.display()
+        ));
     }
 
     fn verify_finished(&mut self, _path: &Path) {
-        let _ = log::success("checksum ok");
+        let _ = log::success(text("checksum ok", "校验和正确"));
     }
 
     fn extract_started(&mut self, path: &Path) {
-        let _ = log::step(format!("extracting {}", path.display()));
+        let _ = log::step(format!(
+            "{} {}",
+            text("extracting", "正在解压"),
+            path.display()
+        ));
     }
 
     fn hub_installed(&mut self, hub_path: &Path) {
-        let _ = log::success(format!("lumen-hub ready: {}", hub_path.display()));
+        let _ = log::success(format!(
+            "{}: {}",
+            text("lumen-hub ready", "lumen-hub 已就绪"),
+            hub_path.display()
+        ));
     }
 
     fn hub_starting(&mut self, hub_path: &Path) {
-        let _ = log::step(format!("starting {}", hub_path.display()));
+        let _ = log::step(format!(
+            "{} {}",
+            text("starting", "正在启动"),
+            hub_path.display()
+        ));
     }
 }
 
@@ -471,23 +809,29 @@ impl LaunchObserver for CliLaunchObserver {
 
 fn prompt_cache_dir(default_cache: &Path, min_disk_gb: u64) -> Result<PathBuf, CliError> {
     loop {
-        let selected_input: String = input("Model cache directory")
+        let selected_input: String = input(text("Model cache directory", "模型缓存目录"))
             .default_input(&setup::display_tilde(default_cache).display().to_string())
             .interact()?;
         let selected = setup::expand_tilde(selected_input.trim());
 
         if setup::is_dangerous_cache_dir(&selected) {
-            log::warning(format!(
-                "warning: `{}` is not a safe model cache directory",
-                selected.display()
-            ))?;
+            log::warning(match language() {
+                Language::En => format!(
+                    "`{}` is not a safe model cache directory",
+                    selected.display()
+                ),
+                Language::ZhCn => format!("`{}` 不是安全的模型缓存目录", selected.display()),
+            })?;
             continue;
         }
 
         if !selected.exists() {
-            let create = confirm(format!("Create `{}`?", selected.display()))
-                .initial_value(true)
-                .interact()?;
+            let create = confirm(match language() {
+                Language::En => format!("Create `{}`?", selected.display()),
+                Language::ZhCn => format!("创建 `{}`？", selected.display()),
+            })
+            .initial_value(true)
+            .interact()?;
             if !create {
                 continue;
             }
@@ -495,21 +839,33 @@ fn prompt_cache_dir(default_cache: &Path, min_disk_gb: u64) -> Result<PathBuf, C
         }
 
         if !selected.is_dir() {
-            log::warning(format!("`{}` is not a directory", selected.display()))?;
+            log::warning(match language() {
+                Language::En => format!("`{}` is not a directory", selected.display()),
+                Language::ZhCn => format!("`{}` 不是目录", selected.display()),
+            })?;
             continue;
         }
         if !setup::is_writable_dir(&selected) {
-            log::warning(format!("`{}` is not writable", selected.display()))?;
+            log::warning(match language() {
+                Language::En => format!("`{}` is not writable", selected.display()),
+                Language::ZhCn => format!("`{}` 不可写", selected.display()),
+            })?;
             continue;
         }
         if let Some(free_gb) = setup::free_disk_gb(&selected)
             && free_gb < min_disk_gb as f64
         {
-            log::warning(format!(
-                "warning: `{}` has {free_gb:.1} GB free; selected preset recommends at least {min_disk_gb} GB",
-                selected.display()
-            ))?;
-            let keep = confirm("Continue anyway?")
+            log::warning(match language() {
+                Language::En => format!(
+                    "`{}` has {free_gb:.1} GB free; selected preset recommends at least {min_disk_gb} GB",
+                    selected.display()
+                ),
+                Language::ZhCn => format!(
+                    "`{}` 仅剩 {free_gb:.1} GB；所选预设建议至少 {min_disk_gb} GB",
+                    selected.display()
+                ),
+            })?;
+            let keep = confirm(text("Continue anyway?", "仍然继续？"))
                 .initial_value(false)
                 .interact()?;
             if !keep {
@@ -728,18 +1084,23 @@ where
 }
 
 fn print_help() {
-    println!(
-        "\
+    match language() {
+        Language::En => println!(
+            "\
 Usage:
-  lumen-cli <command> [options]
+  lumen-cli [--lang en|zh-CN] <command> [options]
 
 Commands:
-  init       Create a Lumen preset config for lumen-hub
+  configure  Configure or reconfigure Lumen Intelligence
+  init       Alias for configure
   run        Run lumen-hub in the foreground (blocks until stopped)
   start      Start lumen-hub in the background
   stop       Stop the background lumen-hub process
   reload     Restart lumen-hub to pick up config changes
   validate   Validate a config file without starting the server
+
+Global options:
+  --lang <language>      UI language: en or zh-CN; defaults from LC_ALL, LC_MESSAGES, LANG
 
 Options for run/start/reload:
   --config <path>        Path to config YAML
@@ -752,7 +1113,37 @@ Options for stop:
 
 Options for validate:
   --config <path>        Path to config YAML to validate"
-    );
+        ),
+        Language::ZhCn => println!(
+            "\
+用法：
+  lumen-cli [--lang en|zh-CN] <命令> [选项]
+
+命令：
+  configure  配置或重新配置 Lumen Intelligence
+  init       configure 的兼容别名
+  run        在前台运行 lumen-hub（阻塞直到停止）
+  start      在后台启动 lumen-hub
+  stop       停止后台 lumen-hub 进程
+  reload     重启 lumen-hub 以应用配置变更
+  validate   在不启动服务器的情况下验证配置
+
+全局选项：
+  --lang <语言>          界面语言：en 或 zh-CN；默认依次读取 LC_ALL、LC_MESSAGES、LANG
+
+run/start/reload 选项：
+  --config <路径>        配置 YAML 路径
+  --bootstrap <路径>     bootstrap JSON 路径
+  --manifest-url <URL>   覆盖 release manifest URL
+  --profile <profile>    选择发布 profile
+
+stop 选项：
+  --timeout <秒>         强制停止前的宽限期（默认：10）
+
+validate 选项：
+  --config <路径>        要验证的配置 YAML 路径"
+        ),
+    }
 }
 
 #[derive(Debug, Error)]
@@ -821,5 +1212,29 @@ mod tests {
         let args = vec!["--timeout=5".to_owned()];
         let parsed = StopArgs::parse(&args).unwrap();
         assert_eq!(parsed.timeout, 5);
+    }
+
+    #[test]
+    fn language_flag_is_removed_before_command_parsing() {
+        let args = vec![
+            "lumen-cli".to_owned(),
+            "--lang=zh-CN".to_owned(),
+            "validate".to_owned(),
+        ];
+        let (language, args) = extract_language(args).unwrap();
+        assert_eq!(language, Language::ZhCn);
+        assert_eq!(args, vec!["lumen-cli", "validate"]);
+    }
+
+    #[test]
+    fn language_parser_accepts_locale_forms_and_rejects_unknown_languages() {
+        assert_eq!(Language::parse_locale("zh_CN.UTF-8"), Some(Language::ZhCn));
+        assert_eq!(Language::parse_locale("zh-Hans-CN"), Some(Language::ZhCn));
+        assert_eq!(Language::parse_locale("zh-TW"), None);
+        assert_eq!(Language::parse_locale("en-US"), Some(Language::En));
+        assert_eq!(Language::parse_locale("fr-FR"), None);
+        assert_eq!(Language::parse_explicit("zh-CN"), Some(Language::ZhCn));
+        assert_eq!(Language::parse_explicit("zh-TW"), None);
+        assert_eq!(Language::parse_explicit("en-US"), None);
     }
 }

@@ -229,7 +229,7 @@ pub struct ServiceConfig {
     pub models: BTreeMap<String, ModelConfig>,
 }
 
-/// Unified configuration schema for all Lumen ML services.
+/// Unified configuration schema for all Lumen Intelligence services.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Validate, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LumenConfig {

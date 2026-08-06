@@ -59,17 +59,6 @@ pub fn write_setup(selection: &SetupSelection) -> Result<WrittenSetup, SetupErro
     let config_yaml = render_config(selection.preset, &selection.region, &selection.cache_dir)?;
     validate_yaml_config(&config_yaml)?;
 
-    if let Some(parent) = selection.config_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| SetupError::CreateDir {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    fs::write(&selection.config_path, config_yaml).map_err(|source| SetupError::WriteFile {
-        path: selection.config_path.clone(),
-        source,
-    })?;
-
     let bootstrap = Bootstrap {
         version: selection.version.clone(),
         region: selection.region.clone(),
@@ -80,20 +69,14 @@ pub fn write_setup(selection: &SetupSelection) -> Result<WrittenSetup, SetupErro
         cache_dir: selection.cache_dir.display().to_string(),
         config_path: selection.config_path.display().to_string(),
     };
-    let bootstrap_json = serde_json::to_string_pretty(&bootstrap)?;
+    let bootstrap_json = serde_json::to_string_pretty(&bootstrap)? + "\n";
 
-    if let Some(parent) = selection.bootstrap_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| SetupError::CreateDir {
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-    fs::write(&selection.bootstrap_path, bootstrap_json + "\n").map_err(|source| {
-        SetupError::WriteFile {
-            path: selection.bootstrap_path.clone(),
-            source,
-        }
-    })?;
+    replace_setup_files(
+        &selection.config_path,
+        config_yaml.as_bytes(),
+        &selection.bootstrap_path,
+        bootstrap_json.as_bytes(),
+    )?;
 
     Ok(WrittenSetup {
         config_path: selection.config_path.clone(),
@@ -101,6 +84,140 @@ pub fn write_setup(selection: &SetupSelection) -> Result<WrittenSetup, SetupErro
         bootstrap,
     })
 }
+
+/// Commits the generated config and bootstrap as one recoverable filesystem
+/// transaction. The bootstrap is the launcher pointer, so neither file is
+/// exposed until both candidates are complete and fsynced. Existing files are
+/// restored if either replacement fails.
+pub fn replace_setup_files(
+    config_path: &Path,
+    config: &[u8],
+    bootstrap_path: &Path,
+    bootstrap: &[u8],
+) -> Result<(), SetupError> {
+    ensure_parent(config_path)?;
+    ensure_parent(bootstrap_path)?;
+
+    let nonce = format!("{}-{}", std::process::id(), setup_nonce());
+    let config_candidate = sibling_path(config_path, &format!("candidate-{nonce}"));
+    let bootstrap_candidate = sibling_path(bootstrap_path, &format!("candidate-{nonce}"));
+    let config_backup = sibling_path(config_path, &format!("backup-{nonce}"));
+    let bootstrap_backup = sibling_path(bootstrap_path, &format!("backup-{nonce}"));
+
+    write_candidate(&config_candidate, config)?;
+    if let Err(error) = write_candidate(&bootstrap_candidate, bootstrap) {
+        let _ = fs::remove_file(&config_candidate);
+        return Err(error);
+    }
+
+    let config_existed = config_path.exists();
+    let bootstrap_existed = bootstrap_path.exists();
+    if config_existed {
+        rename_file(config_path, &config_backup)?;
+    }
+    if bootstrap_existed && let Err(error) = rename_file(bootstrap_path, &bootstrap_backup) {
+        if config_existed {
+            let _ = fs::rename(&config_backup, config_path);
+        }
+        cleanup_files([&config_candidate, &bootstrap_candidate]);
+        return Err(error);
+    }
+
+    let commit = (|| {
+        rename_file(&config_candidate, config_path)?;
+        rename_file(&bootstrap_candidate, bootstrap_path)?;
+        Ok::<(), SetupError>(())
+    })();
+
+    if let Err(error) = commit {
+        let _ = fs::remove_file(config_path);
+        let _ = fs::remove_file(bootstrap_path);
+        if config_existed {
+            let _ = fs::rename(&config_backup, config_path);
+        }
+        if bootstrap_existed {
+            let _ = fs::rename(&bootstrap_backup, bootstrap_path);
+        }
+        cleanup_files([&config_candidate, &bootstrap_candidate]);
+        return Err(error);
+    }
+
+    cleanup_files([&config_backup, &bootstrap_backup]);
+    sync_parent(config_path);
+    if bootstrap_path.parent() != config_path.parent() {
+        sync_parent(bootstrap_path);
+    }
+    Ok(())
+}
+
+fn ensure_parent(path: &Path) -> Result<(), SetupError> {
+    let parent = path.parent().ok_or_else(|| {
+        SetupError::InvalidArgument(format!("path `{}` has no parent directory", path.display()))
+    })?;
+    fs::create_dir_all(parent).map_err(|source| SetupError::CreateDir {
+        path: parent.to_path_buf(),
+        source,
+    })
+}
+
+fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("lumen-setup");
+    path.with_file_name(format!(".{name}.{suffix}"))
+}
+
+fn setup_nonce() -> u128 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos())
+}
+
+fn write_candidate(path: &Path, bytes: &[u8]) -> Result<(), SetupError> {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(path)
+        .map_err(|source| SetupError::WriteFile {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    file.write_all(bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|source| SetupError::WriteFile {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn rename_file(from: &Path, to: &Path) -> Result<(), SetupError> {
+    fs::rename(from, to).map_err(|source| SetupError::RenameFile {
+        from: from.to_path_buf(),
+        to: to.to_path_buf(),
+        source,
+    })
+}
+
+fn cleanup_files<const N: usize>(paths: [&Path; N]) {
+    for path in paths {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &Path) {
+    if let Some(parent) = path.parent()
+        && let Ok(directory) = fs::File::open(parent)
+    {
+        let _ = directory.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_path: &Path) {}
 
 pub fn validate_yaml_config(config_yaml: &str) -> Result<(), SetupError> {
     let config = serde_yaml::from_str::<LumenConfig>(config_yaml)?;
@@ -484,6 +601,13 @@ pub enum SetupError {
     #[error("failed to write file `{}`: {source}", path.display())]
     WriteFile { path: PathBuf, source: io::Error },
 
+    #[error("failed to replace `{}` with `{}`: {source}", from.display(), to.display())]
+    RenameFile {
+        from: PathBuf,
+        to: PathBuf,
+        source: io::Error,
+    },
+
     #[error("failed to render config: {0}")]
     RenderConfig(String),
 
@@ -594,5 +718,46 @@ mod tests {
         let path = Path::new(r"C:\Users\edwin\.lumen\models");
         let config = parse("minimal", REGION_OTHER, path);
         assert_eq!(config.metadata.cache_dir, path.display().to_string());
+    }
+
+    #[test]
+    fn write_setup_replaces_config_and_bootstrap_together() {
+        let root = std::env::temp_dir().join(format!(
+            "lumen-setup-transaction-{}-{}",
+            std::process::id(),
+            setup_nonce()
+        ));
+        let config_path = root.join("config.yaml");
+        let bootstrap_path = root.join("bootstrap.json");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&config_path, "old config\n").unwrap();
+        fs::write(&bootstrap_path, "old bootstrap\n").unwrap();
+
+        let platform = PlatformProfile { name: "linux-x64" };
+        let selection = SetupSelection {
+            version: "test".to_owned(),
+            region: REGION_OTHER.to_owned(),
+            preset: Preset::by_name("minimal").unwrap(),
+            platform,
+            backend: Backend::cpu("linux-x64-cpu"),
+            cache_dir: root.join("models"),
+            config_path: config_path.clone(),
+            bootstrap_path: bootstrap_path.clone(),
+        };
+        write_setup(&selection).unwrap();
+
+        validate_yaml_config(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        let bootstrap: Bootstrap =
+            serde_json::from_str(&fs::read_to_string(&bootstrap_path).unwrap()).unwrap();
+        assert_eq!(bootstrap.preset, "minimal");
+        assert_eq!(bootstrap.config_path, config_path.display().to_string());
+        assert!(fs::read_dir(&root).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("candidate")
+        }));
+        fs::remove_dir_all(root).unwrap();
     }
 }

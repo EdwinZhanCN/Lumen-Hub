@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "LumenConfig",
-  "description": "Unified configuration schema for all Lumen ML services.",
+  "description": "Unified configuration schema for all Lumen Intelligence services.",
   "type": "object",
   "properties": {
     "deployment": {

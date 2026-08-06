@@ -16,7 +16,7 @@ targets = [
 ]
 packages = ["lumen-cli"]
 install-path = "~/.lumen/bin"
-install-success-msg = "lumen-cli installed.\n\nNext:\n  lumen-cli init\n  lumen-cli start"
+install-success-msg = "lumen-cli installed.\n\nNext:\n  lumen-cli configure\n  lumen-cli start"
 msvc-crt-static = true
 precise-builds = true
 source-tarball = false

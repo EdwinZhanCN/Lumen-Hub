@@ -302,14 +302,14 @@ jobs:
                   macOS/Linux:
                   \`\`\`bash
                   curl --proto '=https' --tlsv1.2 -LsSf https://lumilio.org/lumen/install.sh | sh
-                  lumen-cli init
+                  lumen-cli configure
                   lumen-cli start
                   \`\`\`
 
                   Windows:
                   \`\`\`powershell
                   powershell -ExecutionPolicy Bypass -c "irm https://lumilio.org/lumen/install.ps1 | iex"
-                  lumen-cli init
+                  lumen-cli configure
                   lumen-cli start
                   \`\`\`
 
