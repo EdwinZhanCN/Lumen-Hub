@@ -19,28 +19,11 @@ jobs:
                   toolchain: "1.94.1"
                   components: rustfmt, clippy
             - uses: Swatinem/rust-cache@v2
-            - name: Format
-              run: cargo fmt --all -- --check
-            # Default backend is `cpu` (burn-ndarray). E2E model tests skip
-            # gracefully when LUMEN_MODELS_DIR has no assets, so the workspace
-            # suite is self-contained on CI.
-            - name: Test workspace
-              run: cargo test --workspace
-
-            # The committed preset/custom config fixtures are the goldens every
-            # entry point (CLI, launcher, Docker env resolver) is checked
-            # against; regenerate with `cargo xtask config-fixtures`.
-            - name: Check config fixtures
-              run: cargo run -q -p xtask -- config-fixtures --check
-
-            # L0 e2e: real binary + mock model repo + QA fixture model (no
-            # weight downloads). The qa feature is test-only; dist profiles
-            # never enable it.
-            - name: L0 e2e suites (cpu)
-              run: >
-                  cargo test -p lumen-hub --features qa
-                  --test l0_lifecycle --test l0_infer --test l0_batcher
-                  --test l0_control --test l0_contract
+            - uses: extractions/setup-just@v4
+              with:
+                  just-version: "1.58.0"
+            - name: Workspace CI
+              run: just ci
 
     backends:
         name: build ${{ matrix.backend }} (${{ matrix.os }})
@@ -66,21 +49,11 @@ jobs:
               with:
                   toolchain: "1.94.1"
             - uses: Swatinem/rust-cache@v2
-            # Verify lumen-hub compiles with the full model set on each backend.
-            - name: Check backend
-              run: >
-                  cargo check -p lumen-hub --no-default-features
-                  --features ${{ matrix.backend }},siglip,ppocr,insightface,clip
-
-            # Metal runners have a real GPU: run the L0 e2e suites on the
-            # metal backend so cpu↔metal behavior is exercised on every PR.
-            - name: L0 e2e suites (metal)
-              if: matrix.backend == 'metal'
-              run: >
-                  cargo test -p lumen-hub --no-default-features
-                  --features metal,siglip,ppocr,insightface,clip,qa
-                  --test l0_lifecycle --test l0_infer --test l0_batcher
-                  --test l0_control --test l0_contract
+            - uses: extractions/setup-just@v4
+              with:
+                  just-version: "1.58.0"
+            - name: Backend CI
+              run: just ci-backend ${{ matrix.backend }}
 
     # Deterministic protocol check: committed provenance, package major, buf
     # lint, and generated daemon drift. Remote SDK/tag and fixed-baseline proof
@@ -94,19 +67,16 @@ jobs:
               with:
                   toolchain: "1.94.1"
             - uses: Swatinem/rust-cache@v2
+            - uses: extractions/setup-just@v4
+              with:
+                  just-version: "1.58.0"
             - name: Install buf
               run: |
                   curl -sSL https://github.com/bufbuild/buf/releases/download/v1.72.0/buf-Linux-x86_64 -o /usr/local/bin/buf
                   chmod +x /usr/local/bin/buf
                   buf --version
-            - name: Local contract check
-              run: cargo run -q -p xtask -- contract-check
-            # build.rs regenerates the daemon code into src/daemon; this step
-            # fails when the committed generated code drifted from the protos.
-            - name: Generated daemon code in sync
-              run: |
-                  cargo build -p lumen-hub
-                  git diff --exit-code -- crates/lumen-hub/src/daemon
+            - name: Proto contract check
+              run: just contract
 
     # CUDA / ROCm require vendor toolkits to compile (cubecl-cuda / cubecl-rocm)
     # and are not exercised on hosted runners; they are validated on

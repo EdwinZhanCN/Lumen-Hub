@@ -60,9 +60,15 @@ mDNS is advertised only once ready.
 
 ## Build & test
 
-Requires Rust 1.94+ (pinned in `rust-toolchain.toml`).
+Requires Rust 1.94+ (pinned in `rust-toolchain.toml`) and
+[just](https://github.com/casey/just) 1.58+ for the developer recipes
+(`cargo binstall just@1.58.0` or `brew install just`).
 
 ```bash
+just ci                     # fmt + workspace tests + config fixtures + L0 e2e
+just check-backend metal    # compile lumen-hub for a backend + all models
+just contract               # proto provenance + buf lint + daemon codegen drift
+
 cargo build --release      # default: cpu backend + all models
 cargo build --release --no-default-features --features metal,siglip,ppocr,insightface,clip
 
@@ -70,12 +76,11 @@ cargo test --workspace     # unit + integration
 
 # L0 e2e (every PR in CI): real binary + mock model repo + a tiny deterministic
 # QA model — lifecycle, control plane, batching, quantization. No downloads.
-cargo test -p lumen-hub --features qa --test l0_lifecycle --test l0_infer \
-    --test l0_batcher --test l0_control --test l0_contract
+just l0
 
 # L1 (nightly in CI): real weights — semantic checks + golden regression.
-LUMEN_MODELS_DIR=/path/to/lumen-models cargo test --release --test l1_models --test l1_parity
-cargo xtask golden         # regenerate tests/golden/ after intentional changes
+LUMEN_MODELS_DIR=/path/to/lumen-models just l1-backend cpu
+just golden                # regenerate tests/golden/ after intentional changes
 ```
 
 Backend features (pick one; priority cuda > rocm > vulkan > metal > wgpu > cpu):
@@ -112,7 +117,7 @@ Locally: `cargo xtask dist --profile <profile>`;
 `cargo xtask release-metadata [--assets-dir <dir>]` regenerates the catalog.
 Preset/custom config fixtures under `fixtures/config/` are the stable goldens
 shared by CLI, launcher, and Docker; regenerate with
-`cargo xtask config-fixtures` (CI checks them with `--check`).
+`just config-fixtures` (CI checks them via `just ci`).
 
 Linux x64 profiles build on `ubuntu-22.04` (glibc 2.35), not 24.04
 (glibc 2.39): glibc is forward-compatible only, so building on the oldest
