@@ -7,4 +7,8 @@ repository = "https://github.com/EdwinZhanCN/Lumen-Hub"
 [dependencies]
 cliclack = "0.5.4"
 lumen-launcher = { path = "../lumen-launcher" }
+rust-i18n = "4.1.0"
 thiserror = "2.0.18"
+
+[dev-dependencies]
+serde_yaml = "0.9.34"

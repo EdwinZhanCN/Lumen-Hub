@@ -7,8 +7,13 @@ use std::{
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-pub use lumen_schema::Preset;
-use lumen_schema::{ConfigTarget, LumenConfig, RenderOptions, preset_yaml};
+pub use lumen_schema::{
+    BIOCLIP_CORE_DATASET, BIOCLIP_DATASETS, DisplayLang, Preset, SERVICE_ORDER, SIGLIP_MODELS,
+    capability_term,
+};
+use lumen_schema::{
+    ConfigTarget, LumenConfig, RenderOptions, custom_yaml, intern_services, preset_yaml,
+};
 use thiserror::Error;
 
 use crate::Bootstrap;
@@ -28,12 +33,38 @@ pub struct SetupPaths {
 pub struct SetupSelection {
     pub version: String,
     pub region: String,
-    pub preset: Preset,
+    pub intent: SetupIntent,
     pub platform: PlatformProfile,
     pub backend: Backend,
     pub cache_dir: PathBuf,
     pub config_path: PathBuf,
     pub bootstrap_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SetupIntent {
+    Preset(Preset),
+    Custom {
+        services: Vec<String>,
+        siglip_model: Option<String>,
+        bioclip_dataset: Option<String>,
+    },
+}
+
+impl SetupIntent {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Preset(preset) => preset.name,
+            Self::Custom { .. } => "custom",
+        }
+    }
+
+    pub fn min_disk_gb(&self) -> u64 {
+        match self {
+            Self::Preset(preset) => preset.min_disk_gb,
+            Self::Custom { .. } => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,18 +87,39 @@ pub fn default_setup_paths() -> Result<SetupPaths, SetupError> {
 }
 
 pub fn write_setup(selection: &SetupSelection) -> Result<WrittenSetup, SetupError> {
-    let config_yaml = render_config(selection.preset, &selection.region, &selection.cache_dir)?;
+    let config_yaml = render_intent(&selection.intent, &selection.region, &selection.cache_dir)?;
     validate_yaml_config(&config_yaml)?;
 
+    let (services, siglip_model, bioclip_dataset) = match &selection.intent {
+        SetupIntent::Preset(_) => (None, None, None),
+        SetupIntent::Custom {
+            services,
+            siglip_model,
+            bioclip_dataset,
+        } => (
+            Some(
+                intern_services(services.iter().map(String::as_str))
+                    .map_err(SetupError::RenderConfig)?
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+            siglip_model.clone(),
+            bioclip_dataset.clone(),
+        ),
+    };
     let bootstrap = Bootstrap {
         version: selection.version.clone(),
         region: selection.region.clone(),
-        preset: selection.preset.name.to_owned(),
+        preset: selection.intent.name().to_owned(),
         platform: selection.platform.name.to_owned(),
         backend: selection.backend.name.to_owned(),
         release_profile: selection.backend.release_profile.to_owned(),
         cache_dir: selection.cache_dir.display().to_string(),
         config_path: selection.config_path.display().to_string(),
+        services,
+        siglip_model,
+        bioclip_dataset,
     };
     let bootstrap_json = serde_json::to_string_pretty(&bootstrap)? + "\n";
 
@@ -226,16 +278,40 @@ pub fn validate_yaml_config(config_yaml: &str) -> Result<(), SetupError> {
 }
 
 pub fn render_config(preset: Preset, region: &str, cache_dir: &Path) -> Result<String, SetupError> {
+    render_intent(&SetupIntent::Preset(preset), region, cache_dir)
+}
+
+pub fn render_intent(
+    intent: &SetupIntent,
+    region: &str,
+    cache_dir: &Path,
+) -> Result<String, SetupError> {
     let cache_dir = cache_dir.display().to_string();
-    preset_yaml(
-        preset,
-        &RenderOptions {
-            region,
-            cache_dir: &cache_dir,
-            target: ConfigTarget::Network,
-        },
-    )
-    .map_err(SetupError::RenderConfig)
+    let options = RenderOptions {
+        region,
+        cache_dir: &cache_dir,
+        target: ConfigTarget::Network,
+    };
+    match intent {
+        SetupIntent::Preset(preset) => {
+            preset_yaml(*preset, &options).map_err(SetupError::RenderConfig)
+        }
+        SetupIntent::Custom {
+            services,
+            siglip_model,
+            bioclip_dataset,
+        } => {
+            let services = intern_services(services.iter().map(String::as_str))
+                .map_err(SetupError::RenderConfig)?;
+            custom_yaml(
+                &services,
+                siglip_model.as_deref(),
+                bioclip_dataset.as_deref(),
+                &options,
+            )
+            .map_err(SetupError::RenderConfig)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -737,7 +813,7 @@ mod tests {
         let selection = SetupSelection {
             version: "test".to_owned(),
             region: REGION_OTHER.to_owned(),
-            preset: Preset::by_name("minimal").unwrap(),
+            intent: SetupIntent::Preset(Preset::by_name("minimal").unwrap()),
             platform,
             backend: Backend::cpu("linux-x64-cpu"),
             cache_dir: root.join("models"),
@@ -751,6 +827,7 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&bootstrap_path).unwrap()).unwrap();
         assert_eq!(bootstrap.preset, "minimal");
         assert_eq!(bootstrap.config_path, config_path.display().to_string());
+        assert!(bootstrap.services.is_none());
         assert!(fs::read_dir(&root).unwrap().all(|entry| {
             !entry
                 .unwrap()
@@ -758,6 +835,57 @@ mod tests {
                 .to_string_lossy()
                 .contains("candidate")
         }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn write_setup_persists_custom_intent() {
+        let root = std::env::temp_dir().join(format!(
+            "lumen-setup-custom-{}-{}",
+            std::process::id(),
+            setup_nonce()
+        ));
+        let config_path = root.join("config.yaml");
+        let bootstrap_path = root.join("bootstrap.json");
+        fs::create_dir_all(&root).unwrap();
+
+        let selection = SetupSelection {
+            version: "test".to_owned(),
+            region: REGION_OTHER.to_owned(),
+            intent: SetupIntent::Custom {
+                services: vec!["ocr".to_owned(), "siglip".to_owned()],
+                siglip_model: Some("siglip2-so400m-patch14-384".to_owned()),
+                bioclip_dataset: None,
+            },
+            platform: PlatformProfile { name: "linux-x64" },
+            backend: Backend::cpu("linux-x64-cpu"),
+            cache_dir: root.join("models"),
+            config_path: config_path.clone(),
+            bootstrap_path: bootstrap_path.clone(),
+        };
+        write_setup(&selection).unwrap();
+
+        let config: LumenConfig =
+            serde_yaml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert_eq!(config.deployment_service_names(), vec!["siglip", "ocr"]);
+        assert_eq!(
+            config.services["siglip"].models["default"].model,
+            "siglip2-so400m-patch14-384"
+        );
+        assert!(!config.services["bioclip"].enabled);
+
+        let bootstrap: Bootstrap =
+            serde_json::from_str(&fs::read_to_string(&bootstrap_path).unwrap()).unwrap();
+        assert_eq!(bootstrap.preset, "custom");
+        assert_eq!(
+            bootstrap.services.as_deref(),
+            Some(["siglip".to_owned(), "ocr".to_owned()].as_slice())
+        );
+        assert_eq!(
+            bootstrap.siglip_model.as_deref(),
+            Some("siglip2-so400m-patch14-384")
+        );
+        assert!(bootstrap.bioclip_dataset.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 }

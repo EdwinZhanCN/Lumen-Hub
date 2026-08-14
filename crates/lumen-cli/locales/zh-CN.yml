@@ -1,0 +1,139 @@
+errors:
+  prefix: "错误"
+  unknown_command: "未知命令 `%{command}`"
+  already_running: "lumen-hub 已在运行（pid %{pid}）"
+  config_missing: "配置文件 `%{path}` 不存在"
+  config_invalid: "配置 `%{path}` 验证失败：\n%{error}"
+  backend_unavailable: "所选后端当前不可用"
+  empty_capabilities: "请至少选择一项能力"
+  unknown_argument: "未知参数 `%{arg}`"
+  unknown_stop_argument: "未知 stop 参数 `%{arg}`"
+  unknown_validate_argument: "未知 validate 参数 `%{arg}`"
+  missing_flag_value: "缺少 `%{flag}` 的值"
+  invalid_timeout: "无效的 --timeout 值"
+  rollback_no_previous: "新配置无法启动，且没有完整的旧配置可供恢复：%{error}"
+  rollback_rejected: "新配置已被拒绝；之前的 Lumen Hub 配置已重新运行：%{error}"
+  rollback_restart_failed: "新配置无法启动；旧文件已恢复，但 Lumen Hub 也无法重新启动。新配置错误：%{error}；回滚启动错误：%{rollback}"
+
+common:
+  config: "配置"
+  profile: "发布 profile"
+  manifest: "发布清单"
+  logs: "日志"
+  unknown: "未知"
+
+help: |-
+  用法：
+    lumen-cli [--lang en|zh-CN] <命令> [选项]
+
+  命令：
+    configure  配置或重新配置 Lumen Intelligence
+    init       configure 的兼容别名
+    run        在前台运行 lumen-hub（阻塞直到停止）
+    start      在后台启动 lumen-hub
+    stop       停止后台 lumen-hub 进程
+    reload     重启 lumen-hub 以应用配置变更
+    validate   在不启动服务器的情况下验证配置
+
+  全局选项：
+    --lang <语言>          界面语言：en 或 zh-CN；默认依次读取 LC_ALL、LC_MESSAGES、LANG
+
+  run/start/reload 选项：
+    --config <路径>        配置 YAML 路径
+    --bootstrap <路径>     bootstrap JSON 路径
+    --manifest-url <URL>   覆盖 release manifest URL
+    --profile <profile>    选择发布 profile
+
+  stop 选项：
+    --timeout <秒>         强制停止前的宽限期（默认：10）
+
+  validate 选项：
+    --config <路径>        要验证的配置 YAML 路径
+
+run:
+  plan_title: "运行计划"
+  outro: "以下为 Lumen Hub 输出。按 Ctrl-C 停止。"
+
+start:
+  plan_title: "启动计划"
+  starting_background: "正在后台启动 lumen-hub"
+  waiting_ready: "等待 Lumen Hub 就绪（%{addr}）"
+  started: "lumen-hub 已启动（pid %{pid}）"
+  outro: "Lumen Hub 已在后台运行。"
+  check_logs: "%{error}\n查看日志：%{path}"
+
+status:
+  starting: "正在启动"
+  downloading: "正在下载模型"
+  downloading_progress: "正在下载模型：%{model} · %{file} · %{bytes}（%{files_done}/%{files_total}）"
+  loading: "正在加载模型"
+  warmup: "正在预热模型"
+  ready: "已就绪"
+  failed: "启动失败：%{error}"
+  stopping: "正在停止"
+  waiting: "正在等待状态"
+
+stop:
+  not_running: "lumen-hub 未运行"
+  stopping: "正在停止 lumen-hub（pid %{pid}）..."
+  stopped: "lumen-hub 已停止"
+
+reload:
+  not_running: "lumen-hub 未运行，将直接启动"
+  starting: "正在使用更新后的配置启动 lumen-hub..."
+
+validate:
+  ok: "配置有效：%{path}"
+
+configure:
+  intro: "使用 Lumen Hub 预设配置 Lumen Intelligence，也可自定义能力组合。"
+  reconfigure: "将重新配置现有设置"
+  detected_system: "检测到的系统"
+  detected_os: "操作系统：%{os}"
+  detected_arch: "架构：%{arch}"
+  detected_ram: "内存：%{ram}"
+  select_region: "选择下载区域："
+  ram_below: "检测到 %{ram} GB 内存，低于建议的 %{recommended} GB"
+  select_preset: "选择预设："
+  preset_label: "%{title} — %{capabilities} — 内存 %{ram} GB，GPU/统一内存 %{vram} GB"
+  custom_label: "自定义 — 自行选择能力、模型与数据集"
+  ram_warning: "`%{preset}` 建议至少 %{recommended} GB 内存；当前检测到 %{ram} GB"
+  select_capabilities: "选择能力："
+  select_siglip_model: "选择图像语义分析模型："
+  select_bioclip_dataset: "选择 BioCLIP 数据集："
+  capabilities: "能力"
+  siglip_model: "图像语义分析模型"
+  bioclip_dataset: "BioCLIP 数据集"
+  select_backend: "选择后端软件包："
+  apply_title: "将应用的配置"
+  apply_details: "预设：%{preset}\n区域：%{region}\nprofile：%{profile}\n缓存：%{cache}"
+  confirm: "应用此配置？"
+  cancelled: "已取消配置。"
+  config_committed: "配置已提交：%{path}"
+  bootstrap_committed: "启动信息已提交：%{path}"
+  restart_now: "Lumen Hub 正在运行。现在重启以应用配置？"
+  restart_required: "需要重启"
+  restart_later: "新配置已保存但尚未生效。准备好后运行 `lumen-cli reload`。"
+  next_step: "下一步"
+  recommended_profile: "建议发布 profile：%{profile}\n  lumen-cli start"
+  ready: "Lumen Intelligence 配置已就绪。"
+  rollback_restored: "新配置无法启动，已恢复之前的配置。"
+  cache_dir: "模型缓存目录"
+  cache_unsafe: "`%{path}` 不是安全的模型缓存目录"
+  cache_create: "创建 `%{path}`？"
+  cache_not_dir: "`%{path}` 不是目录"
+  cache_not_writable: "`%{path}` 不可写"
+  cache_low_disk: "`%{path}` 仅剩 %{free} GB；所选预设建议至少 %{recommended} GB"
+  continue_anyway: "仍然继续？"
+
+launch:
+  fetching_manifest: "正在获取发布清单"
+  manifest: "发布清单 %{version}"
+  already_installed: "lumen-hub 已安装：%{path}"
+  downloading: "正在下载 %{file}%{detail}"
+  downloaded: "已下载 %{file}（%{size}）"
+  verifying: "正在校验 %{path}"
+  checksum_ok: "校验和正确"
+  extracting: "正在解压 %{path}"
+  ready: "lumen-hub 已就绪：%{path}"
+  starting: "正在启动 %{path}"

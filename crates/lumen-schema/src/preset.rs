@@ -4,10 +4,25 @@
 //! these definitions instead of maintaining their own service/model tables.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DisplayLang {
+    En,
+    ZhCn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapabilityTerm {
     pub service: &'static str,
     pub zh_cn: &'static str,
     pub en: &'static str,
+}
+
+impl CapabilityTerm {
+    pub fn label(self, lang: DisplayLang) -> &'static str {
+        match lang {
+            DisplayLang::En => self.en,
+            DisplayLang::ZhCn => self.zh_cn,
+        }
+    }
 }
 
 pub const CAPABILITIES: [CapabilityTerm; 4] = [
@@ -63,6 +78,39 @@ pub fn models_for(service: &str) -> Option<&'static [&'static str]> {
         "bioclip" => Some(&BIOCLIP_MODELS),
         _ => None,
     }
+}
+
+/// Resolve user-supplied service names to the canonical catalog, in catalog order.
+pub fn intern_services<'a>(
+    services: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<&'static str>, String> {
+    let mut selected = Vec::new();
+    for service in services {
+        let canonical = SERVICE_ORDER
+            .iter()
+            .copied()
+            .find(|candidate| *candidate == service)
+            .ok_or_else(|| {
+                format!(
+                    "unknown capability service `{service}`; expected one of: {}",
+                    SERVICE_ORDER.join(", ")
+                )
+            })?;
+        if selected.contains(&canonical) {
+            return Err(format!(
+                "capability service `{canonical}` is listed more than once"
+            ));
+        }
+        selected.push(canonical);
+    }
+    if selected.is_empty() {
+        return Err("a config must select at least one capability service".to_owned());
+    }
+    Ok(SERVICE_ORDER
+        .iter()
+        .copied()
+        .filter(|service| selected.contains(service))
+        .collect())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,29 +170,32 @@ impl Preset {
         self.components.contains(&component)
     }
 
-    pub fn display_title(self) -> &'static str {
-        match self.name {
-            "minimal" => "minimal (最小)",
-            "basic" => "basic (基础)",
-            "brave" => "brave (激进)",
+    pub fn display_title(self, lang: DisplayLang) -> &'static str {
+        match (self.name, lang) {
+            ("minimal", DisplayLang::En) => "minimal",
+            ("minimal", DisplayLang::ZhCn) => "最小",
+            ("basic", DisplayLang::En) => "basic",
+            ("basic", DisplayLang::ZhCn) => "基础",
+            ("brave", DisplayLang::En) => "brave",
+            ("brave", DisplayLang::ZhCn) => "激进",
             _ => self.name,
         }
     }
 
-    pub fn label(self) -> String {
-        let capabilities = self
-            .components
+    pub fn capability_summary(self, lang: DisplayLang) -> String {
+        self.components
             .iter()
             .filter_map(|service| capability_term(service))
-            .map(|term| format!("{} / {}", term.zh_cn, term.en))
+            .map(|term| term.label(lang))
             .collect::<Vec<_>>()
-            .join(", ");
+            .join(", ")
+    }
+
+    pub fn label(self, lang: DisplayLang) -> String {
         format!(
-            "{} — {} — RAM {} GB, GPU/Unified {} GB",
-            self.display_title(),
-            capabilities,
-            self.min_ram_gb,
-            self.min_vram_gb
+            "{} — {}",
+            self.display_title(lang),
+            self.capability_summary(lang)
         )
     }
 }
@@ -209,5 +260,39 @@ mod tests {
         assert_eq!(CAPABILITIES[2].en, "OCR Text Recognition");
         assert_eq!(CAPABILITIES[3].zh_cn, "BioCLIP物种识别");
         assert_eq!(CAPABILITIES[3].en, "BioCLIP Species Recognition");
+    }
+
+    #[test]
+    fn labels_are_single_language() {
+        let minimal = Preset::by_name("minimal").unwrap();
+        assert_eq!(minimal.display_title(DisplayLang::En), "minimal");
+        assert_eq!(minimal.display_title(DisplayLang::ZhCn), "最小");
+        assert_eq!(
+            CAPABILITIES[0].label(DisplayLang::En),
+            "Image Semantic Analysis"
+        );
+        assert_eq!(CAPABILITIES[0].label(DisplayLang::ZhCn), "图像语义分析");
+
+        let en = minimal.label(DisplayLang::En);
+        let zh = minimal.label(DisplayLang::ZhCn);
+        assert!(en.contains("Image Semantic Analysis"));
+        assert!(en.contains("Person Recognition"));
+        assert!(!en.contains("图像语义分析"));
+        assert!(!en.contains("最小"));
+        assert!(zh.contains("图像语义分析"));
+        assert!(zh.contains("人物识别"));
+        assert!(!zh.contains("Image Semantic Analysis"));
+        assert!(!zh.contains("minimal"));
+    }
+
+    #[test]
+    fn intern_services_canonicalizes_order_and_rejects_duplicates() {
+        assert_eq!(
+            intern_services(["bioclip", "siglip"]).unwrap(),
+            vec!["siglip", "bioclip"]
+        );
+        assert!(intern_services(["siglip", "siglip"]).is_err());
+        assert!(intern_services(["gpu"]).is_err());
+        assert!(intern_services(Vec::<&str>::new()).is_err());
     }
 }

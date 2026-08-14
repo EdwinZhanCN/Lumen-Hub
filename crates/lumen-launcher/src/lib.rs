@@ -851,6 +851,12 @@ pub struct Bootstrap {
     pub release_profile: String,
     pub cache_dir: String,
     pub config_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub siglip_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bioclip_dataset: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

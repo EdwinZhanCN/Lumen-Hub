@@ -1,0 +1,139 @@
+errors:
+  prefix: "error"
+  unknown_command: "unknown command `%{command}`"
+  already_running: "lumen-hub is already running (pid %{pid})"
+  config_missing: "config `%{path}` does not exist"
+  config_invalid: "config validation failed for `%{path}`:\n%{error}"
+  backend_unavailable: "selected backend is unavailable"
+  empty_capabilities: "select at least one capability"
+  unknown_argument: "unknown argument `%{arg}`"
+  unknown_stop_argument: "unknown stop argument `%{arg}`"
+  unknown_validate_argument: "unknown validate argument `%{arg}`"
+  missing_flag_value: "missing value for `%{flag}`"
+  invalid_timeout: "invalid --timeout value"
+  rollback_no_previous: "the new configuration could not start and no complete previous setup was available to restore: %{error}"
+  rollback_rejected: "the new configuration was rejected; the previous Lumen Hub configuration is running again: %{error}"
+  rollback_restart_failed: "the new configuration could not start; the previous files were restored, but Lumen Hub could not be restarted. New error: %{error}; rollback start error: %{rollback}"
+
+common:
+  config: "config"
+  profile: "profile"
+  manifest: "manifest"
+  logs: "logs"
+  unknown: "unknown"
+
+help: |-
+  Usage:
+    lumen-cli [--lang en|zh-CN] <command> [options]
+
+  Commands:
+    configure  Configure or reconfigure Lumen Intelligence
+    init       Alias for configure
+    run        Run lumen-hub in the foreground (blocks until stopped)
+    start      Start lumen-hub in the background
+    stop       Stop the background lumen-hub process
+    reload     Restart lumen-hub to pick up config changes
+    validate   Validate a config file without starting the server
+
+  Global options:
+    --lang <language>      UI language: en or zh-CN; defaults from LC_ALL, LC_MESSAGES, LANG
+
+  Options for run/start/reload:
+    --config <path>        Path to config YAML
+    --bootstrap <path>     Path to bootstrap JSON
+    --manifest-url <url>   Override release manifest URL
+    --profile <profile>    Select a dist profile
+
+  Options for stop:
+    --timeout <secs>       Grace period before force kill (default: 10)
+
+  Options for validate:
+    --config <path>        Path to config YAML to validate
+
+run:
+  plan_title: "Run plan"
+  outro: "Lumen Hub output follows. Press Ctrl-C to stop."
+
+start:
+  plan_title: "Start plan"
+  starting_background: "starting lumen-hub in background"
+  waiting_ready: "waiting for Lumen Hub readiness (%{addr})"
+  started: "lumen-hub started (pid %{pid})"
+  outro: "Lumen Hub is running in the background."
+  check_logs: "%{error}\ncheck logs: %{path}"
+
+status:
+  starting: "Starting"
+  downloading: "Downloading models"
+  downloading_progress: "Downloading models: %{model} · %{file} · %{bytes} (%{files_done}/%{files_total})"
+  loading: "Loading models"
+  warmup: "Warming up models"
+  ready: "Ready"
+  failed: "Startup failed: %{error}"
+  stopping: "Stopping"
+  waiting: "Waiting for status"
+
+stop:
+  not_running: "lumen-hub is not running"
+  stopping: "stopping lumen-hub (pid %{pid})..."
+  stopped: "lumen-hub stopped"
+
+reload:
+  not_running: "lumen-hub is not running, starting fresh"
+  starting: "starting lumen-hub with updated config..."
+
+validate:
+  ok: "config is valid: %{path}"
+
+configure:
+  intro: "Configure Lumen Intelligence with a Lumen Hub preset, or choose a custom capability set."
+  reconfigure: "Existing setup will be reconfigured"
+  detected_system: "Detected system"
+  detected_os: "OS: %{os}"
+  detected_arch: "Arch: %{arch}"
+  detected_ram: "RAM: %{ram}"
+  select_region: "Select download region:"
+  ram_below: "detected RAM %{ram} GB below recommended %{recommended} GB"
+  select_preset: "Select preset:"
+  preset_label: "%{title} — %{capabilities} — RAM %{ram} GB, GPU/Unified %{vram} GB"
+  custom_label: "custom — choose capabilities, models, and datasets"
+  ram_warning: "`%{preset}` recommends at least %{recommended} GB RAM; detected %{ram} GB"
+  select_capabilities: "Select capabilities:"
+  select_siglip_model: "Select Image Semantic Analysis model:"
+  select_bioclip_dataset: "Select BioCLIP dataset:"
+  capabilities: "capabilities"
+  siglip_model: "Image Semantic Analysis model"
+  bioclip_dataset: "BioCLIP dataset"
+  select_backend: "Select backend package:"
+  apply_title: "Configuration to apply"
+  apply_details: "preset: %{preset}\nregion: %{region}\nprofile: %{profile}\ncache: %{cache}"
+  confirm: "Apply this configuration?"
+  cancelled: "Configuration cancelled."
+  config_committed: "Config committed: %{path}"
+  bootstrap_committed: "Bootstrap committed: %{path}"
+  restart_now: "Lumen Hub is running. Restart it now to apply the configuration?"
+  restart_required: "Restart required"
+  restart_later: "The new configuration is saved but is not active. Run `lumen-cli reload` when ready."
+  next_step: "Next step"
+  recommended_profile: "Recommended release profile: %{profile}\n  lumen-cli start"
+  ready: "Lumen Intelligence configuration is ready."
+  rollback_restored: "The new configuration could not start. The previous configuration was restored."
+  cache_dir: "Model cache directory"
+  cache_unsafe: "`%{path}` is not a safe model cache directory"
+  cache_create: "Create `%{path}`?"
+  cache_not_dir: "`%{path}` is not a directory"
+  cache_not_writable: "`%{path}` is not writable"
+  cache_low_disk: "`%{path}` has %{free} GB free; selected preset recommends at least %{recommended} GB"
+  continue_anyway: "Continue anyway?"
+
+launch:
+  fetching_manifest: "fetching release manifest"
+  manifest: "release manifest %{version}"
+  already_installed: "lumen-hub already installed: %{path}"
+  downloading: "downloading %{file}%{detail}"
+  downloaded: "downloaded %{file} (%{size})"
+  verifying: "verifying %{path}"
+  checksum_ok: "checksum ok"
+  extracting: "extracting %{path}"
+  ready: "lumen-hub ready: %{path}"
+  starting: "starting %{path}"

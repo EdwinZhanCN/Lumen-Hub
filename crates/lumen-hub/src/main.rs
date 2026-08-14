@@ -773,7 +773,7 @@ fn print_usage() {
 Usage:
   lumen-hub --config <path> [--port <port>] [--log-level <level>]
   lumen-hub                         # with LUMEN_PRESET Docker intent
-  lumen-hub config render --target <desktop|network> --preset <name> --region <region> --cache-dir <path>
+  lumen-hub config render --target <desktop|network> --preset <name> --region <region> --cache-dir <path> [--services ...]
   lumen-hub healthcheck [--endpoint <url>]
 
 Configuration sources are exclusive: use either --config or LUMEN_* environment variables.

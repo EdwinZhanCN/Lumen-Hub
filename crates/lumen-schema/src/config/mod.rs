@@ -6,6 +6,6 @@ pub use lumen_config::{
     ModelConfig, Region, Runtime, ServerConfig, ServiceConfig, ServiceName,
 };
 pub use render::{
-    CONFIG_VERSION, ConfigTarget, MODEL_PRECISION, RenderOptions, custom_config, preset_config,
-    preset_yaml, to_yaml,
+    CONFIG_VERSION, ConfigTarget, MODEL_PRECISION, RenderOptions, custom_config, custom_yaml,
+    preset_config, preset_yaml, to_yaml,
 };

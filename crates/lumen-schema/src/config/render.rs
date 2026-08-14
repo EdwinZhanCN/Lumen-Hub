@@ -102,6 +102,20 @@ pub fn preset_yaml(preset: Preset, options: &RenderOptions<'_>) -> Result<String
     to_yaml(&preset_config(preset, options)?)
 }
 
+pub fn custom_yaml(
+    services: &[&str],
+    siglip_model: Option<&str>,
+    bioclip_dataset: Option<&str>,
+    options: &RenderOptions<'_>,
+) -> Result<String, String> {
+    to_yaml(&custom_config(
+        services,
+        siglip_model,
+        bioclip_dataset,
+        options,
+    )?)
+}
+
 fn build_config(
     services: &[&str],
     siglip_model: Option<&str>,
