@@ -62,9 +62,9 @@ Measured while preparing this plan with the pinned toolchain on a 4-vCPU Intel X
 | F9 | **Block-wise int8 is neither supported nor useful.** `DequantizeLinear` with `block_size` (opset 21) fails to legalize in the importer; block sizes 64/32/16 do not improve OCR recognition over per-channel scales. |
 | F10 | **CPU data tiling is off by default** in 3.12; `--iree-opt-data-tiling` halves ViT latency, makes SCRFD 8 % faster and ArcFace 13 % slower. |
 | F11 | **GPU targets.** CUDA embeds PTX ISA 7.6 that the driver JIT-compiles (`cuModuleLoadDataEx`), so one `sm_75` artifact serves compute capability ≥ 7.5 (incl. Jetson Orin, sm_87); the CUDA driver library is `dlopen`ed (`libcuda.so`/`nvcuda.dll`), the CUDA Toolkit ≥ 12 is needed only to build. Metal embeds MSL source compiled at load time, so it is produced on Linux. Every fp32 model compiles for Metal in seconds. **W8A32 matmuls with more than one row never finish compiling for Metal** (M ≥ 16 times out; M = 1 compiles in 2 s; the hang is in SPIR-V code generation after `EliminateEmptyTensorsPass`); CUDA compiles them in 8 s. The vendor-neutral Vulkan target (`vp_android_baseline_2022`) fails on SCRFD; IREE has no Intel GPU target. |
-| F12 | **OCR detection buckets with a 32-pixel side do not compile** (`linalg.generic` shape-inference error in a stride-2 depthwise convolution on a ~1-pixel feature map); 64…960 compile. 57 entries in one module compile in ≈10 min per target and produce 10–25 MB modules. |
+| F12 | **OCR detection buckets with a 32-pixel side do not compile** (`linalg.generic` shape-inference error in a stride-2 depthwise convolution on a ~1-pixel feature map); 64…960 compile. The 57-entry detection module compiles in ≈10 min for `cpu-x86_64`, `cpu-aarch64` and `cuda-sm_75` (10.6–24.8 MB). For `metal-macos` one entry compiles in 10 s but module compile time grows superlinearly with the entry count (4 → 34 s, 8 → 93 s, 16 → 256 s), and the module carries ≈4.7 k MSL kernels (102 per entry) that the Metal driver compiles when the module is loaded. |
 | F13 | **The C shim is correct.** A runtime-only IREE build plus the shim links into one 2.4 MB static archive in 36 s; all paths (both parameter modes, wrong shape, wrong byte length, unknown function, missing file, wrong CPU ISA, 4 threads sharing a model) behave correctly; AddressSanitizer/LeakSanitizer report nothing. |
-| F14 | **The toolchain works on real models.** `tools/iree` converted antelopev2 (4 targets) and SigLIP2 B/16 vision+text (+ synthetic aesthetic head) end-to-end, with parity cosine ≥ 0.9999999999 and quality cosine ≥ 0.9977. |
+| F14 | **The toolchain works on real models.** `tools/iree` converted antelopev2 (4 targets) and SigLIP2 B/16 vision+text (+ synthetic aesthetic head) end-to-end, with parity cosine ≥ 0.9999999999 and quality cosine ≥ 0.9977. The real SigLIP2 B/16 `w8a32` vision, text and aesthetic modules compile for `cuda-sm_75` in 2–9 s each. |
 
 ## 3. Decisions (normative)
 
@@ -256,7 +256,7 @@ Created by copying `docs/iree-migration/reference/lumen-iree-sys/` verbatim (Pha
 | File | Role |
 |---|---|
 | `Cargo.toml` | `links = "lumen_iree"`, features `driver-cuda`, `driver-metal`, `[package.metadata.dist] dist = false` |
-| `build.rs` | locate IREE source, `cmake -G Ninja -S csrc -B $OUT_DIR/cmake -DCMAKE_BUILD_TYPE=Release -DIREE_SOURCE_DIR=… -DLUMEN_IREE_DRIVERS=…`, `cmake --build … --target lumen_iree`, link `static=lumen_iree` plus the system libraries listed by CMake (`lumen_iree_link_libs.txt`) and: Linux `dl pthread m rt`; macOS with Metal the frameworks `Foundation Metal CoreGraphics` and `objc` |
+| `build.rs` | locate IREE source, `cmake -G Ninja -S csrc -B $OUT_DIR/cmake -DCMAKE_BUILD_TYPE=Release -DIREE_SOURCE_DIR=… -DLUMEN_IREE_DRIVERS=…` (on MSVC also `-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` when the `crt-static` target feature is on, else `MultiThreadedDLL`), `cmake --build … --target lumen_iree`, link `static=lumen_iree` plus the system libraries listed by CMake (`lumen_iree_link_libs.txt`) and: Linux `dl pthread m rt`; macOS with Metal the frameworks `Foundation Metal CoreGraphics` and `objc` |
 | `csrc/CMakeLists.txt` | runtime-only IREE (`IREE_BUILD_COMPILER=OFF`, tests/samples/benchmarks/TFLite bindings OFF, `IREE_HAL_DRIVER_DEFAULTS=OFF`, only the requested drivers ON, executable loader and plugin = embedded ELF only) and one static archive with the shim, every transitive IREE object of `iree::runtime::impl`, `iree::io::formats::parser_registry`, `iree::io::parameter_index_provider`, `iree::modules::io::parameters`, and `flatcc_parsing` |
 | `csrc/lumen_iree.h` / `.c` | the C ABI (Appendix A) |
 | `src/lib.rs` | `#[repr(C)]` mirrors of the four opaque handles and `lumen_iree_tensor_t`, the constants, and the 15 `unsafe extern "C"` declarations |
@@ -376,10 +376,11 @@ python -m lumen_iree_tools qa-fixture --out ../../fixtures/iree
 1. `cargo xtask iree-fetch` (§4.3) and `/third_party/` in `.gitignore`.
 2. Copy the reference crates to `crates/lumen-iree-sys` and `crates/lumen-iree` (§4.1, §4.2); they become workspace members through the existing `crates/*` glob. `lumen-hub` does not depend on them yet.
 3. `justfile`: recipe `iree-fetch` (`cargo xtask iree-fetch`); recipes `test`, `l0`, `l0-backend`, `check-backend`, `l1-backend` depend on it.
-4. CI (`.github/workflows/ci.yml`): every job that builds the workspace installs Ninja (`sudo apt-get install -y ninja-build`, `brew install ninja`) and runs `cargo xtask iree-fetch` before building; add `actions/cache` for `third_party/iree` keyed on the pinned commit.
-5. Add a macOS CI step `cargo test -p lumen-iree --features driver-metal` and a test (cfg feature `driver-metal`) that runs `net.fp32.metal-macos.vmfb` on `Driver::Metal` against `expected.json` (cosine > 0.99999).
+4. CI (`.github/workflows/ci.yml`): every job that builds the workspace installs Ninja (`sudo apt-get install -y ninja-build`, `brew install ninja`, `choco install ninja`) and runs `cargo xtask iree-fetch` before building; `actions/cache` caches `third_party/iree` keyed on the pinned commit.
+5. New CI job `iree-runtime` with the matrix `ubuntu-22.04` (x86-64), `ubuntu-22.04-arm` (aarch64), `macos-15` (arm64), `windows-2025` (x86-64, MSVC environment from `ilammy/msvc-dev-cmd@v1`, `RUSTFLAGS=-C target-feature=+crt-static` to match the release profiles): `cargo test -p lumen-iree --release` (runs the `cpu-x86_64` or `cpu-aarch64` fixture modules natively). On `macos-15` additionally `cargo test -p lumen-iree --release --features driver-metal` with a new test (cfg feature `driver-metal`) that runs `net.fp32.metal-macos.vmfb` on `Driver::Metal` against `expected.json` (cosine > 0.99999).
+6. The release workflow's `linux-x64-cuda` job (CUDA Toolkit installed) gains a step `cargo build -p lumen-iree-sys --release --features driver-cuda`.
 
-Acceptance: `cargo test -p lumen-iree` passes on Linux x86-64 and macOS arm64 (the three reference tests); clippy and rustfmt clean; `cargo build -p lumen-iree-sys --features driver-cuda` succeeds in the release workflow's CUDA job image.
+Acceptance: the `iree-runtime` job is green on all four runners; clippy (`-D warnings`) and rustfmt are clean; the `driver-cuda` build step succeeds; `xtask` unit test comparing its pinned commit with `tools/iree/lumen_iree_tools/constants.py` passes.
 
 ### Phase 2 — Real inputs and artifact production (**USER**)
 
@@ -448,7 +449,8 @@ On M2 Pro (`darwin-arm64-metal` and `darwin-arm64-cpu`), Jetson Orin Nano (`linu
 - `just l1-backend <cpu|metal|cuda>` passes;
 - cross-device consistency: SigLIP image embedding of `warmup/semantic/bus.jpg` and ArcFace embedding of `warmup/face/face.jpg` agree with the cloud Linux CPU result at cosine ≥ 0.999;
 - resident memory after warmup for the `basic` preset does not exceed the Burn numbers in `docs/lumen-hub-tensor-batching-decision.md` ("Preset 内存画像") by more than 10 %;
-- record `semantic_image_embed`, `ocr`, `face_recognition` p50/p95 with the SDK bench (same command as the batching decision doc) in `docs/lumen-hub-iree-runtime-decision.md` (new).
+- record `semantic_image_embed`, `ocr`, `face_recognition` p50/p95 with the SDK bench (same command as the batching decision doc) in `docs/lumen-hub-iree-runtime-decision.md` (new);
+- Metal load cost (F12): on the M2 Pro, with artifacts already downloaded and after a reboot, measure the time from process start to `PHASE_READY` for the `basic` preset with `darwin-arm64-metal` and with `darwin-arm64-cpu`. If the Metal build is slower by more than 60 s, the `metal-macos` target gains `--iree-metal-compile-to-metallib` (precompiled metallib instead of MSL source; `metal-macos` artifacts and the QA fixture's Metal module are then produced on macOS with the Xcode Command Line Tools), every `metal-macos` artifact is regenerated and re-uploaded, §3.4 is updated in a plan revision, and the measurement is repeated.
 
 Then open a PR `migration/iree` → `main`.
 
@@ -457,7 +459,7 @@ Then open a PR `migration/iree` → `main`.
 | Layer | What | Where / command | Runs in |
 |---|---|---|---|
 | Toolchain | recipe validation, W8A32 rule, QA weight formula, tiny end-to-end convert | `python -m unittest discover -s tests` in `tools/iree` | cloud |
-| FFI | qa-tiny both precisions, both param modes, error paths, wrong ISA, 4-thread sharing; Metal variant on macOS | `cargo test -p lumen-iree` | CI Linux + macOS |
+| FFI | qa-tiny both precisions, both param modes, error paths, wrong ISA, 4-thread sharing; Metal variant on macOS | `cargo test -p lumen-iree` | CI Linux x86-64, Linux arm64, macOS, Windows |
 | Hub unit | placement rule, download plan, config rewrite/validation, OCR resize rule (exactly the 57 entry shapes over a sweep of image sizes; identical to the old rule whenever §3.6.2 says so), wrapper shape checks, `dump-inputs` | `cargo test -p lumen-hub` | CI |
 | L0 e2e | lifecycle, control, batcher (batch>1 loops), contract, infer with qa-tiny | `just l0` | CI Linux (cpu) + macOS (metal) |
 | L1 | real weights, goldens, fp32 references, OCR vs Burn | `just l1-backend …` | `nightly-models` (macOS cpu/metal, also `workflow_dispatch` on the branch) + maintainer hardware |
@@ -471,6 +473,7 @@ Then open a PR `migration/iree` → `main`.
 | A production graph fails to import or compile (an operator pattern not covered by F1) | Re-export that ONNX at opset ≤ 17 without custom domains and rerun `convert`. If it still fails, record the failing operator and the compiler error in `docs/lumen-hub-iree-runtime-decision.md`; Phase 2 stays incomplete for that model and the branch is not merged (no partial migration). |
 | Quality gate fails for a W8A32 component | The gate is not lowered. The component's recipe switches to `"quantize": false` (fp32 weights inside the `w8a32` set), with the measured cosine recorded in the recipe commit message. |
 | Metal (or CUDA) runtime numerics differ from CPU | Phase 8 cross-device check; a failing target is removed from §3.4 for that precision in a plan revision before merge. |
+| Metal cold start too slow (MSL compiled at load) | Phase 8 rule: > 60 s slower than the CPU build ⇒ switch `metal-macos` to precompiled metallib. |
 | OCR quality change from §3.6.2 | Phase 5 OCR acceptance (same text on shared boxes); upscaling small images is the RapidOCR default behavior. |
 | Old hubs read updated `model_info.json` | `runtimes` keeps its schema; `burn/` stays; Phase 2 acceptance checks parsing with the released schema. |
 

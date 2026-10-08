@@ -58,7 +58,8 @@ fn main() {
     }
 
     let build_dir = out_dir.join("cmake");
-    run(Command::new("cmake")
+    let mut configure = Command::new("cmake");
+    configure
         .arg("-G")
         .arg("Ninja")
         .arg("-S")
@@ -67,7 +68,21 @@ fn main() {
         .arg(&build_dir)
         .arg("-DCMAKE_BUILD_TYPE=Release")
         .arg(format!("-DIREE_SOURCE_DIR={}", iree.display()))
-        .arg(format!("-DLUMEN_IREE_DRIVERS={}", drivers.join(";"))));
+        .arg(format!("-DLUMEN_IREE_DRIVERS={}", drivers.join(";")));
+    // Match the C runtime of the Rust build on MSVC (the release profiles use
+    // `msvc-crt-static = true`, i.e. the `crt-static` target feature).
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        let crt_static = env::var("CARGO_CFG_TARGET_FEATURE")
+            .map(|features| features.split(',').any(|feature| feature == "crt-static"))
+            .unwrap_or(false);
+        let runtime = if crt_static {
+            "MultiThreaded"
+        } else {
+            "MultiThreadedDLL"
+        };
+        configure.arg(format!("-DCMAKE_MSVC_RUNTIME_LIBRARY={runtime}"));
+    }
+    run(&mut configure);
     run(Command::new("cmake")
         .arg("--build")
         .arg(&build_dir)

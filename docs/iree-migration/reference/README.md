@@ -21,6 +21,8 @@ against IREE `v3.12.0` (`2b05c5dbb2f2ecb27c0d3941e80ee8d2f16e890d`) with only
   (wrong byte length, wrong shape), output description/reads, trim and every
   release function reports no AddressSanitizer or LeakSanitizer findings.
 
-Not verifiable in that environment (covered by Phase 1 CI and Phase 8):
-the `driver-metal` build on macOS, the `driver-cuda` build (needs the CUDA
-Toolkit headers) and Windows/MSVC builds.
+Not verifiable in that environment (covered by the Phase 1 `iree-runtime` CI
+job and Phase 8): executing the `cpu-aarch64` and `metal-macos` fixture
+modules, the `driver-metal` build on macOS, the `driver-cuda` build (needs the
+CUDA Toolkit headers) and Windows/MSVC builds (including the static-CRT
+setting in `build.rs`).
