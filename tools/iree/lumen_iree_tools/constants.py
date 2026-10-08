@@ -20,6 +20,11 @@ IREE_GIT_COMMIT = "2b05c5dbb2f2ecb27c0d3941e80ee8d2f16e890d"
 # Graphs are normalized to this ONNX opset before import.
 ONNX_OPSET = 17
 
+# IR version written into every prepared graph: the IR version that introduced
+# opset 17. Newer exporters write newer IR versions (onnx 1.23: IR 14) that the
+# pinned onnxruntime cannot load; graphs at opset <= 17 use no newer IR feature.
+ONNX_IR_VERSION = 8
+
 # Parameter scope used by the importer and by the runtime parameter provider.
 PARAM_SCOPE = "model"
 

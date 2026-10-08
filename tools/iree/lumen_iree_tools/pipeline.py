@@ -69,11 +69,14 @@ def iree_compile_bin() -> str:
 
 def compile_module(mlir: Path, out: Path, target: str, cpu_data_tiling: bool) -> None:
     spec = TARGETS[target]
-    cmd = [iree_compile_bin(), str(mlir), *spec.flags]
+    # iree-compile embeds the input path in the module's debug locations. It is
+    # run from the input's directory with the bare file name so artifacts are
+    # byte-reproducible and carry no path of the build machine.
+    cmd = [iree_compile_bin(), mlir.name, *spec.flags]
     if spec.is_cpu and cpu_data_tiling:
         cmd.append(CPU_DATA_TILING_FLAG)
-    cmd += ["-o", str(out)]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    cmd += ["-o", str(out.resolve())]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=mlir.parent)
     if result.returncode != 0:
         raise ConvertError(f"iree-compile failed for {out.name}:\n{result.stderr[-4000:]}")
 

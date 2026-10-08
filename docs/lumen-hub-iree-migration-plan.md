@@ -236,7 +236,7 @@ Launcher choices: `darwin-arm64` → metal, cpu; `windows-x64` → cpu; `linux-x
 
 ### 3.11 Fixtures
 
-- `fixtures/iree/qa-tiny/` (committed, ≈350 KB): `model_info.json`, `expected.json`, `iree/net.fp32.{irpa,cpu-x86_64.vmfb,cpu-aarch64.vmfb,metal-macos.vmfb}`, `iree/net.w8a32.{irpa,cpu-x86_64.vmfb,cpu-aarch64.vmfb}`, `iree/BUILD.{fp32,w8a32}.json`. It is regenerated only with `python -m lumen_iree_tools qa-fixture --out fixtures/iree` (deterministic weights, identical formula to today's Burn QA model). This replaces the "no binary fixtures" rule of `models/qa/fixture.rs`: IREE artifacts need the compiler, and tests must not depend on Python.
+- `fixtures/iree/qa-tiny/` (committed, ≈350 KB): `model_info.json`, `expected.json`, `iree/net.fp32.{irpa,cpu-x86_64.vmfb,cpu-aarch64.vmfb,metal-macos.vmfb}`, `iree/net.w8a32.{irpa,cpu-x86_64.vmfb,cpu-aarch64.vmfb}`, `iree/BUILD.{fp32,w8a32}.json`. It is regenerated only with `python -m lumen_iree_tools qa-fixture --out fixtures/iree` (deterministic weights, identical formula to today's Burn QA model). `tools/iree` output is byte-reproducible: `iree-compile` runs from the work directory on the bare `.mlir` file name, so no build-machine path is embedded and a regeneration with unchanged inputs produces identical files (self-test). This replaces the "no binary fixtures" rule of `models/qa/fixture.rs`: IREE artifacts need the compiler, and tests must not depend on Python.
 - `write_model_fixture(model_dir)` copies `fixtures/iree/qa-tiny/{model_info.json,iree/*}` into `model_dir` (skipping `BUILD.*.json`).
 
 ### 3.12 Verification gates
@@ -367,7 +367,7 @@ python -m lumen_iree_tools reference --recipe recipes/<model>.json --component <
 python -m lumen_iree_tools qa-fixture --out ../../fixtures/iree
 ```
 
-`convert` normalizes every entry (one runtime input of the recipe dtype, static shape, kept outputs, opset 17, onnxruntime basic optimizations, standard-domain operators only, recipe output shapes), applies §3.3 for quantized components, imports all entries of a component into one module with shared parameters, compiles every target, verifies (§3.12) and writes `<out>/<model>/{model_info.json,iree/…}`. ONNX files above 2 GiB must use external data next to the `.onnx` file. Recipes (`tools/iree/recipes/*.json`) are the single source of truth for §3.2–§3.6; `model_info_checks` fail the conversion when `model_info.json` disagrees with them (OCR shapes).
+`convert` normalizes every entry (one runtime input of the recipe dtype, static shape, kept outputs, opset 17 with IR version 8, non-negative `Concat` axes, onnxruntime basic optimizations, standard-domain operators only, recipe output shapes), applies §3.3 for quantized components, imports all entries of a component into one module with shared parameters, compiles every target, verifies (§3.12) and writes `<out>/<model>/{model_info.json,iree/…}`. ONNX files above 2 GiB must use external data next to the `.onnx` file. Recipes (`tools/iree/recipes/*.json`) are the single source of truth for §3.2–§3.6; `model_info_checks` fail the conversion when `model_info.json` disagrees with them (OCR shapes).
 
 ## 5. Phases
 
@@ -385,7 +385,7 @@ Acceptance: the `iree-runtime` job is green on all four runners; clippy (`-D war
 ### Phase 2 — Real inputs and artifact production (**USER**)
 
 1. (cloud) Implement `lumen-hub dump-inputs` (§4.6) in the current code base — preprocessing does not depend on the runtime. Unit test: dumping `warmup/semantic/bus.jpg` yields exactly the tensor the SigLIP task passes to its encoder, and dumping a text yields exactly the token ids of the text task.
-2. (USER, on a machine with the fp32 ONNX files) Create the venv (§4.7). For each production model run `convert` with every recipe component, `--inputs` for every quantized component (≥ 32 own photos; ≥ 24 search phrases for SigLIP, both produced by `dump-inputs` + `pack-inputs`), `--model-info` pointing at the model's current `model_info.json`, and `--targets all`.
+2. (USER, on a machine with the fp32 ONNX files) Create the venv (§4.7). For each production model run `convert` with every recipe component, `--inputs` for every quantized component (≥ 32 own photos; ≥ 24 search phrases for SigLIP, both produced by `dump-inputs` + `pack-inputs`), `--model-info` pointing at the model's current `model_info.json`, and `--targets all`. The machine needs ≥ 8 GB RAM; `pp-ocrv6-small` takes ≈ 1.5 h on 4 cores (the `metal-macos` detection module alone ≈ 1 h, F12), every other model takes minutes.
 3. (USER) Produce the fp32 references for the quantized components used by the L1 suites and commit them under `crates/lumen-hub/tests/golden/`:
 
    | Model | Component | L1 input | Reference file |

@@ -22,9 +22,9 @@
       "parameters": 1,
       "files": {
         "net.fp32.irpa": "4aaee8018655a465413de57b41b26eb2505aca4b2e33ce854d12ddc5106b4c43",
-        "net.fp32.cpu-x86_64.vmfb": "fd85c41a059da1b9da101edb6d1d854ff47ba29c025919b8f971448dbc2be336",
-        "net.fp32.cpu-aarch64.vmfb": "f7990caa2834c52fac9fd0d1f4f8c45f9030b2f9673571d38cb56093912df984",
-        "net.fp32.metal-macos.vmfb": "1d830dcf2683987c03c3b24554442bd8eb0893447ab0ee51821812a08fc2ea68"
+        "net.fp32.cpu-x86_64.vmfb": "533171c08a97b330a0fb5603f91dfd0cc8f10b375f46d7e544d8127fd7e529ba",
+        "net.fp32.cpu-aarch64.vmfb": "68d9fc27e9cb908bf484309eb650fe6152ed13cd607c23f916d16f510ae0cd40",
+        "net.fp32.metal-macos.vmfb": "767c050861f5e73bdafe100fc5b9ca1ae0959567b9dfbba7e565d07ddc002cd0"
       },
       "verification": {
         "target": "cpu-x86_64",

@@ -147,6 +147,47 @@ class QaFixtureTests(unittest.TestCase):
         self.assertEqual(qa_fixture.deterministic_value(row, 5), expected)
 
 
+class OnnxPrepTests(unittest.TestCase):
+    def test_negative_concat_axis_on_shape_vector(self):
+        # Paddle exports build Reshape targets with Concat(axis=-1) over 1-D
+        # shape pieces (PP-OCR classifiers); symbolic shape inference rejects
+        # that unless the axis is normalized.
+        from lumen_iree_tools.onnx_prep import prepare_entry
+
+        weight = np.linspace(-1.0, 1.0, 48 * 4, dtype=np.float32).reshape(48, 4)
+        nodes = [
+            helper.make_node("Shape", ["x"], ["shape"]),
+            helper.make_node("Slice", ["shape", "zero", "one"], ["batch"]),
+            helper.make_node("Concat", ["batch", "minus_one"], ["target"], axis=-1),
+            helper.make_node("Reshape", ["x", "target"], ["flat"]),
+            helper.make_node("MatMul", ["flat", "w"], ["y"]),
+        ]
+        graph = helper.make_graph(
+            nodes,
+            "g",
+            [helper.make_tensor_value_info("x", TensorProto.FLOAT, ["n", 3, 4, 4])],
+            [helper.make_tensor_value_info("y", TensorProto.FLOAT, None)],
+            [
+                numpy_helper.from_array(np.array([0], dtype=np.int64), "zero"),
+                numpy_helper.from_array(np.array([1], dtype=np.int64), "one"),
+                numpy_helper.from_array(np.array([-1], dtype=np.int64), "minus_one"),
+                numpy_helper.from_array(weight, "w"),
+            ],
+        )
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            src = tmp / "src.onnx"
+            onnx.save_model(model, str(src))
+            prepared = prepare_entry(src, tmp / "work", "main", "float32", (1, 3, 4, 4), (0,), ((1, 4),))
+            import onnxruntime
+
+            x = np.linspace(-2.0, 2.0, 48, dtype=np.float32).reshape(1, 3, 4, 4)
+            session = onnxruntime.InferenceSession(str(prepared), providers=["CPUExecutionProvider"])
+            (y,) = session.run(None, {"x": x})
+            np.testing.assert_allclose(y, x.reshape(1, 48) @ weight, rtol=1e-5, atol=1e-5)
+
+
 class ConvertEndToEndTests(unittest.TestCase):
     def test_tiny_convert_and_verify_on_host(self):
         from lumen_iree_tools.pipeline import convert
@@ -165,6 +206,13 @@ class ConvertEndToEndTests(unittest.TestCase):
             build = json.loads((iree / "BUILD.fp32.json").read_text())
             parity = build["components"]["net"]["verification"]["entries"]["main"]["parity_min_cosine"]
             self.assertGreaterEqual(parity, 0.9999)
+
+            # Byte-reproducible and free of build-machine paths.
+            again = convert(recipe, {"net": src}, tmp / "again", [host], model_info_path=None, keep_work=False)
+            for name in (irpa_name("net", "fp32"), vmfb_name("net", "fp32", host)):
+                first = (iree / name).read_bytes()
+                self.assertEqual(first, (again / "iree" / name).read_bytes(), name)
+                self.assertNotIn(str(tmp).encode(), first, name)
 
     def test_targets_are_the_published_set(self):
         self.assertEqual(ALL_TARGETS, ("cpu-x86_64", "cpu-aarch64", "cuda-sm_75", "metal-macos"))

@@ -4,10 +4,13 @@ For every entry point the source graph is:
   1. checked to have exactly one runtime input of the recipe dtype,
   2. given the entry's static input shape,
   3. pruned to the recipe's `keep_outputs` (in that order),
-  4. converted to opset ONNX_OPSET,
-  5. run through onnxruntime's quantization pre-processing (symbolic shape
+  4. converted to opset ONNX_OPSET and IR version ONNX_IR_VERSION,
+  5. given non-negative `Concat` axes (onnxruntime's symbolic shape inference
+     only accepts axis 0 when it concatenates shape vectors, but exporters
+     write the equivalent axis -1),
+  6. run through onnxruntime's quantization pre-processing (symbolic shape
      inference + basic, standard-op-only graph optimizations),
-  6. checked to contain only default-domain (ai.onnx) operators.
+  7. checked to contain only default-domain (ai.onnx) operators.
 
 All intermediate files are written with external data so graphs above the
 2 GiB protobuf limit (e.g. the SigLIP so400m text tower) work unchanged.
@@ -21,7 +24,7 @@ import onnx
 from onnx import TensorProto, version_converter
 from onnx.external_data_helper import load_external_data_for_model
 
-from .constants import ONNX_OPSET, PARAM_MIN_ELEMENTS
+from .constants import ONNX_IR_VERSION, ONNX_OPSET, PARAM_MIN_ELEMENTS
 
 # Tensors smaller than this many bytes stay inline in the .onnx protobuf; larger
 # ones go to the sidecar file. Every tensor with fewer than PARAM_MIN_ELEMENTS
@@ -60,6 +63,31 @@ def load_full(path: Path) -> onnx.ModelProto:
 def runtime_inputs(model: onnx.ModelProto) -> list[onnx.ValueInfoProto]:
     initializers = {init.name for init in model.graph.initializer}
     return [value for value in model.graph.input if value.name not in initializers]
+
+
+def canonicalize_concat_axes(model: onnx.ModelProto) -> None:
+    """Rewrites every negative `Concat` axis as `axis + rank` (same semantics)."""
+    concats = [node for node in model.graph.node if node.op_type == "Concat"]
+    if not any(attr.name == "axis" and attr.i < 0 for node in concats for attr in node.attribute):
+        return
+    inferred = onnx.shape_inference.infer_shapes(model)
+    ranks: dict[str, int] = {}
+    for value in (*inferred.graph.input, *inferred.graph.value_info, *inferred.graph.output):
+        tensor_type = value.type.tensor_type
+        if tensor_type.HasField("shape"):
+            ranks[value.name] = len(tensor_type.shape.dim)
+    for init in model.graph.initializer:
+        ranks[init.name] = len(init.dims)
+    for node in concats:
+        for attr in node.attribute:
+            if attr.name != "axis" or attr.i >= 0:
+                continue
+            rank = ranks.get(node.output[0])
+            if rank is None:
+                rank = next((ranks[name] for name in node.input if name in ranks), None)
+            if rank is None:
+                raise PrepError(f"Concat {node.name!r}: rank unknown, cannot normalize axis {attr.i}")
+            attr.i += rank
 
 
 def prepare_entry(
@@ -111,8 +139,6 @@ def prepare_entry(
         model.graph.output.append(value)
     del model.graph.value_info[:]
 
-    if model.ir_version < 7:
-        model.ir_version = 7
     default_opset = next((o.version for o in model.opset_import if o.domain in ("", "ai.onnx")), None)
     if default_opset is None:
         raise PrepError(f"{src}: graph has no default-domain opset import")
@@ -120,6 +146,8 @@ def prepare_entry(
         raise PrepError(f"{src}: opset {default_opset} is newer than the pinned opset {ONNX_OPSET}")
     if default_opset < ONNX_OPSET:
         model = version_converter.convert_version(model, ONNX_OPSET)
+    model.ir_version = ONNX_IR_VERSION
+    canonicalize_concat_axes(model)
 
     # The graph edits above never touch tensor payloads; pull them in from the
     # source directory now and write one self-contained file set.

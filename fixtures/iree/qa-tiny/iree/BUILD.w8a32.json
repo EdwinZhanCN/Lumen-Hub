@@ -21,8 +21,8 @@
       "parameters": 1,
       "files": {
         "net.w8a32.irpa": "5e28d998c76214f53477fd1280d6312fd382f0f122eedda318d24131830a2f0a",
-        "net.w8a32.cpu-x86_64.vmfb": "afebf05014192ea0ea1feac35f298e7b9f0bddbb354ffbd6421432fd2d760d4b",
-        "net.w8a32.cpu-aarch64.vmfb": "3b1d222d778b7df51bc69ab0517a30cb6d391fa3fee866d0d9247e3457136b2c"
+        "net.w8a32.cpu-x86_64.vmfb": "c36b6d2c1951ae12bb0666580ddfdb7545e8c39f997e2ee04237e88a0b8c8880",
+        "net.w8a32.cpu-aarch64.vmfb": "4448ecc6707b8cb8808c42df2a3a6e616fe422919b8dbc1578cc99dee069f3ce"
       },
       "verification": {
         "target": "cpu-x86_64",
