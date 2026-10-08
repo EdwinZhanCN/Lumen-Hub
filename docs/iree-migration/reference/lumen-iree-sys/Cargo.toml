@@ -1,0 +1,15 @@
+[package]
+name = "lumen-iree-sys"
+version = "0.1.0"
+edition = "2024"
+publish = false
+links = "lumen_iree"
+description = "Raw FFI to the Lumen IREE shim (IREE runtime built from the pinned source)."
+
+[package.metadata.dist]
+dist = false
+
+[features]
+# The CPU driver (local-task) is always compiled in.
+driver-cuda = []
+driver-metal = []

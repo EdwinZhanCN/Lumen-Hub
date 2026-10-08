@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "model": "siglip2-so400m-patch14-384",
+  "precision": "w8a32",
+  "cpu_data_tiling": true,
+  "components": [
+    {
+      "name": "vision",
+      "input_dtype": "float32",
+      "entries": {"kind": "fixed", "shapes": {"main": [1, 3, 384, 384]}},
+      "keep_outputs": [1],
+      "output_shapes": [[1, 1152]],
+      "quantize": true,
+      "min_quantized_cosine": 0.995
+    },
+    {
+      "name": "text",
+      "input_dtype": "int64",
+      "entries": {"kind": "fixed", "shapes": {"main": [1, 64]}},
+      "keep_outputs": [1],
+      "output_shapes": [[1, 1152]],
+      "quantize": true,
+      "min_quantized_cosine": 0.995
+    },
+    {
+      "name": "aesthetic",
+      "input_dtype": "float32",
+      "entries": {"kind": "fixed", "shapes": {"main": [1, 1152]}},
+      "keep_outputs": [0],
+      "output_shapes": [[1]],
+      "quantize": false
+    }
+  ]
+}

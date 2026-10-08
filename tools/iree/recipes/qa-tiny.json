@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "model": "qa-tiny",
+  "precision": "fp32",
+  "cpu_data_tiling": false,
+  "components": [
+    {
+      "name": "net",
+      "input_dtype": "float32",
+      "entries": {"kind": "fixed", "shapes": {"main": [1, 3072]}},
+      "keep_outputs": [0],
+      "output_shapes": [[1, 16]],
+      "quantize": false
+    }
+  ]
+}

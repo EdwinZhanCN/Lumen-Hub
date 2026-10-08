@@ -1,0 +1,22 @@
+{
+  "name": "qa-tiny",
+  "version": "1.0.0",
+  "description": "Tiny deterministic QA model for the e2e harness.",
+  "model_type": "qa",
+  "source": {
+    "format": "huggingface",
+    "repo_id": "Lumilio-Photos/qa-tiny"
+  },
+  "runtimes": {
+    "iree": {
+      "available": true,
+      "components": [
+        "net"
+      ],
+      "precisions": [
+        "fp32",
+        "w8a32"
+      ]
+    }
+  }
+}

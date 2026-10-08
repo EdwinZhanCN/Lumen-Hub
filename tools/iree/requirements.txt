@@ -1,0 +1,8 @@
+# Exact pins for the Lumen IREE conversion toolchain. The IREE compiler and the
+# runtime linked into lumen-hub (crates/lumen-iree-sys) MUST be the same IREE
+# release; bump both together (see docs/lumen-hub-iree-migration-plan.md).
+iree-base-compiler==3.12.0
+iree-base-runtime==3.12.0
+onnx==1.23.2
+onnxruntime==1.30.0
+numpy==2.5.3

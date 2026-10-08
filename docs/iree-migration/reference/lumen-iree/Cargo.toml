@@ -1,0 +1,19 @@
+[package]
+name = "lumen-iree"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Safe, inference-only wrapper over lumen-iree-sys."
+
+[package.metadata.dist]
+dist = false
+
+[features]
+driver-cuda = ["lumen-iree-sys/driver-cuda"]
+driver-metal = ["lumen-iree-sys/driver-metal"]
+
+[dependencies]
+lumen-iree-sys = { path = "../lumen-iree-sys" }
+
+[dev-dependencies]
+serde_json = "1.0.149"

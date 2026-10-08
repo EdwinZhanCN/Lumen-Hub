@@ -1,0 +1,39 @@
+{
+  "iree_version": "3.12.0",
+  "onnx_opset": 17,
+  "recipe": "qa-tiny.json",
+  "recipe_sha256": "c020afefcf701b81f1631f1795ce5df2d938d752df8e564d2060ca8fe584c2d3",
+  "precision": "w8a32",
+  "targets": [
+    "cpu-x86_64",
+    "cpu-aarch64"
+  ],
+  "components": {
+    "net": {
+      "source_onnx_sha256": "7c67b091f18a1022e6a983d370171bd34de12c1836b17d12f93358c7ac0e5d62",
+      "entries": {
+        "main": [
+          1,
+          3072
+        ]
+      },
+      "quantized": true,
+      "parameters": 1,
+      "files": {
+        "net.w8a32.irpa": "5e28d998c76214f53477fd1280d6312fd382f0f122eedda318d24131830a2f0a",
+        "net.w8a32.cpu-x86_64.vmfb": "afebf05014192ea0ea1feac35f298e7b9f0bddbb354ffbd6421432fd2d760d4b",
+        "net.w8a32.cpu-aarch64.vmfb": "3b1d222d778b7df51bc69ab0517a30cb6d391fa3fee866d0d9247e3457136b2c"
+      },
+      "verification": {
+        "target": "cpu-x86_64",
+        "entries": {
+          "main": {
+            "parity_min_cosine": 0.9999999999987591,
+            "quality_min_cosine": 0.9999958910068489,
+            "quality_samples": 8
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "model": "antelopev2",
+  "precision": "fp32",
+  "cpu_data_tiling": false,
+  "components": [
+    {
+      "name": "detection",
+      "input_dtype": "float32",
+      "entries": {"kind": "fixed", "shapes": {"main": [1, 3, 640, 640]}},
+      "keep_outputs": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+      "output_shapes": [[12800, 1], [3200, 1], [800, 1], [12800, 4], [3200, 4], [800, 4], [12800, 10], [3200, 10], [800, 10]],
+      "quantize": false
+    },
+    {
+      "name": "recognition",
+      "input_dtype": "float32",
+      "entries": {"kind": "fixed", "shapes": {"main": [1, 3, 112, 112]}},
+      "keep_outputs": [0],
+      "output_shapes": [[1, 512]],
+      "quantize": false
+    }
+  ]
+}

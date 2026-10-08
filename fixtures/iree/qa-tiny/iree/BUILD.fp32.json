@@ -1,0 +1,39 @@
+{
+  "iree_version": "3.12.0",
+  "onnx_opset": 17,
+  "recipe": "qa-tiny.json",
+  "recipe_sha256": "c020afefcf701b81f1631f1795ce5df2d938d752df8e564d2060ca8fe584c2d3",
+  "precision": "fp32",
+  "targets": [
+    "cpu-x86_64",
+    "cpu-aarch64",
+    "metal-macos"
+  ],
+  "components": {
+    "net": {
+      "source_onnx_sha256": "7c67b091f18a1022e6a983d370171bd34de12c1836b17d12f93358c7ac0e5d62",
+      "entries": {
+        "main": [
+          1,
+          3072
+        ]
+      },
+      "quantized": false,
+      "parameters": 1,
+      "files": {
+        "net.fp32.irpa": "4aaee8018655a465413de57b41b26eb2505aca4b2e33ce854d12ddc5106b4c43",
+        "net.fp32.cpu-x86_64.vmfb": "fd85c41a059da1b9da101edb6d1d854ff47ba29c025919b8f971448dbc2be336",
+        "net.fp32.cpu-aarch64.vmfb": "f7990caa2834c52fac9fd0d1f4f8c45f9030b2f9673571d38cb56093912df984",
+        "net.fp32.metal-macos.vmfb": "1d830dcf2683987c03c3b24554442bd8eb0893447ab0ee51821812a08fc2ea68"
+      },
+      "verification": {
+        "target": "cpu-x86_64",
+        "entries": {
+          "main": {
+            "parity_min_cosine": 0.9999999999994054
+          }
+        }
+      }
+    }
+  }
+}
